@@ -318,6 +318,12 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
     lv_obj_set_style_border_color(cont_outer, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(cont_outer, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+    printf("Track ID: %d\n", track_id);
+    printf("Length: %s\n", track->trackLength);
+    printf("BPM Analyzed: %.2f\n", track->bpmAnalyzed);
+    printf("Title: %s\n", track->title);
+    printf("Artist: %s\n", track->artist);
+
     return cont_outer;
 }
 
