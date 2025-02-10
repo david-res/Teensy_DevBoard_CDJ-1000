@@ -1,0 +1,21 @@
+{
+    "name": "RemoteDisplay",
+    "description": "A library to send Teensy 4.x screen buffers over Ethernet or SerialUSB to display on another device",
+    "keywords": "display, remote",
+    "authors": [
+      {
+        "name": "Ian Wall",
+        "email": "egonbeermat@gmail.com",
+        "maintainer": true
+      }
+    ],
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/egonbeermat/RemoteDisplay"
+    },
+    "version": "0.2.0",
+    "license": "AGPL-3.0-or-later",
+    "homepage": "https://github.com/egonbeermat/RemoteDisplay",
+    "frameworks": "arduino",
+    "platforms": "*"
+  }
