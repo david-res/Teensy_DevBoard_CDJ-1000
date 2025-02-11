@@ -41,7 +41,7 @@ struct KeyInfo {
     const char* key;
 };
 
-/*
+
 constexpr KeyInfo keyLookup[] = {
     {0, "C"},
     {1, "Am"},
@@ -68,8 +68,7 @@ constexpr KeyInfo keyLookup[] = {
     {22, "F"},
     {23, "Dm"}
 };
-*/
-
+/*
 constexpr KeyInfo keyLookup[] = {
     {0, "#ee82d9 C"},
     {1, "#f2abe4 Am"},
@@ -96,7 +95,7 @@ constexpr KeyInfo keyLookup[] = {
     {22, "#ff81b4 F"},
     {23, "#fdaacc Dm"}
 };
-
+*/
 
 FASTRUN const char* getKey(uint8_t numericValue) {
     if (numericValue < sizeof(keyLookup) / sizeof(keyLookup[0])) {
@@ -311,7 +310,6 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
     lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_SCROLL);
 
     lv_obj_t * lbl_key = lv_label_create(cont_topRow);
-    lv_label_set_recolor(lbl_key, en);
     lv_label_set_text(lbl_key, track->musical_key);
     lv_obj_set_style_text_align(lbl_key, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_key, 40);
