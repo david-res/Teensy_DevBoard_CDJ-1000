@@ -41,6 +41,7 @@ struct KeyInfo {
     const char* key;
 };
 
+/*
 constexpr KeyInfo keyLookup[] = {
     {0, "C"},
     {1, "Am"},
@@ -67,6 +68,35 @@ constexpr KeyInfo keyLookup[] = {
     {22, "F"},
     {23, "Dm"}
 };
+*/
+
+constexpr KeyInfo keyLookup[] = {
+    {0, "#ee82d9 C"},
+    {1, "#f2abe4 Am"},
+    {2, "#ce8fff G"},
+    {3, "#ddb4fd Em"},
+    {4, "#9fb6ff D"},
+    {5, "#becdfd Bm"},
+    {6, "#56d9f9 A"},
+    {7, "#8ee4f9 F#m"},
+    {8, "#00ebeb E"},
+    {9, "#55f0f0 Dbm"},
+    {10, "#01edca B"},
+    {11, "#56f1da Abm"},
+    {12, "#3cee81 F#"},
+    {13, "#7df2aa Ebm"},
+    {14, "#86f24f Db"},
+    {15, "#aef589 Bbm"},
+    {16, "#dfca73 Ab"},
+    {17, "#e8daa1 Fm"},
+    {18, "#ffa07c Eb"},
+    {19, "#fdbfa7 Cm"},
+    {20, "#ff8894 Bb"},
+    {21, "#fdafb7 Gm"},
+    {22, "#ff81b4 F"},
+    {23, "#fdaacc Dm"}
+};
+
 
 FASTRUN const char* getKey(uint8_t numericValue) {
     if (numericValue < sizeof(keyLookup) / sizeof(keyLookup[0])) {
@@ -281,6 +311,7 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
     lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_SCROLL);
 
     lv_obj_t * lbl_key = lv_label_create(cont_topRow);
+    lv_label_set_recolor(lbl_key, en);
     lv_label_set_text(lbl_key, track->musical_key);
     lv_obj_set_style_text_align(lbl_key, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_key, 40);
