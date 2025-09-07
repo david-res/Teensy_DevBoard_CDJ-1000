@@ -2,6 +2,9 @@
     "files.associations": {
         "*.tcc": "cpp",
         "list": "cpp",
-        "cmath": "cpp"
+        "cmath": "cpp",
+        "exo2_28.c": "cpp",
+        "string": "cpp",
+        "string_view": "cpp"
     }
 }

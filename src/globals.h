@@ -5,6 +5,7 @@
 
 
 
+
 /////////////////////
 //User defined params
 /////////////////////
@@ -49,6 +50,11 @@ struct KeyInfo {
     const char* key;
 };
 
+struct KeyInfoColor {
+    uint8_t numericValue;
+    const char* color;
+};
+
 constexpr KeyInfo keyLookup[] = {
     {0, "C"},
     {1, "Am"},
@@ -75,34 +81,34 @@ constexpr KeyInfo keyLookup[] = {
     {22, "F"},
     {23, "Dm"}
 };
-/*
-constexpr KeyInfo keyLookup[] = {
-    {0, "#ee82d9 C"},
-    {1, "#f2abe4 Am"},
-    {2, "#ce8fff G"},
-    {3, "#ddb4fd Em"},
-    {4, "#9fb6ff D"},
-    {5, "#becdfd Bm"},
-    {6, "#56d9f9 A"},
-    {7, "#8ee4f9 F#m"},
-    {8, "#00ebeb E"},
-    {9, "#55f0f0 Dbm"},
-    {10, "#01edca B"},
-    {11, "#56f1da Abm"},
-    {12, "#3cee81 F#"},
-    {13, "#7df2aa Ebm"},
-    {14, "#86f24f Db"},
-    {15, "#aef589 Bbm"},
-    {16, "#dfca73 Ab"},
-    {17, "#e8daa1 Fm"},
-    {18, "#ffa07c Eb"},
-    {19, "#fdbfa7 Cm"},
-    {20, "#ff8894 Bb"},
-    {21, "#fdafb7 Gm"},
-    {22, "#ff81b4 F"},
-    {23, "#fdaacc Dm"}
+
+constexpr KeyInfo keyLookupColor[] = {
+    {0, "#ee82d9"},
+    {1, "#f2abe4"},
+    {2, "#ce8fff"},
+    {3, "#ddb4fd"},
+    {4, "#9fb6ff"},
+    {5, "#becdfd"},
+    {6, "#56d9f9"},
+    {7, "#8ee4f9"},
+    {8, "#00ebeb"},
+    {9, "#55f0f0"},
+    {10, "#01edca"},
+    {11, "#56f1da"},
+    {12, "#3cee81"},
+    {13, "#7df2aa"},
+    {14, "#86f24f"},
+    {15, "#aef589"},
+    {16, "#dfca73"},
+    {17, "#e8daa1"},
+    {18, "#ffa07c"},
+    {19, "#fdbfa7"},
+    {20, "#ff8894"},
+    {21, "#fdafb7"},
+    {22, "#ff81b4"},
+    {23, "#fdaacc"}
 };
-*/
+
 
 //////////////////
 //Useful functions

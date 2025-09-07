@@ -3,7 +3,8 @@
 #include "teensy41SQLite.hpp"
 #include <SD.h>
 #include "globals.h"
-#include  "include/file_viewer.h"
+#include "file_viewer.h"
+#include "dj_screen.h"
 #include "RemoteDisplay.h"
 #include <SDRAM_t4.h>
 #include "inflate.h"
@@ -37,7 +38,7 @@ void refreshDisplayCallback()
   lv_obj_invalidate_area(lv_scr_act(), &area);
 }
 
-/*
+
 
 FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
 {
@@ -47,39 +48,9 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
     lv_display_flush_ready(display);
     
 }
- */
+ 
 
- FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
-{
-  if (remoteDisplay.sendRemoteScreen == true ) {
-    uint8_t * flushPtr = px_map;
 
-    if (display->render_mode == LV_DISPLAY_RENDER_MODE_PARTIAL) {
-      //Buffer pointer is good, points to just the required pixels
-    }
-    else {
-      //Calculate start in buffer
-      uint8_t * bufStart = flushPtr + (area->y1 * SCREENWIDTH * 2) + area->x1 * 2;
-      if ((area->x1 == 0 && area->x2 == SCREENWIDTH - 1)) {
-        //Full width, so can use existing buffer
-        flushPtr = bufStart;
-      } else {
-        //Copy just the pixels to update to new buffer
-        uint32_t count = 0;
-        uint16_t w = (area->x2 - area->x1) + 1;
-        uint16_t h = (area->y2 - area->y1) + 1;
-        while (count < (w * h)) {
-          memcpy((uint16_t *)tempDisplayBuf + count, bufStart, w * 2);
-          count += w;
-          bufStart += (SCREENWIDTH * 2);
-        }
-        flushPtr = (uint8_t *)tempDisplayBuf;
-      }
-    }
-    remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)flushPtr);
-  }
-    lv_display_flush_ready(display);
-}
 
 FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 {
@@ -262,6 +233,7 @@ void setup()
     //readWaveFormBlob();
       createListScreen();
       lv_screen_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+      //dj_ui_init();
       
     /*
     int resultEnd = T41SQLite::getInstance().end();
