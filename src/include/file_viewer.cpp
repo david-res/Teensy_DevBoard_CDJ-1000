@@ -3,6 +3,13 @@
 #include "sqlite3.h"
 #include "SD.h"
 #include "inflate.h"
+#include "waveform.h"
+#include "dj_screen.h"
+#include "globals.h"
+
+
+
+lv_obj_t * filesScreen;
 
 sqlite3 *mdb;
 
@@ -23,85 +30,12 @@ int16_t track_count =0;
 int get_track_by_id(sqlite3 *db, int track_id);
 int get_track_count(sqlite3 *db);
 
-typedef struct {
-    char *trackLength;
-    float bpmAnalyzed;
-    char *filename;
-    char *path;
-    char *title;
-    char *artist;
-    char *fileType;
-    uint16_t track_id;
-    uint8_t star_rating;
-    char *musical_key;
-} Track;
-
-struct KeyInfo {
-    uint8_t numericValue;
-    const char* key;
-};
-
-
-constexpr KeyInfo keyLookup[] = {
-    {0, "C"},
-    {1, "Am"},
-    {2, "G"},
-    {3, "Em"},
-    {4, "D"},
-    {5, "Bm"},
-    {6, "A"},
-    {7, "F#m"},
-    {8, "E"},
-    {9, "Dbm"},
-    {10, "B"},
-    {11, "Abm"},
-    {12, "F#"},
-    {13, "Ebm"},
-    {14, "Db"},
-    {15, "Bbm"},
-    {16, "Ab"},
-    {17, "Fm"},
-    {18, "Eb"},
-    {19, "Cm"},
-    {20, "Bb"},
-    {21, "Gm"},
-    {22, "F"},
-    {23, "Dm"}
-};
-/*
-constexpr KeyInfo keyLookup[] = {
-    {0, "#ee82d9 C"},
-    {1, "#f2abe4 Am"},
-    {2, "#ce8fff G"},
-    {3, "#ddb4fd Em"},
-    {4, "#9fb6ff D"},
-    {5, "#becdfd Bm"},
-    {6, "#56d9f9 A"},
-    {7, "#8ee4f9 F#m"},
-    {8, "#00ebeb E"},
-    {9, "#55f0f0 Dbm"},
-    {10, "#01edca B"},
-    {11, "#56f1da Abm"},
-    {12, "#3cee81 F#"},
-    {13, "#7df2aa Ebm"},
-    {14, "#86f24f Db"},
-    {15, "#aef589 Bbm"},
-    {16, "#dfca73 Ab"},
-    {17, "#e8daa1 Fm"},
-    {18, "#ffa07c Eb"},
-    {19, "#fdbfa7 Cm"},
-    {20, "#ff8894 Bb"},
-    {21, "#fdafb7 Gm"},
-    {22, "#ff81b4 F"},
-    {23, "#fdaacc Dm"}
-};
-*/
 
 FASTRUN const char* getKey(uint8_t numericValue) {
     if (numericValue < sizeof(keyLookup) / sizeof(keyLookup[0])) {
         return keyLookup[numericValue].key;
     }
-    return "Invalid Key";
+    return "N/A";
 }
 
 constexpr uint8_t lookupValue(uint8_t input) {
@@ -120,19 +54,19 @@ constexpr uint8_t lookupValue(uint8_t input) {
 
 FLASHMEM void createListScreen(){
     static lv_style_t fileScreen_style;
-    lv_obj_t * filesScreen = lv_obj_create(lv_screen_active());
+    filesScreen = lv_obj_create(NULL);
     lv_obj_set_size(filesScreen, 700, 480);
     lv_obj_align(filesScreen, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_flex_flow(filesScreen, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_opa(filesScreen, LV_OPA_COVER, LV_PART_SCROLLBAR);
-    lv_obj_set_scrollbar_mode(filesScreen, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_opa(filesScreen, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
+    //lv_obj_set_scrollbar_mode(filesScreen, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_scroll_dir(filesScreen, LV_DIR_VER);
     lv_style_set_border_width(&fileScreen_style, 0);
     lv_style_set_bg_color(&fileScreen_style, lv_color_white());
     lv_obj_add_style(filesScreen, &fileScreen_style, 0);
 
 
-    sqlite3_open("Engine Library/m.db", &mdb);
+    sqlite3_open("databases/m.db", &mdb);
     track_count = get_track_count(mdb);
 
     add_track_item(filesScreen, 1);
@@ -146,24 +80,13 @@ FLASHMEM void createListScreen(){
 
 }
 
-FLASHMEM void show_user_data(lv_event_t * e) {
+FLASHMEM void load_track(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_CLICKED) {
-        // Clear the current screen (transition to an empty screen)
-        //lv_scr_load(NULL);
-
-        // Create a new screen
-        lv_obj_t * new_screen = lv_obj_create(NULL);  // Create a new screen (parent is NULL)
-        lv_obj_set_size(new_screen, 800, 480);
-        //lv_scr_load(new_screen);  // Load the new screen
-
-
-        // Create a label to display the data
-        lv_obj_t *label = lv_label_create(new_screen);
-        lv_label_set_text(label, "1");  // Set the label text to display the user data
-        lv_obj_align(label,  LV_ALIGN_CENTER, 0, 0);  // Align the label to the center
-
-        lv_screen_load_anim(new_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        Track * track = (Track *)lv_event_get_user_data(e);
+        
+        waveformView(track);
+        lv_screen_load_anim(waveform_scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
     }
 }
 
@@ -178,8 +101,16 @@ Track *getTrackData(sqlite3 *db, int track_id) {
     sqlite3_stmt *stmt;
     
     // QuerymetaData for specific type values
+    /*
     const char *sqlMeta = "SELECT text, type FROM metaData WHERE id = ? AND type IN (1, 2, 10, 13)";
 
+    if (sqlite3_prepare_v2(db, sqlMeta, -1, &stmt, NULL) != SQLITE_OK) {
+        free(track);
+        return NULL;
+    }
+    */
+
+    const char *sqlMeta = "SELECT length, path, title, key, bpmAnalyzed FROM Track WHERE id = ?";
     if (sqlite3_prepare_v2(db, sqlMeta, -1, &stmt, NULL) != SQLITE_OK) {
         free(track);
         return NULL;
@@ -299,6 +230,8 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
 
     lv_obj_t * cont_outer = lv_obj_create(parent);
     setFlexContainerProperties(cont_outer, 0, 0, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(cont_outer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(cont_outer, load_track, LV_EVENT_CLICKED, track);
 
     //Top row
     lv_obj_t * cont_topRow = lv_obj_create(cont_outer);

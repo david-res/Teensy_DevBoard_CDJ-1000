@@ -3,27 +3,106 @@
 
 #include <Arduino.h>
 
+
+
 /////////////////////
 //User defined params
 /////////////////////
 
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
-#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
+//#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
 #define BUFFER_MEM DMAMEM //DMAMEM //EXTMEM //<blank for ITCM>
-#define WAVEFORM_FILE "bufferTest/blob_wave.txt"
 
-const uint16_t chartWidth = 740; //964
+
+const uint16_t chartWidth = 800; //964
 const uint16_t chartHeight = 164;
 const uint16_t overviewChartHeight = 50;
 const uint16_t phaseMeterWidth = 75;
 const uint16_t phaseMeterHeight = 22;
-const uint8_t slopePoints = 4;
+const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
 
 /////////////////////////
 //End user defined params
 /////////////////////////
+
+
+
+
+
+typedef struct {
+    char *trackLength;
+    float bpmAnalyzed;
+    char *filename;
+    char *path;
+    char *title;
+    char *artist;
+    char *fileType;
+    uint16_t track_id;
+    uint8_t star_rating;
+    char *musical_key;
+} Track;
+
+struct KeyInfo {
+    uint8_t numericValue;
+    const char* key;
+};
+
+constexpr KeyInfo keyLookup[] = {
+    {0, "C"},
+    {1, "Am"},
+    {2, "G"},
+    {3, "Em"},
+    {4, "D"},
+    {5, "Bm"},
+    {6, "A"},
+    {7, "F#m"},
+    {8, "E"},
+    {9, "Dbm"},
+    {10, "B"},
+    {11, "Abm"},
+    {12, "F#"},
+    {13, "Ebm"},
+    {14, "Db"},
+    {15, "Bbm"},
+    {16, "Ab"},
+    {17, "Fm"},
+    {18, "Eb"},
+    {19, "Cm"},
+    {20, "Bb"},
+    {21, "Gm"},
+    {22, "F"},
+    {23, "Dm"}
+};
+/*
+constexpr KeyInfo keyLookup[] = {
+    {0, "#ee82d9 C"},
+    {1, "#f2abe4 Am"},
+    {2, "#ce8fff G"},
+    {3, "#ddb4fd Em"},
+    {4, "#9fb6ff D"},
+    {5, "#becdfd Bm"},
+    {6, "#56d9f9 A"},
+    {7, "#8ee4f9 F#m"},
+    {8, "#00ebeb E"},
+    {9, "#55f0f0 Dbm"},
+    {10, "#01edca B"},
+    {11, "#56f1da Abm"},
+    {12, "#3cee81 F#"},
+    {13, "#7df2aa Ebm"},
+    {14, "#86f24f Db"},
+    {15, "#aef589 Bbm"},
+    {16, "#dfca73 Ab"},
+    {17, "#e8daa1 Fm"},
+    {18, "#ffa07c Eb"},
+    {19, "#fdbfa7 Cm"},
+    {20, "#ff8894 Bb"},
+    {21, "#fdafb7 Gm"},
+    {22, "#ff81b4 F"},
+    {23, "#fdaacc Dm"}
+};
+*/
 
 //////////////////
 //Useful functions

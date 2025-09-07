@@ -1,0 +1,795 @@
+#include <Arduino.h>
+#include <lvgl.h>
+#include <SdFat.h>
+#include "inflate.h"
+#include "waveform.h"
+#include "file_viewer.h"
+#include "sqlite3.h"
+
+
+lv_obj_t * waveform_scr;
+
+sqlite3 *pdb;
+
+BUFFER_MEM uint16_t canvasBuffer[chartWidth * chartHeight];
+EXTMEM uint16_t overviewCanvasBuffer[chartWidth * overviewChartHeight];
+
+//Preset color blocks and positions for phase meter rects
+EXTMEM uint16_t darkPhaseMeterBuffer[phaseMeterWidth * phaseMeterHeight];
+EXTMEM uint16_t lighPhaseMeterBuffer[phaseMeterWidth * phaseMeterHeight];
+uint16_t phaseMeterX[4];
+uint16_t phaseMeterY;
+uint8_t currPhaseMeterRect = 0;
+
+//Color constants
+const uint16_t col_background = 0x0000;
+const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
+const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0;
+const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
+const uint16_t col_darkPhaseMeter = 0x530A;
+const uint16_t col_lightPhaseMeter = 0xC7F8;
+
+//Low med high colors and draw scale ratios
+const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
+const float waveformUserGain[3] = {1.0, 0.66, 0.33};
+const float overviewWaveformUserGain[3] = {1.0, 0.8, 0.6};
+
+const float overviewChartHeightRatio = (float)overviewChartHeight / chartHeight;
+
+//For zlib decompression
+int64_t fileSize = 0;
+uint32_t uncompressedSize = 0;
+uint8_t * compressedBuffer;
+uint8_t * uncompressedBuffer;
+
+//To store repeating group data of samples for the high res waveform
+uint8_t * waveSampleData[6];
+int64_t sampleCount = 0;
+uint32_t waveformOffset = 0;
+uint32_t sampleStep;
+
+//To store repeating group data of samples for the overview waveform
+uint8_t * overViewWaveSampleData[3];
+uint32_t overiewWaveformOffset = 0;
+
+
+//For stats
+uint32_t startMicros;
+uint32_t startRender;
+uint32_t renderCount = 0;
+uint32_t totalRenderTime = 0;
+uint32_t startFlush;
+uint32_t flushCountLVGL = 0;
+uint32_t totalLVGLFlushTime = 0;
+uint32_t flushCountManual = 0;
+uint32_t totalManualFlushTime = 0;
+uint32_t frameCount = 0;
+uint32_t totalDrawTime = 0;
+
+//LVGL next time
+uint32_t lvglNextMillis = 0;
+
+//Low med high bool to display/hide waveform
+bool showWaveform[3] = {true, true, true};
+
+bool useOpa = false;
+bool doScroll = true;
+
+lv_obj_t * waveform_canvas;
+lv_obj_t * waveform_overview_canvas;
+
+//For number labels
+const uint8_t labelCount = (chartWidth / 100) + 1;
+lv_draw_label_dsc_t timecode_label_dsc[labelCount];
+
+void back_btn_cb_event_cb(lv_event_t * e);
+
+uint8_t DynamicWaveformZOOM = 16;
+
+
+
+///////////////////
+
+FASTRUN void waveformView(Track* track)
+{
+  
+  loadWaveformData(track->track_id);
+
+  Serial.printf("Setting up LVGL\n");
+
+  ////////////
+  //LVGL stuff
+  ////////////
+
+  //Attach display events, for timing
+  lv_display_add_event_cb(lv_display_get_default(), lv_display_event_cb, LV_EVENT_RENDER_START, NULL);
+  lv_display_add_event_cb(lv_display_get_default(), lv_display_event_cb, LV_EVENT_RENDER_READY, NULL);
+  lv_display_add_event_cb(lv_display_get_default(), lv_display_event_cb, LV_EVENT_FLUSH_START, NULL);
+  lv_display_add_event_cb(lv_display_get_default(), lv_display_event_cb, LV_EVENT_FLUSH_FINISH, NULL);
+
+  //Create screen
+  waveform_scr = lv_obj_create(NULL);
+
+  //Useless elements
+  lv_obj_t * back_btn = lv_btn_create(waveform_scr);
+  lv_obj_set_size(back_btn, 110, 36);
+  lv_obj_add_flag(back_btn, LV_OBJ_FLAG_CHECKABLE);
+  lv_obj_set_style_bg_color(back_btn, LV_COLOR_MAKE(0xBB, 0xFF, 0xBB), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(back_btn, LV_COLOR_MAKE(0xDD, 0xDD, 0xDD), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_radius(back_btn, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_add_event_cb(back_btn,back_btn_cb_event_cb, LV_EVENT_CLICKED, NULL );
+  lv_obj_t * back_btn_lbl = lv_label_create(back_btn);
+  lv_label_set_text(back_btn_lbl, "Back");
+  lv_obj_center(back_btn_lbl);
+  lv_obj_set_style_text_color(back_btn_lbl, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+  lv_obj_t * waveform_quantize_btn = lv_btn_create(waveform_scr);
+  lv_obj_set_size(waveform_quantize_btn, 110, 36);
+  lv_obj_add_flag(waveform_quantize_btn, LV_OBJ_FLAG_CHECKABLE);
+  lv_obj_set_style_bg_color(waveform_quantize_btn, LV_COLOR_MAKE(0xBB, 0xFF, 0xBB), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(waveform_quantize_btn, LV_COLOR_MAKE(0xDD, 0xDD, 0xDD), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_radius(waveform_quantize_btn, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_t * waveform_quantize_btn_lbl = lv_label_create(waveform_quantize_btn);
+  lv_label_set_text(waveform_quantize_btn_lbl, "QUANTIZE");
+  lv_obj_center(waveform_quantize_btn_lbl);
+  lv_obj_set_style_text_color(waveform_quantize_btn_lbl, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+  lv_obj_t * waveform_continue_btn = lv_btn_create(waveform_scr);
+  lv_obj_set_size(waveform_continue_btn, 110, 36);
+  lv_obj_add_flag(waveform_continue_btn, LV_OBJ_FLAG_CHECKABLE);
+  lv_obj_set_style_bg_color(waveform_continue_btn, LV_COLOR_MAKE(0xBB, 0xFF, 0xBB), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(waveform_continue_btn, LV_COLOR_MAKE(0xDD, 0xDD, 0xDD), LV_PART_MAIN | LV_STATE_CHECKED);
+  lv_obj_set_style_radius(waveform_continue_btn, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_t * waveform_continue_btn_lbl = lv_label_create(waveform_continue_btn);
+  lv_label_set_text(waveform_continue_btn_lbl, "CONTINUE");
+  lv_obj_center(waveform_continue_btn_lbl);
+  lv_obj_set_style_text_color(waveform_continue_btn_lbl, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+  //Create main canvas
+  waveform_canvas = lv_canvas_create(waveform_scr);
+  lv_canvas_set_buffer(waveform_canvas, canvasBuffer, chartWidth, chartHeight, LV_COLOR_FORMAT_RGB565);
+#if defined(SKIP_LVGL_RENDER_CANVAS)
+  lv_obj_add_flag(waveform_canvas, LV_OBJ_FLAG_HIDDEN);
+#endif // defined(SKIP_LVGL_RENDER_CANVAS)
+  lv_obj_set_size(waveform_canvas, chartWidth, chartHeight);
+
+  //Create overview canvas
+  waveform_overview_canvas = lv_canvas_create(waveform_scr);
+  lv_canvas_set_buffer(waveform_overview_canvas, overviewCanvasBuffer, chartWidth, overviewChartHeight, LV_COLOR_FORMAT_RGB565);
+  lv_obj_set_size(waveform_overview_canvas, chartWidth, overviewChartHeight);
+  lv_obj_remove_flag(waveform_overview_canvas, LV_OBJ_FLAG_CLICKABLE);
+
+  //Create control checkboxes
+  lv_obj_t * waveform_cb_low;
+  waveform_cb_low = lv_checkbox_create(waveform_scr);
+  lv_checkbox_set_text(waveform_cb_low, "Show Low");
+  if (showWaveform[0] == true) lv_obj_add_state(waveform_cb_low, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(waveform_cb_low, waveform_cb_event_cb, LV_EVENT_ALL, &showWaveform[0]);
+
+  lv_obj_t * waveform_cb_med;
+  waveform_cb_med = lv_checkbox_create(waveform_scr);
+  lv_checkbox_set_text(waveform_cb_med, "Show Med");
+
+  if (showWaveform[1] == true) lv_obj_add_state(waveform_cb_med, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(waveform_cb_med, waveform_cb_event_cb, LV_EVENT_ALL, &showWaveform[1]);
+
+  lv_obj_t * waveform_cb_high;
+  waveform_cb_high = lv_checkbox_create(waveform_scr);
+  lv_checkbox_set_text(waveform_cb_high, "Show High");
+  if (showWaveform[2] == true) lv_obj_add_state(waveform_cb_high, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(waveform_cb_high, waveform_cb_event_cb, LV_EVENT_ALL, &showWaveform[2]);
+
+  lv_obj_t * waveform_cb_opa;
+  waveform_cb_opa = lv_checkbox_create(waveform_scr);
+  lv_checkbox_set_text(waveform_cb_opa, "Use Opa");
+  if (useOpa == true) lv_obj_add_state(waveform_cb_opa, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(waveform_cb_opa, waveform_cb_event_cb, LV_EVENT_ALL, &useOpa);
+
+  lv_obj_t * waveform_cb_scroll;
+  waveform_cb_scroll = lv_checkbox_create(waveform_scr);
+  lv_checkbox_set_text(waveform_cb_scroll, "Scroll");
+  if (doScroll == true) lv_obj_add_state(waveform_cb_scroll, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(waveform_cb_scroll, waveform_cb_event_cb, LV_EVENT_ALL, &doScroll);
+
+  //Create scrub slider, hide behind overview waveform
+  lv_obj_t * waveform_slider = lv_slider_create(waveform_scr);
+  lv_obj_add_event_cb(waveform_slider, waveform_slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+  lv_obj_set_size(waveform_slider, chartWidth, overviewChartHeight);
+  lv_slider_set_range(waveform_slider, 0 ,1000);
+  lv_obj_set_style_pad_all(waveform_slider, -25, LV_PART_KNOB | LV_STATE_DEFAULT); //Pad to keep knob inside slider
+
+  //Align / layout
+
+  lv_obj_align_to(waveform_quantize_btn, waveform_scr, LV_ALIGN_TOP_LEFT, (SCREEN_WIDTH - chartWidth) / 2, 10);
+  lv_obj_align_to(waveform_continue_btn, waveform_quantize_btn, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+
+  lv_obj_align_to(waveform_canvas, waveform_scr, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_align_to(waveform_overview_canvas, waveform_canvas, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+  lv_obj_align_to(waveform_cb_low, waveform_overview_canvas, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+  lv_obj_align_to(waveform_cb_med, waveform_cb_low, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+  lv_obj_align_to(waveform_cb_high, waveform_cb_med, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+  lv_obj_align_to(waveform_cb_scroll, waveform_overview_canvas, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 10);
+  lv_obj_align_to(waveform_cb_opa, waveform_cb_scroll, LV_ALIGN_OUT_LEFT_MID, -10, 0);
+
+  //Hide slider behind overview canvas
+  lv_obj_align_to(waveform_slider, waveform_canvas, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+  lv_obj_move_foreground(waveform_overview_canvas);
+
+  ////////////////////
+  //Finished LVGL init
+  ////////////////////
+
+  //Get phaseMeter X, Y locations based off button position and size
+  for (uint8_t i = 0; i < 4; i++) {
+    phaseMeterX[i] = lv_obj_get_x(waveform_continue_btn) + lv_obj_get_width(waveform_continue_btn) + 10 + i * (phaseMeterWidth + 10);
+  }
+  phaseMeterY = lv_obj_get_y(waveform_continue_btn) + lv_obj_get_height(waveform_continue_btn) - phaseMeterHeight;
+
+  //Init phase meter color buffers
+  for (uint32_t i = 0; i < phaseMeterWidth * phaseMeterHeight; i++) {
+    darkPhaseMeterBuffer[i] = col_darkPhaseMeter;
+    lighPhaseMeterBuffer[i] = col_lightPhaseMeter;
+  }
+
+  //Initialize canvas label dsc default values
+  for (uint8_t i = 0; i < labelCount; i++) {
+    lv_draw_label_dsc_init(&timecode_label_dsc[i]);
+    timecode_label_dsc[i].color = lv_color_white();
+    timecode_label_dsc[i].font = &lv_font_montserrat_14;
+  }
+
+  Serial.printf("Loading screen\n");
+
+  //Load the screen, no animation
+  lv_screen_load_anim(waveform_scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+
+  //Draw overview canvas
+  drawOverviewCanvas();
+
+  //Force LVGL render of newly loaded screen now, so can do additive manual flushes after. If not, first draw of full screen will overwrite
+ 
+
+  //Manually draw initial dark phase meter rects
+  for (uint8_t i = 0; i < 4; i++) {
+    drawPhaseMeterRect(i, darkPhaseMeterBuffer);
+  }
+
+  drawMainWaveform();
+  drawLabels();
+  //updateWaveformOffset(0);
+
+  lv_refr_now(NULL);
+  lv_obj_invalidate(waveform_canvas);
+  
+  
+}
+
+//  **Normalize After Smoothing to Ensure Full 0-255 Range**
+void normalizeWaveform(uint8_t *data, int length) {
+  uint8_t minVal = 255, maxVal = 0;
+
+  for (int i = 0; i < length; i++) {
+      if (data[i] > maxVal) maxVal = data[i];
+      if (data[i] < minVal) minVal = data[i];
+  }
+
+  uint8_t range = maxVal - minVal;
+  if (range == 0) return;  // Prevent division by zero
+
+  for (int i = 0; i < length; i++) {
+      data[i] = ((data[i] - minVal) * 255) / range;
+  }
+}
+
+
+FLASHMEM bool loadWaveformData(uint16_t track_id)
+{
+  Serial.printf("Starting to open track_id %d \n", track_id);
+  //Open the p.db file that contains performance Datap
+  sqlite3_open("Engine Library/p.db", &pdb);
+  Serial.println("Opened pdb");
+
+  sqlite3_stmt *stmt;
+
+  const char *sqlPerfData = "SELECT highResolutionWaveFormData FROM PerformanceData WHERE id = ?";
+
+  if (sqlite3_prepare_v2(pdb, sqlPerfData, -1, &stmt, NULL) != SQLITE_OK) {
+    return false;
+  }
+
+  sqlite3_bind_int(stmt, 1, track_id);
+
+  sqlite3_step(stmt);
+
+  const void *highResblobData = sqlite3_column_blob(stmt, 0);
+  fileSize = sqlite3_column_bytes(stmt, 0);
+  //Convert the data
+
+  //sqlite3_finalize(stmt);
+  Serial.printf("Starting inflate % bytes\n",fileSize);
+
+  uint8_t *highResBuffer = (uint8_t *)malloc(fileSize);
+  if (highResBuffer) {
+    Serial.println("we have a buffer");
+    memcpy(highResBuffer, highResblobData, fileSize);
+    uint32_t uncompressedSize = 0;
+    uint8_t * uncompressedBuffer;
+    //Read uncompressed size (account for endian)
+    memcpy(&uncompressedSize, highResBuffer, 4);
+    uncompressedSize = __builtin_bswap32(uncompressedSize);
+    Serial.printf("File size: %ld, Uncompressed size: %ld\n", fileSize, uncompressedSize);
+
+    //Allocate output buffers
+    uncompressedBuffer = (uint8_t *)malloc(uncompressedSize);
+    //Do it
+    Serial.printf("Starting to Inflate.\n");
+    uint64_t startMicros = micros();
+
+    uint64_t zlib_rc = inflate_zlib((const unsigned char *)highResBuffer+4, (uint64_t)fileSize, (unsigned char *)uncompressedBuffer, (uint64_t)uncompressedSize);
+    
+    Serial.printf("Time: %lduS\n", micros()-startMicros);
+    Serial.printf("Return code from inflate: %ld\n", zlib_rc);
+
+    /* Waveform spec:
+    int64 big-endian - number of samples
+    int64 big-endian - number of samples again (don't know why)
+    double big-endian - number of samples per waveform point
+    BEGIN repeated section *  number of samples
+    uint8 - low-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - medium-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - high-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - low-frequency waveform opacity, 0 means invisible, 255 means opaque
+    uint8 - medium-frequency waveform opacity, 0 means invisible, 255 means opaque
+    uint8 - high-frequency waveform opacity, 0 means invisible, 255 means opaque
+    END repeated section
+    uint8 - low-frequency waveform height from repeated section
+    uint8 - medium-frequency waveform height from repeated section
+    uint8 - high-frequency waveform height from repeated section
+    uint8 - low-frequency waveform opacity from repeated section
+    uint8 - medium-frequency waveform opacity from repeated section
+    uint8 - high-frequency waveform opacity from repeated section
+    There may be extra junk data after this point - it can be ignored
+    */
+
+    //Extract sampleCount
+    memcpy(&sampleCount, uncompressedBuffer, 8);
+    sampleCount = __builtin_bswap64(sampleCount);
+    Serial.printf("sampleCount: %" PRId64 "\n", sampleCount);
+
+    sampleStep = sampleCount / chartWidth;
+
+    //Extract samplesPerWaveformPoint
+    union { char b[8]; double numSamplesPerWaveformPoint; };
+
+    //Copy bytes for double into union
+    for (uint8_t i = 16; i < 24; i++) {
+        b[23 - i] = uncompressedBuffer[i];
+    }
+    Serial.printf("numSamplesPerWaveformPoint: %lf\n", numSamplesPerWaveformPoint);
+
+    //Create data arrays - lo med high samples, lo med high opa
+    for (int8_t i = 0; i < 6; i++) {
+      waveSampleData[i] = (uint8_t *)malloc(sampleCount);
+    }
+
+    //Fill 'em up!
+    float heightRatio = (float)chartHeight / 255.00;
+    uint32_t index = 0;
+
+    for (uint32_t i = 24; i < sampleCount * 6; i+= 6) {
+      for (uint8_t j = 0; j < 3; j++) {
+        if ( j < 3) {
+          //Sample data
+          //float rms = sqrt(uncompressedBuffer[i + (3-j)] * heightRatio * waveformUserGain[3-j]);
+          waveSampleData[j][index] = uncompressedBuffer[i + j] * heightRatio * waveformUserGain[j]; //Scale the waveform height
+          //waveSampleData[3-j][index]= map(rms,0, sqrt_164, 0, chartHeight);
+        } else {
+          //Opacity data
+          waveSampleData[j][index] = uncompressedBuffer[i + j];
+        }
+      }
+      index++;
+    }
+    free(uncompressedBuffer);
+    free(highResBuffer);
+    fileSize = 0;
+    uncompressedSize = 0;
+
+  }
+  sqlite3_finalize(stmt);
+
+  const char *sqlOverviewData = "SELECT overviewWaveFormData FROM PerformanceData WHERE id = ?";
+
+  if (sqlite3_prepare_v2(pdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
+    return false;
+  }
+  Serial.println("sqlite3_prepare_v2");
+
+  sqlite3_bind_int(stmt, 1, track_id);
+  Serial.println("sqlite3_bind_int");
+
+  //sqlite3_step(stmt);
+  //if(sqlite3_step(stmt) != SQLITE_OK){
+    //return false;
+  //}
+  Serial.println(sqlite3_step(stmt));
+
+  const void * OverViewBlobData = sqlite3_column_blob(stmt, 0);
+  fileSize = sqlite3_column_bytes(stmt, 0);
+  //Convert the data
+
+  //sqlite3_finalize(stmt);
+  Serial.printf("Starting inflate % bytes\n",fileSize);
+
+  uint8_t * overviewBuffer = (uint8_t *)malloc(fileSize);
+  if (overviewBuffer) {
+    Serial.println("we have a buffer");
+    memcpy(overviewBuffer, OverViewBlobData, fileSize);
+    uint32_t uncompressedSize = 0;
+    uint8_t * uncompressedBuffer;
+    //Read uncompressed size (account for endian)
+    memcpy(&uncompressedSize, overviewBuffer, 4);
+    uncompressedSize = __builtin_bswap32(uncompressedSize);
+    Serial.printf("File size: %ld, Uncompressed size: %ld\n", fileSize, uncompressedSize);
+
+    //Allocate output buffers
+    uncompressedBuffer = (uint8_t *)malloc(uncompressedSize);
+    //Do it
+    Serial.printf("Starting to Inflate.\n");
+    uint64_t startMicros = micros();
+
+    uint64_t zlib_rc = inflate_zlib((const unsigned char *)overviewBuffer+4, (uint64_t)fileSize, (unsigned char *)uncompressedBuffer, (uint64_t)uncompressedSize);
+    
+    Serial.printf("Time: %lduS\n", micros()-startMicros);
+    Serial.printf("Return code from inflate: %ld\n", zlib_rc);
+
+    /* OverviwWaveform spec:
+    int64 big-endian - number of samples in overview waveform, always 1024
+    int64 big-endian - number of samples in overview waveform again (don't know why), always 1024
+    double big-endian - number of samples per waveform point
+    BEGIN repeated section * number of samples
+    uint8 - low-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - medium-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - high-frequency waveform height, 0 means silence, 255 means max volume
+    END repeated section
+    uint8 - maximum low-frequency waveform height from repeated section
+    uint8 - maximum medium-frequency waveform height from repeated section
+    uint8 - maximum high-frequency waveform height from repeated section
+    There may be extra junk data after this point - it can be ignored 
+    */
+
+    //Extract sampleCount
+    memcpy(&sampleCount, uncompressedBuffer, 8);
+    sampleCount = __builtin_bswap64(sampleCount);
+    Serial.printf("sampleCount: %" PRId64 "\n", sampleCount);
+
+    sampleStep = sampleCount / chartWidth;
+
+    //Extract samplesPerWaveformPoint
+    union { char b[8]; double numSamplesPerWaveformPoint; };
+
+    //Copy bytes for double into union
+    for (uint8_t i = 16; i < 24; i++) {
+        b[23 - i] = uncompressedBuffer[i];
+    }
+    Serial.printf("numSamplesPerWaveformPoint: %lf\n", numSamplesPerWaveformPoint);
+
+    //Create data arrays - lo med high samples, lo med high opa
+    for (int8_t i = 0; i < 3; i++) {
+      overViewWaveSampleData[i] = (uint8_t *)malloc(sampleCount);
+    }
+
+    uint8_t maxValues[3] = {0, 0, 0}; // Stores max for each band
+
+    for (uint8_t band = 0; band < 3; band++) {
+      for (uint16_t i = 0; i < 1024; i++) {
+            if (overViewWaveSampleData[i][band] > maxValues[band]) {
+                maxValues[band] = overViewWaveSampleData[i][band];
+            }
+        }
+    }
+
+    // Print or use the max values
+    Serial.print("Max Low: "); Serial.println(maxValues[0]);
+    Serial.print("Max Mid: "); Serial.println(maxValues[1]);
+    Serial.print("Max High: "); Serial.println(maxValues[2]);
+
+    //Fill 'em up!
+    // Scale waveform height from 255 to overviewChartHeight
+    float heightRatio = (float)overviewChartHeight / 64.0;
+    float scaleFactor = (float)1024 / 800; // 1.28
+
+    uint32_t index = 0;
+
+    
+
+    for (uint32_t i = 0; i < 800; i++) {
+        float srcIndex = i * scaleFactor;   // Map output index to source
+        uint32_t idx = (uint32_t)srcIndex;  // Integer part (base index)
+        float frac = srcIndex - idx;        // Fractional part for interpolation
+
+        for (uint8_t j = 0; j < 3; j++) {
+            // Get two nearest values for interpolation
+            uint8_t v1 = uncompressedBuffer[(idx * 3) + j];
+            uint8_t v2 = uncompressedBuffer[((idx + 1) * 3) + j]; 
+
+            // Linearly interpolate the values
+            float interpolatedValue = v1 + (frac * (v2 - v1));
+
+            // Scale the waveform height
+            overViewWaveSampleData[j][index] = interpolatedValue * heightRatio * overviewWaveformUserGain[2-j];
+        }
+        index++;
+
+    }
+    
+    
+    free(uncompressedBuffer);
+    free(overviewBuffer);
+    fileSize = 0;
+    uncompressedSize = 0;
+
+  }
+  return true;
+}
+
+FLASHMEM void drawOverviewCanvas()
+{
+  //Clear overview canvas
+  memset(overviewCanvasBuffer, 0, chartWidth * overviewChartHeight * 2);
+
+  uint32_t index = 0;
+  for (uint16_t x = 0; x < chartWidth; x++) {
+    for (uint8_t i = 0; i < 3; i++) {
+      drawFastVLine16Bit(x, overviewChartHeight - (overViewWaveSampleData[2-i][index] * overviewChartHeightRatio), (overViewWaveSampleData[2-i][index] * overviewChartHeightRatio), waveformColors[2-i], 255, overviewCanvasBuffer, chartWidth);
+    }
+    index += sampleStep;
+  }
+  //Invalidate canvas, as this is updated done rarely
+  lv_obj_invalidate(waveform_overview_canvas);
+  updateWaveformOffset(waveformOffset);
+}
+
+FASTRUN void updateWaveformOffset(uint32_t newVal)
+{
+  uint16_t oldPos = ((float)waveformOffset / sampleCount) * chartWidth;
+  uint16_t newPos = ((float)newVal / sampleCount) * chartWidth;
+  if ((oldPos != newPos) || (newVal == waveformOffset)) {
+
+    //Create 1 pixel wide buffer, refresh oldPos then draw newPos (separate due to the last line, newPos is at start, not contiguous)
+    // and draw line in newPos. Note canvas is 'out of date'
+    uint16_t tempBuf[overviewChartHeight];
+    uint16_t canvasY = lv_obj_get_y(waveform_overview_canvas);
+
+    //Set buffer to background
+    memset(tempBuf, 0, overviewChartHeight * 2);
+
+    //Draw in lo/med/high
+    for (uint8_t i = 0; i < 3; i++) {
+        drawFastVLine16Bit(0, overviewChartHeight - (waveSampleData[i][sampleStep * oldPos] * overviewChartHeightRatio), (waveSampleData[i][sampleStep * oldPos] * overviewChartHeightRatio), waveformColors[i], 255, tempBuf, 1);
+    }
+    //Send the data
+    flushBuffer((SCREEN_WIDTH - chartWidth) / 2 + oldPos, (SCREEN_WIDTH - chartWidth) / 2 + oldPos, canvasY, canvasY + overviewChartHeight - 1, tempBuf);
+
+    //Set buffer to white
+    memset(tempBuf, 0xFF, overviewChartHeight * 2);
+
+    //Send the data
+    flushBuffer((SCREEN_WIDTH - chartWidth) / 2 + newPos, (SCREEN_WIDTH - chartWidth) / 2 + newPos, canvasY, canvasY + overviewChartHeight - 1, tempBuf);
+  }
+  waveformOffset = newVal;
+}
+
+FASTRUN void incrementPhaseMeter()
+{
+  //Flush dark buffer to erase old rect
+  drawPhaseMeterRect(currPhaseMeterRect, darkPhaseMeterBuffer);
+
+  //Switch to next, with wrap-around
+  currPhaseMeterRect = (currPhaseMeterRect + 1) % 4;
+
+  //Flush light color buffer to new rect
+  drawPhaseMeterRect(currPhaseMeterRect, lighPhaseMeterBuffer);
+}
+
+FASTRUN void drawPhaseMeterRect(uint8_t index, uint16_t * colorBuffer)
+{
+  flushBuffer(phaseMeterX[index], phaseMeterX[index] + phaseMeterWidth - 1, phaseMeterY, phaseMeterY + phaseMeterHeight - 1, colorBuffer);
+}
+
+FASTRUN void drawMainWaveform()
+{
+  //Clear canvas
+  memset(canvasBuffer, 0, chartWidth * chartHeight * 2);
+
+  /*
+  //Draw waveforms - as is
+  for (uint16_t x = 0; x < chartWidth; x++) {
+    for (uint8_t i = 0; i < 3; i++) {
+      if (showWaveform[i] == true) drawFastVLine16Bit(x, (chartHeight - sampleData[i][x + waveformOffset]) / 2, sampleData[i][x + waveformOffset], waveformColors[i], sampleData[i + 3][x + waveformOffset], canvasBuffer, chartWidth);
+    }
+  */
+
+  //Draw waveforms - expanded, interpolated
+  for (uint16_t x = 0; x < chartWidth / slopePoints; x++) {
+    for (uint8_t i = 0; i < 3; i++) {
+      uint32_t index = x + waveformOffset;
+      if (((i < 2) && waveSampleData[i][index] > waveSampleData[i + 1][index]) || i == 2) {
+        if (showWaveform[i] == true) drawSlope16Bit(waveSampleData[i][index], waveSampleData[i][index + 1], x, waveformColors[i], waveSampleData[i + 3][index]);
+      }
+      if( i == 2 && waveSampleData[i][index] == 0){
+
+        //drawFastVLine16Bit(chartWidth / 2, x, 1, col_white, 255, canvasBuffer, chartWidth);
+      }
+    }
+  }
+
+  //Draw mid-canvas line
+  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, 255, canvasBuffer, chartWidth);
+}
+
+FASTRUN void drawOverviewWaveform()
+{
+  ///Clear overview canvas
+  memset(overviewCanvasBuffer, 0, chartWidth * overviewChartHeight * 2);
+
+  uint32_t index = 0;
+  for (uint16_t x = 0; x < chartWidth; x++) {
+    for (uint8_t i = 0; i < 3; i++) {
+      drawFastVLine16Bit(x, overviewChartHeight - (overViewWaveSampleData[i][index] * overviewChartHeightRatio), (overViewWaveSampleData[i][index] * overviewChartHeightRatio), waveformColors[i], 255, overviewCanvasBuffer, chartWidth);
+    }
+    index += sampleStep;
+  }
+  //Invalidate canvas, as this is updated done rarely
+  lv_obj_invalidate(waveform_overview_canvas);
+  updateWaveformOffset(waveformOffset);
+  //Draw mid-canvas line
+  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, 255, overviewCanvasBuffer, overviewChartHeight);
+}
+
+FASTRUN void drawLabels()
+{
+  uint8_t i = 0;
+  for (uint16_t x = 0; x < chartWidth / slopePoints; x++) {
+    if ((waveformOffset + x) % 100 == 0) {
+      lv_layer_t layer;
+      lv_canvas_init_layer(waveform_canvas, &layer);
+      lv_area_t coords = {x * slopePoints, 140, (x * slopePoints) + 58, 140};
+      char buf[9];
+      sprintf(buf, "%ld", (waveformOffset + x) / 100);
+      timecode_label_dsc[i].text = buf;
+      lv_draw_label(&layer, &timecode_label_dsc[i], &coords);
+      lv_canvas_finish_layer(waveform_canvas, &layer);
+      i++;
+    }
+  }
+}
+
+FASTRUN void flushBuffer(uint16_t x1, uint16_t x2, uint16_t y1, uint16_t y2, uint16_t * buffer)
+{
+    uint32_t startFlush = micros();
+    lv_area_t area;
+    area.x1 = x1; area.x2 = x2; area.y1 = y1; area.y2 = y2;
+    //REMDISP_send(NULL, &area, (uint8_t *)buffer);
+    totalManualFlushTime += (micros() - startFlush);
+    flushCountManual += 1;
+}
+
+FASTRUN void drawSlope16Bit(uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa)
+{
+  if (opa > 0) {
+    //Calculate increment, simple lerp between two points
+    float delta = (p2 - p1) / slopePoints;
+
+    for (uint16_t i = 0; i < slopePoints; i++) {
+      uint8_t height = p1 + (i * delta);
+      drawFastVLine16Bit((x * slopePoints) + i, (chartHeight - height) / 2, height, color, opa, canvasBuffer, chartWidth);
+    }
+  }
+}
+
+FASTRUN uint16_t blend(uint16_t fg, uint16_t bg, uint8_t opa)
+{
+    //Dont blend if canvas background, or opa is max
+    if ((bg == 0x0000) || (fg == 0x0000) || (opa == 0xFF)) {
+      return fg;
+    }
+
+    //Split foreground into components
+    uint8_t fg_r = fg >> 11;
+    uint8_t fg_g = (fg >> 5) & 0x3F;
+    uint8_t fg_b = fg & 0x1F;
+
+    //Split background into components
+    uint8_t bg_r = bg >> 11;
+    uint8_t bg_g = (bg >> 5) & 0x3F;
+    uint8_t bg_b = bg & 0x1F;
+
+    //Opa blend components
+    uint8_t out_r = (fg_r * opa + bg_r * (255 - opa)) / 255;
+    uint8_t out_g = (fg_g * opa + bg_g * (255 - opa)) / 255;
+    uint8_t out_b = (fg_b * opa + bg_b * (255 - opa)) / 255;
+
+    //Pack result
+    return (uint16_t) ((out_r << 11) | (out_g << 5) | out_b);
+}
+
+//10% faster, reduces opa to 0-31 from 0-255
+//https://stackoverflow.com/a/50012418
+FASTRUN uint16_t fastBlend( uint32_t fg, uint32_t bg, uint8_t opa)
+{
+    //Dont blend if canvas background, or opa is max
+    if ((bg == 0x0000) || (fg == 0x0000) || (opa == 0xFF)) {
+      return fg;
+    }
+
+    opa = ( opa + 4 ) >> 3;
+    bg = (bg | (bg << 16)) & 0b00000111111000001111100000011111;
+    fg = (fg | (fg << 16)) & 0b00000111111000001111100000011111;
+    uint32_t result = ((((fg - bg) * opa) >> 5) + bg) & 0b00000111111000001111100000011111;
+    return (uint16_t)((result >> 16) | result);
+}
+
+FASTRUN void drawFastVLine16Bit(int16_t x, int16_t y, int16_t h, uint16_t color, uint8_t opa, uint16_t * buffer, uint16_t stride)
+{
+  uint16_t *pBuf = buffer + x + (y * stride);
+  uint16_t *pBufEnd = pBuf + (h * stride);
+
+  while (pBuf < pBufEnd) {
+    *pBuf = (useOpa && opa < 255) ? fastBlend(color, *pBuf, 224) : color;
+    pBuf += stride;
+  }
+}
+
+FLASHMEM void back_btn_cb_event_cb(lv_event_t * e){
+
+  createListScreen();
+  lv_screen_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+
+
+}
+
+
+FLASHMEM void waveform_cb_event_cb(lv_event_t * e)
+{
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t * obj = (lv_obj_t *)lv_event_get_target(e);
+  if(code == LV_EVENT_VALUE_CHANGED) {
+    bool * user_data = (bool *)lv_event_get_user_data(e);
+    *user_data = lv_obj_get_state(obj) & LV_STATE_CHECKED;
+    if ((user_data != &useOpa) && (user_data != &doScroll)) {
+      drawOverviewCanvas();
+    }
+  }
+}
+
+FLASHMEM void waveform_slider_event_cb(lv_event_t * e)
+{
+  lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e);
+  uint32_t slrVal = lv_slider_get_value(slider);
+  updateWaveformOffset((float)sampleCount * (slrVal / 1000.00));
+}
+
+FLASHMEM void lv_display_event_cb(lv_event_t * e)
+{
+    lv_event_code_t event = lv_event_get_code(e);
+
+    switch (event) {
+      //Sent when rendering starts
+      case LV_EVENT_RENDER_START: startRender = micros();
+                                  renderCount++;
+                                  break;
+      //Sent when rendering is ready (before calling the Flush Callback)
+      case LV_EVENT_RENDER_READY: totalRenderTime += (micros() - startRender);
+                                  break;
+
+      case LV_EVENT_FLUSH_START:  startFlush = micros();
+                                  flushCountLVGL++;
+                                  break;
+      case LV_EVENT_FLUSH_FINISH: totalLVGLFlushTime += (micros() - startFlush);
+                                  break;
+
+      default: break;
+  }
+}
