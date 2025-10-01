@@ -5,6 +5,7 @@
         "cmath": "cpp",
         "exo2_28.c": "cpp",
         "string": "cpp",
-        "string_view": "cpp"
+        "string_view": "cpp",
+        "random": "cpp"
     }
 }

@@ -9,7 +9,7 @@
 
 lv_obj_t * waveform_scr;
 
-sqlite3 *pdb;
+sqlite3 *_pdb;
 
 BUFFER_MEM uint16_t canvasBuffer[chartWidth * chartHeight];
 EXTMEM uint16_t overviewCanvasBuffer[chartWidth * overviewChartHeight];
@@ -287,14 +287,14 @@ FLASHMEM bool loadWaveformData(uint16_t track_id)
 {
   Serial.printf("Starting to open track_id %d \n", track_id);
   //Open the p.db file that contains performance Datap
-  sqlite3_open("Engine Library/p.db", &pdb);
-  Serial.println("Opened pdb");
+  sqlite3_open("Engine Library/p.db", &_pdb);
+  Serial.println("Opened _pdb");
 
   sqlite3_stmt *stmt;
 
   const char *sqlPerfData = "SELECT highResolutionWaveFormData FROM PerformanceData WHERE id = ?";
 
-  if (sqlite3_prepare_v2(pdb, sqlPerfData, -1, &stmt, NULL) != SQLITE_OK) {
+  if (sqlite3_prepare_v2(_pdb, sqlPerfData, -1, &stmt, NULL) != SQLITE_OK) {
     return false;
   }
 
@@ -401,7 +401,7 @@ FLASHMEM bool loadWaveformData(uint16_t track_id)
 
   const char *sqlOverviewData = "SELECT overviewWaveFormData FROM PerformanceData WHERE id = ?";
 
-  if (sqlite3_prepare_v2(pdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
+  if (sqlite3_prepare_v2(_pdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
     return false;
   }
   Serial.println("sqlite3_prepare_v2");

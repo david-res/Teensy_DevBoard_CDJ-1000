@@ -3,9 +3,14 @@
 #include "sqlite3.h"
 #include "SD.h"
 #include "inflate.h"
-#include "waveform.h"
+//#include "waveform.h"
 #include "dj_screen.h"
 #include "globals.h"
+#include "lv_utils.h"
+
+sqlite3 * mdb;
+sqlite3 * pdb;
+
 
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
@@ -18,7 +23,6 @@ LV_FONT_DECLARE(exo2_32)
 
 lv_obj_t * filesScreen;
 
-sqlite3 *mdb;
 
 lv_obj_t * add_track_item(lv_obj_t *parent, int track_id);
 static void update_scroll(lv_obj_t * obj);
@@ -38,25 +42,6 @@ int get_track_by_id(sqlite3 *db, int track_id);
 int get_track_count(sqlite3 *db);
 
 
-FASTRUN const char* getKey(uint8_t numericValue) {
-    if (numericValue < sizeof(keyLookup) / sizeof(keyLookup[0])) {
-        return keyLookup[numericValue].key;
-    }
-    return "N/A";
-}
-
-constexpr uint8_t lookupValue(uint8_t input) {
-    switch (input) {
-        case 0: return 0;
-        case 20: return 1;
-        case 40: return 2;
-        case 60: return 3;
-        case 80: return 4;
-        case 100: return 5;
-        case 120: return 5;
-        default: return 255; // Invalid input
-    }
-}
 
 
 // Color definitions to match the dark theme
@@ -67,42 +52,7 @@ constexpr uint8_t lookupValue(uint8_t input) {
 #define COLOR_GRAY          lv_color_hex(0xB0B0B0)
 #define COLOR_BORDER        lv_color_hex(0x555555)
 
-// Convert hex string to lv_color_t
-lv_color_t hex_string_to_color(const char* hex) {
-    if (!hex) {
-        return COLOR_GRAY;
-    }
-    
-    if (hex[0] == '#') hex++; // Skip # if present
-    
-    uint32_t color_val = strtoul(hex, NULL, 16);
-    return lv_color_hex(color_val);
 
-}
-
-lv_color_t getKeyColor(uint8_t numericValue) {
-    if (numericValue < sizeof(keyLookupColor) / sizeof(keyLookupColor[0])) {
-        return hex_string_to_color(keyLookupColor[numericValue].key);
-    }
-    return COLOR_GRAY; // Default color for invalid keys
-}
-
-
-const char* formatDuration(const char* seconds_str) {
-    static char formatted_time[8]; // Static buffer for "MM:SS\0"
-    
-    if (!seconds_str || strlen(seconds_str) == 0) {
-        strcpy(formatted_time, "0:00");
-        return formatted_time;
-    }
-    
-    int total_seconds = atoi(seconds_str);
-    int minutes = total_seconds / 60;
-    int seconds = total_seconds % 60;
-    
-    snprintf(formatted_time, sizeof(formatted_time), "%d:%02d", minutes, seconds);
-    return formatted_time;
-}
 
 
 
@@ -187,7 +137,8 @@ FLASHMEM void load_track(lv_event_t * e) {
         Track * track = (Track *)lv_event_get_user_data(e);
         
         //waveformView(track);
-        //lv_screen_load_anim(waveform_scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        dj_ui_init(track);
+        lv_screen_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
     }
 }
 
@@ -261,7 +212,6 @@ void freeTrack(Track *track) {
     free(track);
 }
 
-const uint16_t trackContainerWidth = 600;
 
 void setFlexContainerProperties(lv_obj_t * cont, int32_t pad_row, int32_t pad_col, lv_flex_flow_t flow){
     lv_obj_remove_style_all(cont);
@@ -320,7 +270,7 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
     lv_obj_set_style_text_color(lbl_key, getKeyColor(key_numeric), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_t * lbl_bpm = lv_label_create(cont_topRow);
-    lv_label_set_text_fmt(lbl_bpm, "%.0f", track->bpmAnalyzed); // Remove decimal for cleaner look
+    lv_label_set_text_fmt(lbl_bpm, "%.1f", track->bpmAnalyzed); 
     lv_obj_set_style_text_align(lbl_bpm, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_bpm, 60);
     // Style BPM

@@ -1,6 +1,16 @@
-#include "Arduino.h"
-#include "dj_screen.h"
 
+#include "dj_screen.h"
+#include "globals.h"
+#include "Arduino.h"
+#include "lv_utils.h"
+#include "sqlite3.h"
+#include "SD.h"
+#include "inflate.h"
+#include "file_viewer.h"
+#include "T4_PXP.h"
+
+
+File playFile;
 
 
 
@@ -23,6 +33,8 @@ LV_FONT_DECLARE(exo2_32)
 #define COLOR_WAVEFORM_LOW LV_COLOR_MAKE(0x80, 0xff, 0x40)
 #define COLOR_PROGRESS LV_COLOR_MAKE(0x80, 0xff, 0x40)
 
+#define COLOR_GRAY          lv_color_hex(0xB0B0B0)
+
 // Cue button colors (exact DJ controller colors)
 static const lv_color_t cue_colors[8] = {
     LV_COLOR_MAKE(0xEA, 0xC5, 0x32), // 1 - EAC532 (Yellow)
@@ -36,7 +48,7 @@ static const lv_color_t cue_colors[8] = {
 };
 
 // Main containers
-static lv_obj_t *main_screen;
+lv_obj_t * main_screen;
 static lv_obj_t *top_container;
 static lv_obj_t *middle_container;
 static lv_obj_t *bottom_container;
@@ -52,13 +64,516 @@ static lv_obj_t *current_bpm_label;
 static lv_obj_t *tempo_range_label;
 static lv_obj_t *adjusted_tempo_label;
 static lv_obj_t *progress_bars[4];
-static lv_obj_t *waveform_canvas;
+static lv_obj_t *daynamic_waveform_canvas;
 static lv_obj_t *static_waveform_canvas;
 static lv_obj_t *cue_buttons[8];
 
-static void draw_vertical_line(lv_color_t *buf, int buf_width, int buf_height, int x, int y1, int y2, lv_color_t color);
+void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride);
+void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
+void updateWaveformOffset(uint32_t waveformOffset);
+bool useOpa = false;
 
-void create_top_container(void) {
+uint64_t fileSize = 0;
+uint64_t overviewSampleCount = 0;
+uint64_t sampleCount = 0;
+
+
+const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
+const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0;
+const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
+
+const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
+const float waveformUserGain[3] = {1.0, 0.66, 0.33};
+EXTMEM uint8_t * waveSampleData[6]; // 0=lo samples, 1=med samples, 2=hi samples, 3=lo opa, 4=med opa, 5=hi opa
+DMAMEM static uint16_t canvasBuffer[800 * 164];
+
+//To store repeating group data of samples for the overview waveform
+EXTMEM uint8_t * overViewWaveSampleData[3];
+uint16_t overiewWaveformOffset = 0;
+EXTMEM static uint16_t overviewCanvasBuffer[800 * 64];
+const float overviewChartHeightRatio = (float)overviewChartHeight / overviewChartHeight;
+
+EXTMEM uint8_t * uncompressedBuffer;
+
+FLASHMEM bool loadWaveformData(uint16_t track_id)
+{
+  Serial.printf("Starting to open track_id %d \n", track_id);
+  //Open the p.db file that contains performance Datap
+  sqlite3_open("databases/p.db", &pdb);
+  Serial.println("Opened pdb");
+
+  sqlite3_stmt *stmt;
+
+  const char *sqlPerfData = "SELECT highResolutionWaveFormData FROM PerformanceData WHERE trackId = ?";
+
+  if (sqlite3_prepare_v2(pdb, sqlPerfData, -1, &stmt, NULL) != SQLITE_OK) {
+    return false;
+  }
+  Serial.println("sqlite3_bind_int");
+  Serial.println(sqlite3_bind_int(stmt, 1, track_id));
+
+  Serial.println(sqlite3_step(stmt));
+
+  const void *highResblobData = sqlite3_column_blob(stmt, 0);
+  fileSize = sqlite3_column_bytes(stmt, 0);
+  //Convert the data
+
+  //sqlite3_finalize(stmt);
+  Serial.printf("Starting inflate % bytes\n",fileSize);
+
+  uint8_t *highResBuffer = (uint8_t *)malloc(fileSize);
+  if (highResBuffer) {
+    Serial.println("we have a buffer");
+    memcpy(highResBuffer, highResblobData, fileSize);
+    uint32_t uncompressedSize = 0;
+    
+    //Read uncompressed size (account for endian)
+    const uint8_t *dataPtr = (const uint8_t *)highResBuffer;
+    for(int i = 0; i < 4 && i < fileSize; i++) {
+        Serial.printf("0x%02X ", dataPtr[i]);
+    }
+    Serial.println(); 
+    // Read uncompressed size (account for endian)
+    memcpy(&uncompressedSize, highResBuffer, 4);
+    Serial.printf("Before swap: 0x%08X (%u)\n", uncompressedSize, uncompressedSize);
+    
+    uncompressedSize = __builtin_bswap32(uncompressedSize);
+    Serial.printf("After swap: 0x%08X (%u)\n", uncompressedSize, uncompressedSize);
+    
+    Serial.printf("File size: %d, Uncompressed size: %d\n", fileSize, uncompressedSize);
+    
+    // Also try without byte swap to see if data is already in correct endianness
+    uint32_t uncompressedSizeNoSwap;
+    memcpy(&uncompressedSizeNoSwap, highResBuffer, 4);
+    Serial.printf("Without swap: %u\n", uncompressedSizeNoSwap);
+    
+
+    //Allocate output buffers
+    uncompressedBuffer = (uint8_t *)malloc(uncompressedSize);
+    //Do it
+    Serial.printf("Starting to Inflate.\n");
+    uint64_t startMicros = micros();
+
+    uint64_t zlib_rc = inflate_zlib((const unsigned char *)highResBuffer+4, (uint64_t)fileSize, (unsigned char *)uncompressedBuffer, (uint64_t)uncompressedSize);
+    
+    Serial.printf("Time: %lduS\n", micros()-startMicros);
+    Serial.printf("Return code from inflate: %ld\n", zlib_rc);
+
+    /* Waveform spec:
+    int64 big-endian - number of samples
+    int64 big-endian - number of samples again (don't know why)
+    double big-endian - number of samples per waveform point
+    BEGIN repeated section *  number of samples
+    uint8 - low-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - medium-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - high-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - low-frequency waveform opacity, 0 means invisible, 255 means opaque
+    uint8 - medium-frequency waveform opacity, 0 means invisible, 255 means opaque
+    uint8 - high-frequency waveform opacity, 0 means invisible, 255 means opaque
+    END repeated section
+    uint8 - low-frequency waveform height from repeated section
+    uint8 - medium-frequency waveform height from repeated section
+    uint8 - high-frequency waveform height from repeated section
+    uint8 - low-frequency waveform opacity from repeated section
+    uint8 - medium-frequency waveform opacity from repeated section
+    uint8 - high-frequency waveform opacity from repeated section
+    There may be extra junk data after this point - it can be ignored
+    */
+
+    //Extract sampleCount
+    memcpy(&sampleCount, uncompressedBuffer, 8);
+    sampleCount = __builtin_bswap64(sampleCount);
+    Serial.printf("sampleCount: %" PRId64 "\n", sampleCount);
+
+    //Extract samplesPerWaveformPoint
+    union { char b[8]; double numSamplesPerWaveformPoint; };
+
+    Serial.println();
+    //Copy bytes for double into union
+    for (uint8_t i = 16; i < 24; i++) {
+        b[23 - i] = uncompressedBuffer[i];
+  
+    }
+
+    Serial.printf("numSamplesPerWaveformPoint: %lf\n", numSamplesPerWaveformPoint);
+
+    //Create data arrays - lo med high samples, lo med high opa
+    for (int8_t i = 0; i < 6; i++) {
+      waveSampleData[i] = (uint8_t *)malloc(sampleCount);
+    }
+    
+    //Fill 'em up!
+    float heightRatio = (float)chartHeight / 255.00;
+    uint32_t index = 0;
+    
+    for (uint32_t i = 24; i < sampleCount * 6; i+= 6) {
+      for (uint8_t j = 0; j < 6; j++) {
+        if ( j < 3) {
+            //Sample data
+            waveSampleData[j][index] = uncompressedBuffer[i + j] * heightRatio * waveformUserGain[j]; //Scale the waveform height
+          } else {
+            //Opacity data
+            waveSampleData[j][index] = uncompressedBuffer[i + j];
+          }     
+      }
+      index++;
+    }
+    free(uncompressedBuffer);
+    free(highResBuffer);
+    sqlite3_close(pdb);
+    fileSize = 0;
+    uncompressedSize = 0;
+
+  }
+
+  //Overview data
+  sqlite3_finalize(stmt);
+
+  const char *sqlOverviewData = "SELECT overviewWaveFormData FROM PerformanceData WHERE trackId = ?";
+
+  if (sqlite3_prepare_v2(mdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
+    return false;
+  }
+  Serial.println("sqlite3_prepare_v2");
+
+  sqlite3_bind_int(stmt, 1, track_id);
+  Serial.println("sqlite3_bind_int");
+
+  //sqlite3_step(stmt);
+  //if(sqlite3_step(stmt) != SQLITE_OK){
+    //return false;
+  //}
+  Serial.println(sqlite3_step(stmt));
+
+  const void * OverViewBlobData = sqlite3_column_blob(stmt, 0);
+  fileSize = sqlite3_column_bytes(stmt, 0);
+  //Convert the data
+
+  //sqlite3_finalize(stmt);
+  Serial.printf("Starting inflate % bytes\n",fileSize);
+
+  uint8_t * overviewBuffer = (uint8_t *)malloc(fileSize);
+  if (overviewBuffer) {
+    Serial.println("we have a buffer");
+    memcpy(overviewBuffer, OverViewBlobData, fileSize);
+    uint32_t uncompressedSize = 0;
+    uint8_t * uncompressedBuffer;
+    //Read uncompressed size (account for endian)
+    memcpy(&uncompressedSize, overviewBuffer, 4);
+    uncompressedSize = __builtin_bswap32(uncompressedSize);
+    Serial.printf("File size: %ld, Uncompressed size: %ld\n", fileSize, uncompressedSize);
+
+    //Allocate output buffers
+    uncompressedBuffer = (uint8_t *)malloc(uncompressedSize);
+    //Do it
+    Serial.printf("Starting to Inflate.\n");
+    uint64_t startMicros = micros();
+
+    uint64_t zlib_rc = inflate_zlib((const unsigned char *)overviewBuffer+4, (uint64_t)fileSize, (unsigned char *)uncompressedBuffer, (uint64_t)uncompressedSize);
+    
+    Serial.printf("Time: %lduS\n", micros()-startMicros);
+    Serial.printf("Return code from inflate: %ld\n", zlib_rc);
+
+    /* OverviwWaveform spec:
+    int64 big-endian - number of samples in overview waveform, always 1024
+    int64 big-endian - number of samples in overview waveform again (don't know why), always 1024
+    double big-endian - number of samples per waveform point
+    BEGIN repeated section * number of samples
+    uint8 - low-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - medium-frequency waveform height, 0 means silence, 255 means max volume
+    uint8 - high-frequency waveform height, 0 means silence, 255 means max volume
+    END repeated section
+    uint8 - maximum low-frequency waveform height from repeated section
+    uint8 - maximum medium-frequency waveform height from repeated section
+    uint8 - maximum high-frequency waveform height from repeated section
+    There may be extra junk data after this point - it can be ignored 
+    */
+
+    //Extract sampleCount
+    
+    memcpy(&overviewSampleCount, uncompressedBuffer, 8);
+    overviewSampleCount = __builtin_bswap64(overviewSampleCount);
+    Serial.printf("overViewWaveSample: %" PRId64 "\n", overviewSampleCount);
+
+
+    //Extract samplesPerWaveformPoint
+    union { char b[8]; double numSamplesPerWaveformPoint; };
+
+    //Copy bytes for double into union
+    for (uint8_t i = 16; i < 24; i++) {
+        b[23 - i] = uncompressedBuffer[i];
+    }
+    Serial.printf("numSamplesPerWaveformPoint: %lf\n", numSamplesPerWaveformPoint);
+    //Create data arrays - lo med high samples, lo med high opa
+    for (int8_t i = 0; i < 3; i++) {
+      overViewWaveSampleData[i] = (uint8_t *)malloc(overviewSampleCount);
+    }
+    Serial.println("Allocated sample arrays");
+
+    //Fill 'em up!
+    // Scale waveform height from 255 to overviewChartHeight
+    float heightRatio = (float)overviewChartHeight / 255.0;
+    float scaleFactor = (float)1024 / 800; // 1.28
+
+    uint32_t index = 0;
+    for (uint32_t i = 0; i < 800; i++) {
+        float srcIndex = i * scaleFactor;
+        uint32_t idx = (uint32_t)srcIndex;
+        float frac = srcIndex - idx;
+
+        for (uint8_t j = 0; j < 3; j++) {
+            uint8_t v1 = uncompressedBuffer[(idx * 3) + j];
+            
+            // Fix: Bounds checking for interpolation
+            uint8_t v2;
+            if (idx + 1 < 1024) {  // Assuming 1024 is your source buffer size
+                v2 = uncompressedBuffer[((idx + 1) * 3) + j];
+            } else {
+                v2 = v1; // Use same value if at boundary
+            }
+
+            float interpolatedValue = v1 + (frac * (v2 - v1));
+            
+            // Fix: Add proper rounding for integer conversion
+            float finalValue = interpolatedValue * heightRatio * waveformUserGain[j];
+            overViewWaveSampleData[j][index] = (uint8_t)(finalValue + 0.5f); // Round to nearest
+            
+            //Serial.printf("value[%d]: %d (from %.2f)\n", j, overViewWaveSampleData[j][index], finalValue);
+        }
+        index++;
+    }   
+
+    
+    
+    free(uncompressedBuffer);
+    free(overviewBuffer);
+    fileSize = 0;
+    uncompressedSize = 0;
+    sqlite3_close(mdb);
+
+  }
+  return true;
+}
+
+
+GlobalBeatLUT globalBeats = {0};
+
+bool extractBeatgridData(int track_id, Beatgrid *beatgrid) {
+    Serial.printf("Starting to extract beatgrid for track_id %d \n", track_id);
+    sqlite3_open("databases/m.db", &mdb);
+    
+    // Clear the beatgrid structure
+    memset(beatgrid, 0, sizeof(Beatgrid));
+    
+    sqlite3_stmt *stmt;
+    const char *sqlBeatData = "SELECT beatData FROM PerformanceData WHERE trackId = ?";
+    if (sqlite3_prepare_v2(mdb, sqlBeatData, -1, &stmt, NULL) != SQLITE_OK) {
+        Serial.println("Failed to prepare beatgrid query");
+        return false;
+    }
+    
+    sqlite3_bind_int(stmt, 1, track_id);
+    
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        Serial.println("No beatgrid data found");
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    const void *beatBlobData = sqlite3_column_blob(stmt, 0);
+    int beatFileSize = sqlite3_column_bytes(stmt, 0);
+    
+    if (beatFileSize == 0) {
+        Serial.println("Empty beatgrid data");
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    
+    Serial.printf("Beatgrid blob size: %d bytes\n", beatFileSize);
+
+    // Copy blob data to buffer
+    uint8_t *beatBuffer = (uint8_t *)malloc(beatFileSize);
+    if (!beatBuffer) {
+        Serial.println("Failed to allocate beatgrid buffer");
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    
+    memcpy(beatBuffer, beatBlobData, beatFileSize);
+    sqlite3_finalize(stmt);
+
+    // Extract uncompressed size (first 4 bytes, big-endian)
+    uint32_t beatUncompressedSize;
+    memcpy(&beatUncompressedSize, beatBuffer, 4);
+    beatUncompressedSize = __builtin_bswap32(beatUncompressedSize);
+    Serial.printf("Beatgrid uncompressed size: %u\n", beatUncompressedSize);
+
+    // Allocate buffer for uncompressed data
+    uint8_t *uncompressedBuffer = (uint8_t *)malloc(beatUncompressedSize);
+    if (!uncompressedBuffer) {
+        Serial.println("Failed to allocate uncompressed beatgrid buffer");
+        free(beatBuffer);
+        return false;
+    }
+
+    // Decompress beatgrid data using your inflate function
+    Serial.println("Decompressing beatgrid data...");
+    uint64_t startMicros = micros();
+    
+    // Use your inflate function (same pattern as waveform)
+    uint64_t inflate_rc = inflate_zlib((const unsigned char *)beatBuffer + 4, 
+                                      (uint64_t)(beatFileSize - 4), 
+                                      (unsigned char *)uncompressedBuffer, 
+                                      (uint64_t)beatUncompressedSize);
+    
+    Serial.printf("Beatgrid decompression time: %lluuS\n", micros() - startMicros);
+    Serial.printf("Beatgrid inflate return code: %llu\n", inflate_rc);
+    
+    free(beatBuffer);
+    
+    if (inflate_rc != beatUncompressedSize) {
+        Serial.println("Beatgrid decompression failed");
+        free(uncompressedBuffer);
+        return false;
+    }
+
+    // Parse beatgrid data according to spec
+    uint32_t offset = 0;
+ 
+    // Extract sample rate (double big-endian)
+    union { char b[8]; double sampleRate; } srUnion;
+    for (uint8_t i = 0; i < 8; i++) {
+        srUnion.b[7 - i] = uncompressedBuffer[offset + i];
+    }
+    //beatgrid->sampleRate = srUnion.sampleRate;
+    offset += 8;
+    //Serial.printf("Sample rate: %lf\n", beatgrid->sampleRate);
+    Serial.printf("Sample rate: %lf\n", srUnion.sampleRate);
+
+    // Extract number of samples (double big-endian)
+    union { char b[8]; double numSamples; } nsUnion;
+    for (uint8_t i = 0; i < 8; i++) {
+        nsUnion.b[7 - i] = uncompressedBuffer[offset + i];
+    }
+    beatgrid->numSamples = nsUnion.numSamples;
+    offset += 8;
+    Serial.printf("Number of samples: %lf\n", beatgrid->numSamples);
+
+    // Extract beatgrid exists flag
+    beatgrid->hasGrid = uncompressedBuffer[offset];
+    offset += 1;
+    Serial.printf("Has beatgrid: %d\n", beatgrid->hasGrid);
+
+    if (!beatgrid->hasGrid) {
+        Serial.println("Track has no beatgrid");
+        free(uncompressedBuffer);
+        return true; // Not an error, just no beatgrid
+    }
+
+    // Parse default beatgrid first
+    Serial.println("Parsing default beatgrid...");
+    
+    // Extract number of markers (int64 big-endian)
+    int64_t defaultMarkerCount;
+    memcpy(&defaultMarkerCount, uncompressedBuffer + offset, 8);
+    defaultMarkerCount = __builtin_bswap64(defaultMarkerCount);
+    offset += 8;
+    Serial.printf("Default markers: %lld\n", defaultMarkerCount);
+
+    // Skip default beatgrid markers (we'll use adjusted beatgrid)
+    offset += defaultMarkerCount * (8 + 8 + 4 + 4); // double + int64 + uint32 + uint32 (all little-endian)
+
+    // Parse adjusted beatgrid
+    Serial.println("Parsing adjusted beatgrid...");
+    
+    // Extract number of markers (int64 big-endian)
+    int64_t adjustedMarkerCount;
+    memcpy(&adjustedMarkerCount, uncompressedBuffer + offset, 8);
+    adjustedMarkerCount = __builtin_bswap64(adjustedMarkerCount);
+    offset += 8;
+    Serial.printf("Adjusted markers: %lld\n", adjustedMarkerCount);
+
+    beatgrid->markerCount = (int)adjustedMarkerCount;
+    
+    if (beatgrid->markerCount <= 0) {
+        Serial.println("No valid beatgrid markers found");
+        free(uncompressedBuffer);
+        return false;
+    }
+
+    // Allocate memory for markers
+    beatgrid->markers = (BeatMarker *)malloc(beatgrid->markerCount * sizeof(BeatMarker));
+    if (!beatgrid->markers) {
+        Serial.println("Failed to allocate memory for beat markers");
+        free(uncompressedBuffer);
+        return false;
+    }
+
+    // Extract markers (all little-endian)
+    for (int i = 0; i < beatgrid->markerCount; i++) {
+        // Sample offset (double little-endian)
+        union { char b[8]; double sampleOffset; } soUnion;
+        memcpy(soUnion.b, uncompressedBuffer + offset, 8);
+        beatgrid->markers[i].sampleOffset = soUnion.sampleOffset;
+        offset += 8;
+
+        // Beat index (int64 little-endian) 
+        memcpy(&beatgrid->markers[i].beatIndex, uncompressedBuffer + offset, 8);
+        offset += 8;
+
+        // Beats until next marker (uint32 little-endian)
+        memcpy(&beatgrid->markers[i].beatsUntilNext, uncompressedBuffer + offset, 4);
+        offset += 4;
+
+        // Unknown constant (uint32 little-endian)
+        memcpy(&beatgrid->markers[i].unknown, uncompressedBuffer + offset, 4);
+        offset += 4;
+
+        Serial.printf("Marker %d: Sample=%lf, Beat=%lld, BeatsUntil=%u\n", 
+                     i, beatgrid->markers[i].sampleOffset, 
+                     beatgrid->markers[i].beatIndex, 
+                     beatgrid->markers[i].beatsUntilNext);
+    }
+
+    // Calculate BPM
+    if (beatgrid->markerCount >= 2) {
+        double firstSample = beatgrid->markers[0].sampleOffset;
+        double lastSample = beatgrid->markers[beatgrid->markerCount - 1].sampleOffset;
+        int64_t firstBeat = beatgrid->markers[0].beatIndex;
+        int64_t lastBeat = beatgrid->markers[beatgrid->markerCount - 1].beatIndex;
+        
+        double bpm = beatgrid->sampleRate * 60.0 * (double)(lastBeat - firstBeat) / (lastSample - firstSample);
+        Serial.printf("Calculated BPM: %lf\n", bpm);
+    }
+
+    // Set samples per waveform point (use the same value from waveform data)
+    beatgrid->samplesPerWaveformPoint = 420; // From your waveform extraction
+
+    free(uncompressedBuffer);
+    sqlite3_close(mdb);
+    Serial.println("Beatgrid extraction completed successfully");
+    return true;
+}
+
+FLASHMEM void drawOverviewCanvas()
+{
+  //Clear overview canvas
+  memset(overviewCanvasBuffer, 0, sizeof(overviewCanvasBuffer));
+
+  uint32_t index = 0;
+  for (uint16_t x = 0; x < chartWidth; x++) {
+    for (uint8_t i = 0; i < 3; i++) {
+      drawFastVLine16Bit(x, overviewChartHeight - (overViewWaveSampleData[i][index] * overviewChartHeightRatio), (overViewWaveSampleData[i][index] * overviewChartHeightRatio), waveformColors[i], overviewCanvasBuffer, chartWidth);
+    }
+    //index += sampleStep;
+    index++;
+  }
+  //Invalidate canvas, as this is updated done rarely
+  //lv_obj_invalidate(static_waveform_canvas);
+  //updateWaveformOffset(waveformOffset);
+}
+
+void create_top_container(Track * track) {
     // Main top container
     top_container = lv_obj_create(main_screen);
     lv_obj_set_size(top_container, SCREEN_WIDTH, 160);
@@ -83,7 +598,7 @@ void create_top_container(void) {
 
     // Title label (left side)
     title_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(title_label, "RELEASE YOURSELF (ORIGINAL CLUB MIX)");
+    lv_label_set_text(title_label, track->title);
     lv_obj_set_style_text_color(title_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(title_label, &exo2_20, 0);
     lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 5);
@@ -91,7 +606,7 @@ void create_top_container(void) {
 
     // BPM label (right side)
     bpm_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(bpm_label, "125");
+    lv_label_set_text_fmt(bpm_label,"%.1f", track->bpmAnalyzed);
     lv_obj_set_style_text_color(bpm_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bpm_label, &exo2_32, 0);
     lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
@@ -99,10 +614,11 @@ void create_top_container(void) {
 
     // Key label (below BPM)
     key_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(key_label, "K");
-    lv_obj_set_style_text_color(key_label, COLOR_TEXT_SECONDARY, 0);
+    lv_label_set_text(key_label, (char*)getKey(atoi(track->musical_key)));
     lv_obj_set_style_text_font(key_label, &exo2_20, 0);
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
+    int key_numeric = atoi(track->musical_key); 
+    lv_obj_set_style_text_color(key_label, getKeyColor(key_numeric), LV_PART_MAIN | LV_STATE_DEFAULT);
 
 
     lv_obj_t *progress_line = lv_obj_create(title_bpm_container);
@@ -113,7 +629,7 @@ void create_top_container(void) {
     
     // Artist label (below title)
     artist_label = lv_label_create(top_container);
-    lv_label_set_text(artist_label, "RENE AMESZ");
+    lv_label_set_text(artist_label, track->artist);
     lv_obj_set_style_text_color(artist_label, COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(artist_label, &exo2_20, 0);
     lv_obj_set_pos(artist_label, 0, 40);
@@ -183,22 +699,15 @@ void create_middle_container(void) {
     
 
     // Dynamic waveform canvas
-    waveform_canvas = lv_canvas_create(middle_container);
-    lv_obj_set_size(waveform_canvas, SCREEN_WIDTH - 20, 140);
-    lv_obj_center(waveform_canvas);
-    lv_obj_clear_flag(waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    daynamic_waveform_canvas = lv_canvas_create(middle_container);
+    lv_obj_set_size(daynamic_waveform_canvas, SCREEN_WIDTH, 164);
+    lv_obj_center(daynamic_waveform_canvas);
+    lv_obj_clear_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
 
     // Create canvas buffer (16-bit RGB565)
-    EXTMEM static lv_color_t canvas_buf[800 * 160];
-    lv_canvas_set_buffer(waveform_canvas, canvas_buf, 800, 160, LV_COLOR_FORMAT_RGB565);
-    lv_canvas_fill_bg(waveform_canvas, COLOR_BG, LV_OPA_COVER);
 
-    // Draw sample waveform using custom function
-    for (int i = 0; i < 800; i += 8) {
-        int y_start = 35 - (i % 20);
-        int y_end = 35 + (i % 20);
-        draw_vertical_line(canvas_buf, 800, 160, i, y_start, y_end, COLOR_WAVEFORM_HIGH);
-    }
+    lv_canvas_set_buffer(daynamic_waveform_canvas, canvasBuffer, 800, 164, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_fill_bg(daynamic_waveform_canvas, COLOR_BG, LV_OPA_COVER);
 }
 
 void create_bottom_container(void) {
@@ -227,20 +736,12 @@ void create_bottom_container(void) {
 
     // Static waveform canvas
     static_waveform_canvas = lv_canvas_create(static_wave_container);
-    lv_obj_set_size(static_waveform_canvas, SCREEN_WIDTH, 60);
+    lv_obj_set_size(static_waveform_canvas, SCREEN_WIDTH, 64);
     lv_obj_center(static_waveform_canvas);
     
+    lv_canvas_set_buffer(static_waveform_canvas, overviewCanvasBuffer, 800, 64, LV_COLOR_FORMAT_RGB565);
+    //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
 
-    EXTMEM static lv_color_t static_canvas_buf[800 * 60];
-    lv_canvas_set_buffer(static_waveform_canvas, static_canvas_buf, 800, 60, LV_COLOR_FORMAT_RGB565);
-    lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
-
-    // Draw static waveform overview using custom function
-    for (int i = 0; i < 800; i += 4) {
-        int y_start = 15 - (i % 10);
-        int y_end = 15 + (i % 10);
-        draw_vertical_line(static_canvas_buf, 800, 60, i, y_start, y_end, COLOR_WAVEFORM_LOW);
-    }
 
     // Cue buttons container
     lv_obj_t *cue_container = lv_obj_create(bottom_container);
@@ -269,9 +770,9 @@ void create_bottom_container(void) {
     }
 }
 
-void dj_ui_init(void) {
+void dj_ui_init(Track * track) {
     // Create main screen
-    main_screen = lv_obj_create(lv_screen_active());
+    main_screen = lv_obj_create(NULL);
     lv_obj_set_size(main_screen, SCREEN_WIDTH, SCREEN_HEIGHT);
     lv_obj_set_style_bg_color(main_screen, COLOR_BG, 0);
     lv_obj_set_style_border_width(main_screen, 0, 0);
@@ -286,9 +787,31 @@ void dj_ui_init(void) {
     //lv_scr_load(main_screen);
 
     // Create all containers
-    create_top_container();
+    create_top_container(track);
     create_middle_container();
     create_bottom_container();
+
+    //sqlite3_open("databases/p.db", &pdb);
+    loadWaveformData(track->track_id);
+    Beatgrid * beatgrid = (Beatgrid*)malloc(sizeof(Beatgrid));
+    extractBeatgridData(track->track_id, beatgrid);
+    updateWaveformOffset(play_adr);   
+    all_long = sampleCount;
+    //drawOverviewCanvas();
+    playFile = SD.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
+    if (!playFile) {
+    Serial.printf("Trying to open: %s\n", track->path);
+      Serial.println("Failed to open audio file");
+    
+    }
+    else{
+      Serial.println("Audio file opened");
+      is_playing = true;
+      I2S1_TCSR |= 1<<8;
+    }
+
+    
+
 }
 
 // Update functions for dynamic content
@@ -314,53 +837,81 @@ void update_progress_bars(int active_bar) {
     }
 }
 
-void draw_vertical_line(lv_color_t *buf, int buf_width, int buf_height, int x, int y1, int y2, lv_color_t color) {
-    if (x < 0 || x >= buf_width) return;
-    
-    // Ensure y1 <= y2
-    if (y1 > y2) {
-        int temp = y1;
-        y1 = y2;
-        y2 = temp;
-    }
-    
-    // Clamp y values to buffer bounds
-    if (y1 < 0) y1 = 0;
-    if (y2 >= buf_height) y2 = buf_height - 1;
-    
-    // Draw vertical line
-    for (int y = y1; y <= y2; y++) {
-        buf[y * buf_width + x] = color;
+FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
+{
+  uint16_t *pBuf = buffer + (x / 2) + (y * stride);
+  uint16_t *pBufEnd;
+
+  pBufEnd = pBuf + (h * stride);
+    while (pBuf < pBufEnd) {
+      //Even - Put in high bytes, or with low bytes
+      *pBuf = color;
+      pBuf += stride;
     }
 }
 
-// Waveform update function (you'll implement with actual audio data)
-void update_waveform(float *audio_data, int data_length) {
-    // Clear canvas
-    lv_canvas_fill_bg(waveform_canvas, COLOR_BG, LV_OPA_COVER);
-    
-    // Draw new waveform data
-    lv_draw_line_dsc_t line_dsc;
-    lv_draw_line_dsc_init(&line_dsc);
-    line_dsc.width = 2;
-    
-    for (int i = 0; i < data_length && i < 780; i++) {
-        lv_point_t points[2];
-        points[0].x = i;
-        points[0].y = 70;
-        points[1].x = i;
-        
-        // Use audio data amplitude
-        int amplitude = (int)(audio_data[i] * 60);
-        points[1].y = 70 + amplitude;
-        
-        // Color based on amplitude
-        if (abs(amplitude) > 30) {
-            line_dsc.color = COLOR_WAVEFORM_HIGH;
-        } else {
-            line_dsc.color = COLOR_WAVEFORM_LOW;
-        }
-        
-        //lv_canvas_draw_line(waveform_canvas, points, 2, &line_dsc);
+FASTRUN uint16_t fastBlend( uint32_t fg, uint32_t bg, uint8_t opa)
+{
+    //Dont blend if canvas background, or opa is max
+    if ((bg == 0x0000) || (fg == 0x0000) || (opa == 0xFF)) {
+      return fg;
     }
+
+    opa = ( opa + 4 ) >> 3;
+    bg = (bg | (bg << 16)) & 0b00000111111000001111100000011111;
+    fg = (fg | (fg << 16)) & 0b00000111111000001111100000011111;
+    uint32_t result = ((((fg - bg) * opa) >> 5) + bg) & 0b00000111111000001111100000011111;
+    return (uint16_t)((result >> 16) | result);
+}
+
+FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa)
+{
+  if (opa > 0) {
+    //Calculate increment, simple lerp between two points
+    float delta = (p2 - p1) / slopePoints;
+
+    for (uint16_t i = 0; i < slopePoints; i++) {
+      uint8_t height = p1 + (i * delta);
+      drawFastVLine16Bit((x * slopePoints) + i, (chartHeight - height) / 2, height, color, buf, chartWidth);
+    }
+  }
+}
+
+int DynamicWaveformZOOM =1;
+FASTRUN void updateWaveformOffset(uint32_t waveformOffset)
+{
+  //Clear canvas
+  int offset   = 800 * 82; // start of row 82
+  memset(canvasBuffer, 0, chartWidth * chartHeight * 2);
+  memset((canvasBuffer + offset), 0xFFFF, 1600);
+  uint32_t pos = (waveformOffset/420) / DynamicWaveformZOOM; 
+  /*If zoom is bigger than 1, need to find the highest value in between each jump*/
+  //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
+
+  
+  //Draw waveforms - expanded, interpolated
+  for (uint16_t x = 0; x < chartWidth; x++) {
+    uint32_t index = DynamicWaveformZOOM * (x + pos - (chartWidth/2));
+    if (index < 0 || index >= sampleCount) continue;
+    for (uint8_t i = 0; i < 3; i++) {
+        uint16_t sampleValue = waveSampleData[i][index];
+        
+        // Using your centering logic:
+        // Assuming chartHeight is equivalent to WAVEFORM_HEIGHT
+        // and sampleValue is equivalent to amplitude (0-164 range)
+        int16_t y = (chartHeight / 2) - sampleValue;
+        int16_t h = (sampleValue)-1;
+        
+        uint8_t opa = waveSampleData[i + 3][index];
+        drawFastVLine16Bit(x, y, h, waveformColors[i], canvasBuffer, chartWidth);
+    }
+  }
+
+  //Draw mid-canvas line
+  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, canvasBuffer, chartWidth);
+  //lv_obj_invalidate(daynamic_waveform_canvas);
+  arm_dcache_flush_delete((void*)canvasBuffer, chartWidth * chartHeight * 2);
+  PXP_overlay_buffer((uint16_t*)canvasBuffer, 2, SCREEN_WIDTH, 164);
+  PXP_overlay_position(0, 158, 800, 322);
+  PXP_process();
 }
