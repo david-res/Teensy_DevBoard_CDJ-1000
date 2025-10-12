@@ -26,7 +26,7 @@ FLASHMEM void i2s_sync::set_audioClock(int nfact, int32_t nmult, uint32_t ndiv) 
       CCM_ANALOG_PLL_AUDIO &= ~CCM_ANALOG_PLL_AUDIO_BYPASS;//Disable Bypass
 }
 
-FLASHMEM static void i2s_sync::config_sai1()
+FLASHMEM void i2s_sync::config_sai1()
 {
   CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON);  
   //PLL:
@@ -89,6 +89,7 @@ FLASHMEM static void i2s_sync::config_sai1()
 
 }
 
+
 FLASHMEM void i2s_sync::begin(CBF audio_irq){
       config_sai1();
       attachInterruptVector(IRQ_SAI1, audio_irq);
@@ -97,41 +98,5 @@ FLASHMEM void i2s_sync::begin(CBF audio_irq){
       //Serial.println("Audio started");
 }
 
-FLASHMEM void i2s_sync::setSampleRate(float fs){
-            // ---- Stop I²S TX/RX before changing clock dividers ----
-      I2S1_TCSR &= ~I2S_TCSR_TE;  // Disable TX
-      I2S1_RCSR &= ~I2S_RCSR_RE;  // Disable RX
-      I2S1_TCSR &= ~I2S_TCSR_BCE; // Disable bit clock
-      I2S1_RCSR &= ~I2S_RCSR_BCE;
-
-      // ---- Calculate new PLL and divider values ----
-      int n1 = 4; // SAI1_CLK_PRED
-      int n2 = 1 + (24000000 * 27) / (fs * 256 * n1);
-
-      double C = ((double)fs * 256 * n1 * n2) / 24000000;
-      int c0 = (int)C;
-      int c2 = 10000;
-      int c1 = (int)(C * c2 - (c0 * c2));
-
-      // ---- Program new PLL fractional values ----
-      set_audioClock(c0, c1, c2);
-
-      // ---- Update CCM clock dividers ----
-      CCM_CS1CDR = (CCM_CS1CDR & ~(CCM_CS1CDR_SAI1_CLK_PRED_MASK | CCM_CS1CDR_SAI1_CLK_PODF_MASK))
-                  | CCM_CS1CDR_SAI1_CLK_PRED(n1 - 1)
-                  | CCM_CS1CDR_SAI1_CLK_PODF(n2 - 1);
-
-      // ---- Flush FIFOs to avoid leftover samples at old rate ----
-      I2S1_TCSR |= I2S_TCSR_FR; // FIFO reset TX
-      I2S1_RCSR |= I2S_RCSR_FR; // FIFO reset RX
-      I2S1_TCSR &= ~I2S_TCSR_FR;
-      I2S1_RCSR &= ~I2S_RCSR_FR;
-
-      // ---- Restart I²S ----
-      I2S1_TCSR |= I2S_TCSR_BCE; // Enable bit clock
-      I2S1_RCSR |= I2S_RCSR_BCE;
-      I2S1_TCSR |= I2S_TCSR_TE;  // Enable TX
-      I2S1_RCSR |= I2S_RCSR_RE;  // Enable RX
-}
 
 FLASHMEM void i2s_sync::stop(){}

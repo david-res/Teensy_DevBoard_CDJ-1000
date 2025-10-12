@@ -46,6 +46,10 @@ extern uint8_t lock_control;
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
 #define BUFFER_MEM DMAMEM //DMAMEM //EXTMEM //<blank for ITCM>
 
+extern EXTMEM_NOCACHE uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+
+extern DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
+
 
 const uint16_t chartWidth = 800;
 const uint16_t chartHeight = 164;
@@ -74,6 +78,8 @@ typedef struct {
     uint16_t track_id;
     uint8_t star_rating;
     char *musical_key;
+    double numberOfSamples;
+    double sampleRate;
 } Track;
 
 struct KeyInfo {

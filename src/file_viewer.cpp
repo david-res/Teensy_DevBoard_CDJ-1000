@@ -121,6 +121,7 @@ FLASHMEM void createListScreen(){
     }
 
     sqlite3_finalize(stmt);
+    //sqlite3_close(mdb);
 
     add_track_item(filesScreen, first_id);
     top_num = 1;
@@ -138,7 +139,7 @@ FLASHMEM void load_track(lv_event_t * e) {
         
         //waveformView(track);
         dj_ui_init(track);
-        lv_screen_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        lv_scr_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
     }
 }
 
@@ -158,6 +159,8 @@ Track *getTrackData(sqlite3 *db, int track_id) {
 
     if (sqlite3_prepare_v2(db, sqlTrack, -1, &stmt, NULL) != SQLITE_OK) {
         free(track);
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
         return NULL;
     }
 
@@ -190,6 +193,7 @@ Track *getTrackData(sqlite3 *db, int track_id) {
     }
     
     sqlite3_finalize(stmt);
+    sqlite3_close(db);
 
     track->track_id = track_id;
     // fileType, star_rating, musical_key not present in your table → keep NULL/0
@@ -218,8 +222,8 @@ void setFlexContainerProperties(lv_obj_t * cont, int32_t pad_row, int32_t pad_co
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_flex_flow(cont, flow);
 
-    lv_obj_remove_flag(cont, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_set_style_pad_hor(cont, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_row(cont, pad_row, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -427,14 +431,14 @@ FASTRUN static void update_scroll(lv_obj_t * obj)
     while(lv_obj_get_scroll_bottom(obj) > 600) {
         bottom_num -= 1;
         lv_obj_t * child = lv_obj_get_child(obj, -1);
-        lv_obj_delete(child);
+        lv_obj_del(child);
         lv_obj_update_layout(obj);
         LV_LOG_USER("Deleted bottom track ID: %" PRId32, bottom_num);
     }
     while(lv_obj_get_scroll_top(obj) > 600) {
         top_num += 1;
         lv_obj_t * child = lv_obj_get_child(obj, 0);
-        lv_obj_delete(child);
+        lv_obj_del(child);
         lv_obj_update_layout(obj);
         LV_LOG_USER("Deleted top track ID: %" PRId32, top_num);
     }
@@ -445,7 +449,7 @@ FASTRUN static void update_scroll(lv_obj_t * obj)
 
 FASTRUN static void scroll_cb(lv_event_t * e)
 {
-    lv_obj_t * obj = lv_event_get_target_obj(e);
+    lv_obj_t * obj = lv_event_get_target(e);
     update_scroll(obj);
 }
 

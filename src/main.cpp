@@ -7,7 +7,7 @@
 #include "dj_screen.h"
 #include <SDRAM_t4.h>
 #include "eLCDIF_t4.h"
-#include "FT5316.h"
+#include <Adafruit_FT6206.h>
 #include "inflate.h"
 #include "T4_PXP.h"
 
@@ -19,7 +19,7 @@ void SAI_IRQHandler(void);
 #define LCDDISP
 //#define REMDISP
 
-#define USE_PXP
+//#define USE_PXP
 
 //SdFat sd;
 FsFile perfDB;
@@ -45,7 +45,7 @@ EXTMEM  uint16_t PCM[206][8192][2];
  int16_t LR[2][4];
  float c0, c1, c2, c3, r0, r1, r2, r3;
  int32_t even1, even2, odd1, odd2;
-static float COEF[8] = {            //////optimal 2x
+float COEF[8] = {            //////optimal 2x
 0.45868970870461956,
 0.04131401926395584,
 0.48068024766578432,
@@ -93,15 +93,15 @@ eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1, 1};
 
 //const char* dbName = "Engine Library/Database2/p.db";
 
-EXTMEM uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+EXTMEM_NOCACHE uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t lcdBuffer2[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
 
 #ifdef USE_PXP
 
-EXTMEM uint16_t lvglBuffer1[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute__((aligned(64)));
-EXTMEM uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute__((aligned(64)));
+EXTMEM_NOCACHE uint16_t lvglBuffer1[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute__((aligned(64)));
+EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute__((aligned(64)));
 
 #endif
 
@@ -141,11 +141,13 @@ FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 #endif
 
 #ifdef LCDDISP
-lv_display_t * disp;
+static lv_disp_draw_buf_t disp_buf;
+static lv_disp_drv_t disp_drv;          /*A variable to hold the drivers. Must be static or global.*/
 volatile bool ps_framePending = false;
 #ifdef USE_PXP
-FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map){
-  if (lv_display_flush_is_last(disp)){
+FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
+  if (lv_disp_flush_is_last(&disp_drv)){
+    
         ps_framePending = true;
         // Set up PXP input: the small LVGL buffer portion
         PXP_input_buffer((uint8_t*)px_map, 2, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -155,7 +157,7 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
         PXP_process();
     }
     else{
-        lv_disp_flush_ready(disp);
+        lv_disp_flush_ready(&disp_drv);
     }
 }
 
@@ -163,21 +165,21 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
 FASTRUN void pxpCallback(){
   if(ps_framePending){
         // Calculate updated area size for cache flush
-        lv_disp_flush_ready(disp);
+        lv_disp_flush_ready(&disp_drv);
         ps_framePending = false;
     }
 }
 
 #else
 
-FASTRUN void my_disp_flush( lv_display_t *display, const lv_area_t *area, uint8_t * px_map){
-  if (lv_display_flush_is_last(disp)){
+FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
+  if (lv_disp_flush_is_last(&disp_drv)){
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
     lcd.setNextBufferAddress((uint16_t*)px_map);
     ps_framePending = true;
   }
   else{
-    lv_disp_flush_ready(disp);
+    lv_disp_flush_ready(&disp_drv);
   }
 }
 
@@ -185,7 +187,7 @@ FASTRUN void my_disp_flush( lv_display_t *display, const lv_area_t *area, uint8_
 FASTRUN void lcdCallback(){
   //ps_framePending = false;
   if(ps_framePending){
-    lv_disp_flush_ready(disp);
+    lv_disp_flush_ready(&disp_drv);
     ps_framePending = false;
   }
 }
@@ -204,65 +206,21 @@ void my_print( lv_log_level_t level, const char * buf )
 lv_indev_t * ts_indev;
 
 // Touch controller instance
-FT5316 touch(0x38, A8);
+Adafruit_FT6206 ctp = Adafruit_FT6206();
 
-// Touch state tracking
-static bool touch_pressed = false;
-static lv_point_t last_touch_point = {0, 0};
 
-void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data) {
+void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data) {
     // Check if there's a new touch event from interrupt
-    if (touch.hasNewTouch()) {
-        FT5316::TouchPoint point = touch.getTouch();
-        
-        if (point.touched) {
+    TS_Point p = ctp.getPoint();
+        if (ctp.touched()) {
             // Touch detected - map coordinates to 800x480 screen
             data->state = LV_INDEV_STATE_PRESSED;
-            data->point.x = point.x;
-            data->point.y = point.y;
-            
-            // Store last valid touch point
-            last_touch_point.x = point.x;
-            last_touch_point.y = point.y;
-            touch_pressed = true;
-            
+            data->point.x = p.x;
+            data->point.y = p.y;
         } else {
             // Touch released
             data->state = LV_INDEV_STATE_RELEASED;
-            data->point.x = last_touch_point.x;
-            data->point.y = last_touch_point.y;
-            touch_pressed = false;
         }
-        
-        // Clear the interrupt flag
-        touch.clearTouchFlag();
-        
-    } else {
-        // No new interrupt event
-        if (touch_pressed && touch.isTouched()) {
-            // Continue with current touch (drag/hold)
-            FT5316::TouchPoint point = touch.getTouch();
-            if (point.touched) {
-                data->state = LV_INDEV_STATE_PRESSED;
-                data->point.x = point.x;
-                data->point.y = point.y;
-                last_touch_point.x = point.x;
-                last_touch_point.y = point.y;
-            } else {
-                // Touch was released
-                data->state = LV_INDEV_STATE_RELEASED;
-                data->point.x = last_touch_point.x;
-                data->point.y = last_touch_point.y;
-                touch_pressed = false;
-            }
-        } else {
-            // No touch detected
-            data->state = LV_INDEV_STATE_RELEASED;
-            data->point.x = last_touch_point.x;
-            data->point.y = last_touch_point.y;
-            touch_pressed = false;
-        }
-    }
 }
 #endif
 
@@ -286,110 +244,10 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
   }
 }
 
-void readWaveFormBlob(){
-  sqlite3* db;
-  Serial.println("---- testSQLite - sqlite3_open - begin ----");
-  int rc = sqlite3_open("Engine Library/Database2/p.db", &db);
-  checkSQLiteError(db, rc);
-  Serial.println("---- testSQLite - sqlite3_open - end ----");
-  
-  if (rc == SQLITE_OK)
-  {
-    
-    Serial.println("---- testSQLite - sqlite3_prepare_v2 - begin ----");
-    sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db, "SELECT highResolutionWaveFormData FROM PerformanceData WHERE id =?", -1, &stmt, 0);
-    checkSQLiteError(db, rc);
 
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-      const void *blobData = sqlite3_column_blob(stmt, 0);
-      int blobSize = sqlite3_column_bytes(stmt, 0);
-
-      if (blobData && blobSize > 0) {
-          // Allocate memory to hold the BLOB data
-          uint8_t *buffer = (uint8_t *)malloc(blobSize);
-          if (buffer) {
-              memcpy(buffer, blobData, blobSize);
-              Serial.printf("BLOB data: %d Bytes copied to buffer.\n ", blobSize);
-
-            // START ZLIB
-              uint32_t uncompressedSize = 0;
-              uint8_t * uncompressedBuffer;
-              //Read uncompressed size (account for endian)
-              memcpy(&uncompressedSize, buffer, 4);
-              uncompressedSize = __builtin_bswap32(uncompressedSize);
-              Serial.printf("File size: %ld, Uncompressed size: %ld\n", blobSize, uncompressedSize);
-
-              //Allocate output buffers
-              uncompressedBuffer = (uint8_t *)malloc(uncompressedSize); // Add 8 bytes due to waveform_turbo requirements
-
-          
-              //Do it
-              Serial.printf("Starting to Inflate.\n");
-              uint64_t startMicros = micros();
-
-              uint64_t zlib_rc = inflate_zlib((const unsigned char *)buffer+4, (uint64_t)blobSize, (unsigned char *)uncompressedBuffer, (uint64_t)uncompressedSize);
-              
-              Serial.printf("Time: %lduS\n", micros()-startMicros);
-              Serial.printf("Return code from inflate: %ld\n", zlib_rc);
-
-              /* Waveform spec:
-              int64 big-endian - number of samples
-              int64 big-endian - number of samples again (don't know why)
-              double big-endian - number of samples per waveform point
-              BEGIN repeated section *  number of samples
-              uint8 - low-frequency waveform height, 0 means silence, 255 means max volume
-              uint8 - medium-frequency waveform height, 0 means silence, 255 means max volume
-              uint8 - high-frequency waveform height, 0 means silence, 255 means max volume
-              uint8 - low-frequency waveform opacity, 0 means invisible, 255 means opaque
-              uint8 - medium-frequency waveform opacity, 0 means invisible, 255 means opaque
-              uint8 - high-frequency waveform opacity, 0 means invisible, 255 means opaque
-              END repeated section
-              uint8 - low-frequency waveform height from repeated section
-              uint8 - medium-frequency waveform height from repeated section
-              uint8 - high-frequency waveform height from repeated section
-              uint8 - low-frequency waveform opacity from repeated section
-              uint8 - medium-frequency waveform opacity from repeated section
-              uint8 - high-frequency waveform opacity from repeated section
-              There may be extra junk data after this point - it can be ignored
-              */
-
-              //Extract sampleCount
-              int64_t sampleCount=0;
-              memcpy(&sampleCount, uncompressedBuffer, 8);
-              sampleCount = __builtin_bswap64(sampleCount);
-              Serial.printf("sampleCount: %" PRId64 "\n", sampleCount);
-              free(buffer);
-
-            // END ZLIB
-
-
-      
-      } else {
-              Serial.println("Error: Memory allocation failed.");
-          }
-      } else {
-          Serial.println("No data or empty BLOB.");
-      }
-
-      sqlite3_finalize(stmt);
-    } else {
-      Serial.println("Query failed or no row found.");
-      checkSQLiteError(db, rc);
-    }
-
-  }
-
-}
-
-
-
+LV_FONT_DECLARE(exo2_18)
 void setup()
 {
-  //setupSerial(115200);
-  //delaySetup(3);
-
   Serial.begin (115200);
   while (!Serial) {};
   delay(1000);
@@ -420,12 +278,12 @@ void setup()
   pinMode(A0, OUTPUT);
   analogWriteFrequency(A0, 200);
   analogWrite(A0, 0);
-  if (touch.begin()) {
+  if (ctp.begin(20)) {
         Serial.println("FT5316 touch controller initialized");
     }
   lcd.begin(BUS_16BIT, WORD_16BIT, lcd_config);
   #ifndef USE_PXP
-  //lcd.onCompleteCallback(lcdCallback);
+  lcd.onCompleteCallback(lcdCallback);
   #endif
   lcd.setCurrentBufferAddress(lcdBuffer1);
   lcd.setNextBufferAddress(lcdBuffer1);
@@ -446,26 +304,35 @@ void setup()
   Serial.println("LCD ON");
 
   #endif
-
   lv_init();
-  disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
-  lv_display_set_flush_cb(disp, my_disp_flush);
-  #ifdef USE_PXP
-  lv_display_set_buffers(disp, lvglBuffer1, lvglBuffer2, SCREEN_WIDTH * SCREEN_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
+  lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
+  disp_drv.draw_buf = &disp_buf;          /*Set an initialized buffer*/
+  disp_drv.flush_cb = my_disp_flush;        /*Set a flush callback to draw to the display*/
+  disp_drv.hor_res = 800;                 /*Set the horizontal resolution in pixels*/
+  disp_drv.ver_res = 480;                 /*Set the vertical resolution in pixels*/
+  disp_drv.direct_mode = 1;
+  disp_drv.full_refresh = 0;
   
-  #else
-  lv_display_set_buffers(disp, lcdBuffer1, lcdBuffer2, SCREEN_WIDTH * 480 * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
-  #endif
 
-  ts_indev = lv_indev_create();
-  lv_indev_set_type(ts_indev, LV_INDEV_TYPE_POINTER);
-  lv_indev_set_read_cb(ts_indev, touch_read_cb);
+    
+  #ifdef USE_PXP
+  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
+  #else
+  lv_disp_draw_buf_init(&disp_buf, lcdBuffer1 ,NULL, 800*480);    
+  #endif
+  lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
+
+  static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init( &indev_drv );
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    //indev_drv.read_cb = touch_glass_input;
+    indev_drv.read_cb = touch_read_cb;
+    lv_indev_drv_register( &indev_drv );
 
   #if LV_USE_LOG != 0
     lv_log_register_print_cb(my_print);
     #endif
 
-  lv_tick_set_cb(millis);
   analogWrite(A0, 220);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
   audio.begin(&SAI_IRQHandler);
@@ -476,10 +343,20 @@ void setup()
   if (resultBegin == SQLITE_OK)
   {
     Serial.println("T41SQLite::getInstance().begin() succeded!");
+    /*
+    lv_obj_t * btn = lv_btn_create(lv_scr_act());
+    lv_obj_set_size(btn, 120, 50);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t * label = lv_label_create(btn);
+    lv_label_set_text(label, "Play");
+    lv_obj_set_style_text_font(label, &exo2_18, 0);
+    lv_obj_center(label);
+    */
 
     //readWaveFormBlob();
       createListScreen();
-      lv_screen_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+      lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
       //dj_ui_init();
       
     /*
@@ -519,9 +396,11 @@ void loop()
     static uint32_t play_adr_temp =0;
     if ((play_adr_temp/420) != (play_adr/420)) {
       //Serial.printf("Play adr: %lu\n", play_adr);
-      updateWaveformOffset(play_adr);
+      updateDynamicWaveform(play_adr);
+      updatePlaybackPosition((play_adr/420)*799/all_long);
       play_adr_temp = play_adr; 
     }
+    
     
       if(end_adr_valid_data<128){
         bytes_read = playFile.read(PCM[end_adr_valid_data][0], 32768);
@@ -595,12 +474,14 @@ FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUD
         // Send first two bytes of the sample
         *txreg = (uint16_t)(SAMPLE[1] << 8) | SAMPLE[0];
         SAI_IRQ_state = 1; // Set state to send the last two bytes next time
+        //Serial.printf("TX1: %lu\n", play_adr);
     }
     else{
 		// Send last two bytes of the sample
         *txreg = (uint16_t)(SAMPLE[3] << 8) | SAMPLE[2];
         SAI_IRQ_state = 0; // Set state to send the first two bytes next time
 
+        /*
 	if(((play_adr+step_position+3)<=(420*all_long)))						//change all_long extract!
 		{
 		end_of_track = 0;	
@@ -609,7 +490,7 @@ FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUD
 		{
 		end_of_track = 1;		
 		}			
-
+*/
 	/*if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 	{
 	slip_position+= pitch_for_slip;

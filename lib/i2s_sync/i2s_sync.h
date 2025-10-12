@@ -12,7 +12,6 @@ class i2s_sync{
     typedef void(*CBF)();
     static CBF _callback;
     void begin(CBF callback);
-    void setSampleRate(float fs);
     void stop();
     float sample_rate = 44100.0f;
 
