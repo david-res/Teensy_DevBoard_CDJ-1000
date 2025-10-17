@@ -9,12 +9,13 @@
 #include "eLCDIF_t4.h"
 #include <Adafruit_FT6206.h>
 #include "inflate.h"
-#include "T4_PXP.h"
 
 
 #include "i2s_sync.h"
 
 void SAI_IRQHandler(void);
+
+IntervalTimer tick;
 
 #define LCDDISP
 //#define REMDISP
@@ -43,9 +44,9 @@ EXTMEM  uint16_t PCM[206][8192][2];
  uint8_t mem_offset_adress = 0;    //address offset for calling CUE audio data (for memory)
  uint16_t PCM_2[2];
  int16_t LR[2][4];
- float c0, c1, c2, c3, r0, r1, r2, r3;
+ __attribute__((aligned(4))) float c0, c1, c2, c3, r0, r1, r2, r3;
  int32_t even1, even2, odd1, odd2;
-float COEF[8] = {            //////optimal 2x
+__attribute__((aligned(4)))  float COEF[8] = {            //////optimal 2x
 0.45868970870461956,
 0.04131401926395584,
 0.48068024766578432,
@@ -64,8 +65,8 @@ float COEF[8] = {            //////optimal 2x
  uint32_t slip_position = 0;
  uint16_t pitch_for_slip = 10000;    // 10000 = 100% step 0,01%    
  uint8_t step_position = 0;
- float SAMPLE_BUFFER;
- float T;
+ __attribute__((aligned(4))) float SAMPLE_BUFFER;
+ __attribute__((aligned(4))) float T;
  uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
  uint8_t    end_of_track = 0;            //end track flag
  uint8_t loop_active = 0;            //loop flag
@@ -91,10 +92,24 @@ uint32_t height;
 */
 eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1, 1};
 
-//const char* dbName = "Engine Library/Database2/p.db";
 
-EXTMEM_NOCACHE uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
-//EXTMEM uint16_t lcdBuffer2[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+extern "C" void startup_middle_hook(void);
+
+void startup_middle_hook(void)
+{
+#if defined(USE_EXTMEM_NOCACHE)  
+  //Disable caching for first 4M of SDRAM
+  SCB_MPU_RBAR = 0x80000000 | (SCB_MPU_RBAR_REGION(11) | SCB_MPU_RBAR_VALID); // 0x80000000 | REGION(11);
+  SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(21) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_4M;
+#endif
+
+  // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
+  if (!sdram.begin(32, 198, 1)){
+    Serial.println("SDRAM init fail :( ...");
+  }
+}
+
+EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
 
@@ -144,37 +159,13 @@ FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 static lv_disp_draw_buf_t disp_buf;
 static lv_disp_drv_t disp_drv;          /*A variable to hold the drivers. Must be static or global.*/
 volatile bool ps_framePending = false;
-#ifdef USE_PXP
-FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
-  if (lv_disp_flush_is_last(&disp_drv)){
-    
-        ps_framePending = true;
-        // Set up PXP input: the small LVGL buffer portion
-        PXP_input_buffer((uint8_t*)px_map, 2, SCREEN_WIDTH, SCREEN_HEIGHT);
-        //PXP_input_position(0, 0, SCREEN_WIDTH-1, SCREEN_HEIGHT-1);
 
-      // Start the transfer
-        PXP_process();
-    }
-    else{
-        lv_disp_flush_ready(&disp_drv);
-    }
-}
-
-
-FASTRUN void pxpCallback(){
-  if(ps_framePending){
-        // Calculate updated area size for cache flush
-        lv_disp_flush_ready(&disp_drv);
-        ps_framePending = false;
-    }
-}
-
-#else
 
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
   if (lv_disp_flush_is_last(&disp_drv)){
-    arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
+    #if !defined(USE_EXTMEM_NOCACHE)    
+      arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
+    #endif
     lcd.setNextBufferAddress((uint16_t*)px_map);
     ps_framePending = true;
   }
@@ -185,13 +176,16 @@ FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_col
 
 
 FASTRUN void lcdCallback(){
-  //ps_framePending = false;
   if(ps_framePending){
     lv_disp_flush_ready(&disp_drv);
     ps_framePending = false;
   }
+  if (LCD_BUFFER_COUNT == 2 && dynamicBufferReady == true) {
+    memcpy((void *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * 158 * 2), dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
+    dynamicBufferReady = false;
+  }
 }
-#endif
+
 
 #if LV_USE_LOG != 0
 void my_print( lv_log_level_t level, const char * buf )
@@ -255,23 +249,14 @@ void setup()
     Serial.print(CrashReport);
   }
 
-  if (!sdram.begin(32, 198,1)){
-    Serial.println("SDRAM init fail :( ...");
-  }
-
   if (!SD.begin(BUILTIN_SDCARD))
   {
     Serial.println("SD.begin() failed! - Halting!");
     while (true) { delay(1000); }
   }
 
-  //REMDISP_init();
-  //REMDISP_register_callbacks();
-  memset(lcdBuffer1, 3333, sizeof(lcdBuffer1));
-  #ifdef REMDISP
-  remoteDisplay.init(800 , 480);
-  remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
-  #endif
+  memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
+
 
   #ifdef LCDDISP
 
@@ -285,18 +270,8 @@ void setup()
   #ifndef USE_PXP
   lcd.onCompleteCallback(lcdCallback);
   #endif
-  lcd.setCurrentBufferAddress(lcdBuffer1);
-  lcd.setNextBufferAddress(lcdBuffer1);
-
-  #ifdef USE_PXP
-  PXP_init();
-  PXP_input_format(PXP_RGB565, 0, 0, 0);
-  PXP_overlay_format(PXP_RGB565, 0, 0, 0);
-  PXP_output_format(PXP_RGB565, 0, 0, 0);
-  PXP_output_buffer((uint16_t*)lcdBuffer1, 2, SCREEN_WIDTH, SCREEN_HEIGHT);
-  PXP_callback(pxpCallback);
-  //PXP_enable_repeat(true);
-  #endif
+  lcd.setCurrentBufferAddress(lcdBuffer[LCD_BUFFER_COUNT - 1]);
+  lcd.setNextBufferAddress(lcdBuffer[0]);
 
   IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_05 = 5; // Set mux to GPIO mode
   GPIO6_GDIR |= (1 << 21); // Set as output
@@ -313,13 +288,8 @@ void setup()
   disp_drv.direct_mode = 1;
   disp_drv.full_refresh = 0;
   
+  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], 800 * 480); 
 
-    
-  #ifdef USE_PXP
-  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
-  #else
-  lv_disp_draw_buf_init(&disp_buf, lcdBuffer1 ,NULL, 800*480);    
-  #endif
   lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
 
   static lv_indev_drv_t indev_drv;
@@ -330,12 +300,13 @@ void setup()
     lv_indev_drv_register( &indev_drv );
 
   #if LV_USE_LOG != 0
-    lv_log_register_print_cb(my_print);
+    lv_log_register_print_cb((lv_log_print_g_cb_t)my_print); /* register print function for debugging */
     #endif
 
   analogWrite(A0, 220);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
   audio.begin(&SAI_IRQHandler);
+
 
   T41SQLite::getInstance().setLogCallback(errorLogCallback);
   int resultBegin = T41SQLite::getInstance().begin(&SD);
@@ -383,10 +354,9 @@ unsigned long previousMillis0 = 0;
 void loop()
 {
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis0 >= 3) {
+  if (currentMillis - previousMillis0 >= 5) {
     // Save the last time lv_timer_handler was called
     previousMillis0 = currentMillis;
-
     // Call lv_timer_handler
     lv_timer_handler(); 
   }
@@ -395,9 +365,9 @@ void loop()
   if(is_playing){
     static uint32_t play_adr_temp =0;
     if ((play_adr_temp/420) != (play_adr/420)) {
-      //Serial.printf("Play adr: %lu\n", play_adr);
+    //Serial.printf("Play adr: %lu\n", play_adr);
       updateDynamicWaveform(play_adr);
-      updatePlaybackPosition((play_adr/420)*799/all_long);
+      //updatePlaybackPosition((play_adr/420)*799/all_long);
       play_adr_temp = play_adr; 
     }
     
@@ -418,7 +388,7 @@ void loop()
 
       bytes_read = playFile.read(PCM[end_adr_valid_data&0x7F][0], 32768);
       Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
-      Serial.printf("all_long %d play_adr %d \n", all_long, play_adr);		
+      //Serial.printf("all_long %d play_adr %d \n", all_long, play_adr);		
       //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
       end_adr_valid_data++;
       if((end_adr_valid_data-start_adr_valid_data)>128){
@@ -481,16 +451,16 @@ FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUD
         *txreg = (uint16_t)(SAMPLE[3] << 8) | SAMPLE[2];
         SAI_IRQ_state = 0; // Set state to send the first two bytes next time
 
-        /*
+        
 	if(((play_adr+step_position+3)<=(420*all_long)))						//change all_long extract!
 		{
 		end_of_track = 0;	
 		}
 	else
 		{
+      Serial.println("END OF TRACK");
 		end_of_track = 1;		
 		}			
-*/
 	/*if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 	{
 	slip_position+= pitch_for_slip;

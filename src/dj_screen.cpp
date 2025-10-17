@@ -7,7 +7,6 @@
 #include "SD.h"
 #include "inflate.h"
 #include "file_viewer.h"
-#include "T4_PXP.h"
 #include <SDRAM_t4.h>
 #include "DMAChannel.h"
 
@@ -56,6 +55,7 @@ static lv_obj_t *middle_container;
 static lv_obj_t *bottom_container;
 
 // UI elements
+
 static lv_obj_t *title_label;
 static lv_obj_t *artist_label;
 static lv_obj_t *bpm_label;
@@ -66,7 +66,9 @@ static lv_obj_t *current_bpm_label;
 static lv_obj_t *tempo_range_label;
 static lv_obj_t *adjusted_tempo_label;
 static lv_obj_t *progress_bars[4];
+static lv_obj_t *progress_line;
 static lv_obj_t *daynamic_waveform_canvas;
+static lv_obj_t *static_wave_container;
 static lv_obj_t *static_waveform_canvas;
 static lv_obj_t *cue_buttons[8];
 
@@ -81,6 +83,7 @@ void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
 void updateDynamicWaveform(uint32_t waveformOffset);
 void updateOverviewWaveform(uint32_t waveformOffset);
+bool dynamicBufferReady = false;
 bool useOpa = false;
 
 
@@ -95,7 +98,7 @@ const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
 const float waveformUserGain[3] = {1.0, 0.66, 0.33};
 
-EXTMEM uint8_t * dynamicWaveSampleData[6]; // 0=lo samples, 1=med samples, 2=hi samples
+EXTMEM uint8_t * dynamicWaveSampleData[3]; // 0=lo samples, 1=med samples, 2=hi samples
 DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
 uint64_t dynamicWaveformSampleCount = 0;
 double samplesPerDaynamicPoint = 0;
@@ -109,6 +112,55 @@ double samplesPerOverviewPoint = 0;
 EXTMEM uint8_t * uncompressedBuffer;
 EXTMEM uint8_t * highResBuffer;
 EXTMEM uint8_t * overviewBuffer;
+
+
+
+void seekAudioFrame(uint32_t seek_adr)
+	{
+	if(seek_adr>(420*all_long))
+		{
+		return;	
+		}
+	seek_adr &= 0xFFFFE000;	
+
+	if(playFile.seek(((seek_adr<<2)+44)))
+		{
+		end_adr_valid_data = (seek_adr>>13);
+		start_adr_valid_data = end_adr_valid_data; 	
+		play_adr = seek_adr;	
+    /*
+		if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+			{	
+			slip_play_adr = play_adr;	
+			}	
+      */		
+		}
+	return;	
+	}
+
+
+  void overViewWavefrom_cb(lv_event_t * e){
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target(e);
+    
+    if(code == LV_EVENT_PRESSED) {
+      lv_indev_t * indev = lv_indev_get_act();
+      if(indev == NULL) return;
+      
+      lv_point_t point;
+      lv_indev_get_point(indev, &point);
+      
+      // Convert to canvas-relative coordinates
+      lv_coord_t canvas_x = point.x - lv_obj_get_x(obj);
+      lv_coord_t canvas_y = point.y - lv_obj_get_y(obj);
+      seekAudioFrame(420*(((canvas_x)*all_long)/799));
+      
+      Serial.printf("Touch X: %d, Y: %d\n", canvas_x, canvas_y);
+      
+      // Or if you just want screen coordinates:
+      // Serial.printf("Touch X: %d\n", point.x);
+  }
+}
 
 
 
@@ -236,7 +288,7 @@ FLASHMEM bool loadDynamicWaveformData(uint16_t track_id){
   }
 
   //Create data arrays - lo med high samples
-  for (int8_t i = 0; i < 6; i++) {
+  for (int8_t i = 0; i < 3; i++) {
     dynamicWaveSampleData[i] = (uint8_t *)malloc(dynamicWaveformSampleCount);
     if (!dynamicWaveSampleData[i]) {
       Serial.printf("ERROR: Failed to allocate dynamicWaveSampleData[%d]\n", i);
@@ -254,8 +306,8 @@ FLASHMEM bool loadDynamicWaveformData(uint16_t track_id){
   //Fill 'em up!
 
   uint32_t index = 0;
-  for (uint32_t i = 24; i < (dynamicWaveformSampleCount * 6) + 24; i+= 6) {
-      for (uint8_t j = 0; j < 6; j++) {
+  for (uint32_t i = 24; i < (dynamicWaveformSampleCount * 3) + 24; i+= 6) {
+      for (uint8_t j = 0; j < 3; j++) {
         if ( j < 3) {
           //Sample data
           dynamicWaveSampleData[j][index] = uncompressedBuffer[i + j]; //Scale the waveform height
@@ -285,7 +337,7 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
   Serial.println("Squirk§§");
   
   // Open the p.db file that contains performance Data
-  if (sqlite3_open("databases/m.db", &mdb) != SQLITE_OK) {
+  if (sqlite3_open("databases/p.db", &pdb) != SQLITE_OK) {
     Serial.println("Failed to open database");
     return false;
   }
@@ -293,9 +345,9 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
 
   const char *sqlOverviewData = "SELECT overviewWaveFormData FROM PerformanceData WHERE trackId = ?";
 
-  if (sqlite3_prepare_v2(mdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
+  if (sqlite3_prepare_v2(pdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
     Serial.println("Failed to prepare statement");
-    sqlite3_close(mdb);
+    sqlite3_close(pdb);
     
     return false;
   }
@@ -403,7 +455,7 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
 
   // Fill 'em up!
   // Scale waveform height from 255 to overviewChartHeight
-  float heightRatio = (float)overviewChartHeight / 255.0;
+  float heightRatio = (float)overviewChartHeight / 64.0;
   float scaleFactor = (float)1024 / 800; // 1.28
 
   uint32_t index = 0;
@@ -431,7 +483,7 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
       // Add proper rounding for integer conversion
       float finalValue = interpolatedValue * heightRatio * waveformUserGain[j];
       overViewWaveSampleData[j][i] = (uint8_t)(finalValue + 0.5f); // Round to nearest
-      Serial.printf("ov[%d][%d] = %d\n", j, i, overViewWaveSampleData[j][i]);
+      //Serial.printf("ov[%d][%d] = %d\n", j, i, overViewWaveSampleData[j][i]);
     }
   }
 
@@ -718,7 +770,7 @@ FLASHMEM void drawOverviewCanvas()
   for (uint16_t x = 0; x < chartWidth; x++) {
     for (uint8_t i = 0; i < 3; i++) {
       drawFastVLine16BitOverview(x, overviewChartHeight - (overViewWaveSampleData[i][x]), (overViewWaveSampleData[i][x]), waveformColors[i], overviewCanvasBuffer, chartWidth);
-      Serial.printf("drawing x=%d, height=%d\n", x, (overViewWaveSampleData[i][x]));
+      //Serial.printf("drawing x=%d, height=%d\n", x, (overViewWaveSampleData[i][x]));
     }
   }
   //Invalidate canvas, as this is updated done rarely
@@ -777,8 +829,8 @@ void create_top_container(Track * track) {
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
 
 
-    lv_obj_t *progress_line = lv_obj_create(title_bpm_container);
-    lv_obj_set_size(progress_line, 700, 3);
+    progress_line = lv_obj_create(title_bpm_container);
+    lv_obj_set_size(progress_line, 0, 3);
     lv_obj_set_pos(progress_line, 0, 67);
     lv_obj_set_style_bg_color(progress_line, lv_color_hex(0x158EE2), 0);
     lv_obj_set_style_border_width(progress_line, 0, 0);
@@ -851,7 +903,7 @@ void create_top_container(Track * track) {
 void create_middle_container(void) {
     middle_container = lv_obj_create(main_screen);
     lv_obj_set_size(middle_container, SCREEN_WIDTH, 164);
-    lv_obj_set_pos(middle_container, 0, 164);
+    lv_obj_set_pos(middle_container, 0, 158);
     lv_obj_set_style_bg_color(middle_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(middle_container, 0, 0);
     //lv_obj_set_style_pad_all(middle_container, 10, 0);
@@ -887,7 +939,8 @@ void create_bottom_container(void) {
     lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_SCROLLABLE);
 
     // Static waveform container
-    lv_obj_t *static_wave_container = lv_obj_create(bottom_container);
+  
+    static_wave_container = lv_obj_create(bottom_container);
     lv_obj_set_size(static_wave_container, SCREEN_WIDTH, 64);
     lv_obj_set_pos(static_wave_container, 0, 0);
     lv_obj_set_style_bg_color(static_wave_container, COLOR_BG, 0);
@@ -895,13 +948,15 @@ void create_bottom_container(void) {
     lv_obj_set_style_border_color(static_wave_container, lv_color_white(), 0);
     lv_obj_set_style_radius(static_wave_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(static_wave_container, LV_OBJ_FLAG_SCROLLABLE);
+    
 
     // Static waveform canvas
     static_waveform_canvas = lv_canvas_create(static_wave_container);
-    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t *)overviewCanvasBuffer, 800, 64, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t*)overviewCanvasBuffer, SCREEN_WIDTH, 64, LV_IMG_CF_TRUE_COLOR);
     lv_obj_set_size(static_waveform_canvas, SCREEN_WIDTH, 64);
     lv_obj_center(static_waveform_canvas);
     lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(static_wave_container, overViewWavefrom_cb, LV_EVENT_ALL, NULL);
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
     
     
@@ -970,9 +1025,6 @@ void dj_ui_init(Track * track) {
     create_middle_container();
     create_bottom_container();
 
-    //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
-    //PXP_overlay_position(0, 158, 799, 321);
-
       
 
     playFile = SD.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
@@ -993,7 +1045,7 @@ void dj_ui_init(Track * track) {
 }
 
 // Update functions for dynamic content
-
+/*
 void update_track_info(const char *title, const char *artist, int bpm, const char *key) {
     lv_label_set_text(title_label, title);
     lv_label_set_text(artist_label, artist);
@@ -1015,6 +1067,8 @@ void update_progress_bars(int active_bar) {
         }
     }
 }
+*/
+
 
 FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
 {
@@ -1031,7 +1085,7 @@ FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 FASTRUN void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
 {
   if (h <= 0) return;
-  //if(y+h >= 64 ) return;
+  if(y+h >= 128 ) return;
     uint16_t *p = buffer + y * stride + x;
     for (int i = 0; i < h; ++i)
     {
@@ -1071,6 +1125,9 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
 int DynamicWaveformZOOM =1;
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 {
+  if (dynamicBufferReady == true) {
+    return;
+  }
   //Clear canvas
   int offset   = 800 * 82; // start of row 82
   memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
@@ -1095,20 +1152,32 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   memset((dynamicCanvasBuffer + offset), 0xFFFF, 1600);
   //Draw mid-canvas line
   drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, dynamicCanvasBuffer, chartWidth);
-  //lv_obj_invalidate(daynamic_waveform_canvas);
-  //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
-  //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
-  //PXP_process();
-  memcpy(lcdBuffer1 + (800 * 76 * 2), dynamicCanvasBuffer, (800 * 164 * 2));
+
+  //memcpy(lcdBuffer[LCD_BUFFER_COUNT] + (800 * 76 * 2), dynamicCanvasBuffer, (800 * 164 * 2));
+
+  if (LCD_BUFFER_COUNT == 1) {
+    memcpy((void *)LCDIF_NEXT_BUF + (800 * 76 * 2), dynamicCanvasBuffer, (800 * 164 * 2));
+  } else {
+    dynamicBufferReady = true;
+  }
+
+  /*
+  lv_disp_t * disp = lv_disp_get_default();
+  lv_disp_draw_buf_t * draw_buf = lv_disp_get_draw_buf(disp);
+  void * current_buf = draw_buf->buf_act;
+  memcpy(current_buf + (800 * 158 * 2), dynamicCanvasBuffer, (800 * 164 * 2));
+  */
+
 }
 
-// Add these as global/static variables
+
+
 static uint16_t oldX = 0xFFFF; // Initialize to invalid position
-// New function to update position efficiently
 FASTRUN void updatePlaybackPosition(uint16_t newX)
 {
   if(oldX == newX) return; // No change, skip update
   // Restore the old position by redrawing the waveform data
+
   if (oldX < chartWidth && oldX + 1 < chartWidth) {
     // Clear the old indicator position (both pixels)
     for (uint8_t px = 0; px < 2; px++) {
@@ -1126,12 +1195,12 @@ FASTRUN void updatePlaybackPosition(uint16_t newX)
     }
     
     // Invalidate old area
-    lv_area_t area;
-    area.x1 = newX;
+    static lv_area_t area;
+    area.x1 = oldX;
     area.y1 = 0;
-    area.x2 = newX + 1;
+    area.x2 = oldX + 1;
     area.y2 = overviewChartHeight - 1;
-    lv_obj_invalidate_area(static_waveform_canvas, &area);
+   // lv_obj_invalidate_area(static_waveform_canvas, &area);
   }
   
   // Draw the new position indicator (2px wide)
@@ -1147,14 +1216,17 @@ FASTRUN void updatePlaybackPosition(uint16_t newX)
     }
     
     // Invalidate new area
-    lv_area_t area;
-    area.x1 = oldX;
+    static lv_area_t area;
+    area.x1 = newX;
     area.y1 = 0;
-    area.x2 = oldX + 1;
+    area.x2 = newX + 1;
     area.y2 = overviewChartHeight - 1;
-    lv_obj_invalidate_area(static_waveform_canvas, &area);
+    //lv_obj_invalidate_area(static_waveform_canvas, &area);
   }
   
   // Update stored position
+  lv_obj_invalidate(static_waveform_canvas);
+  lv_obj_set_size(progress_line, newX, 3);
+  
   oldX = newX;
 }

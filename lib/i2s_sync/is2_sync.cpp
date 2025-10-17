@@ -94,7 +94,7 @@ FLASHMEM void i2s_sync::begin(CBF audio_irq){
       config_sai1();
       attachInterruptVector(IRQ_SAI1, audio_irq);
       NVIC_ENABLE_IRQ(IRQ_SAI1); 
-      NVIC_SET_PRIORITY(IRQ_SAI1, 126);
+      NVIC_SET_PRIORITY(IRQ_SAI1, 128);
       //Serial.println("Audio started");
 }
 

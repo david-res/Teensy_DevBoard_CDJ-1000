@@ -22,6 +22,7 @@ LV_FONT_DECLARE(exo2_32)
 
 
 lv_obj_t * filesScreen;
+static lv_style_t fileScreen_style;
 
 
 lv_obj_t * add_track_item(lv_obj_t *parent, int track_id);
@@ -57,8 +58,9 @@ int get_track_count(sqlite3 *db);
 
 
 FLASHMEM void createListScreen(){
-    static lv_style_t fileScreen_style;
+   
     filesScreen = lv_obj_create(NULL);
+    lv_style_init(&fileScreen_style);
     lv_obj_set_size(filesScreen, 800, 480);
     lv_obj_align(filesScreen, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_flex_flow(filesScreen, LV_FLEX_FLOW_COLUMN);
