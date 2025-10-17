@@ -116,7 +116,16 @@
 
 
 // define TeensyFile type, which actually interfaces with the storage hardware (e.g. a sd card)
+#if defined(RDI_DEVELOPMENTS_REV3)
+#include <SdFat.h>
+using TeensyFile = FsFile;
+// Global pointer to the SdFs filesystem - must be set before using SQLite
+// NOTE: Not static so it can be accessed from other files with extern declaration
+SdFs* g_sdfs_filesystem = nullptr;
+#else
 using TeensyFile = File;
+#endif
+
 // Name: Teensy 4.1 VFS
 #define TEENSY_VFS_NAME "T41_VFS" 
 
@@ -147,6 +156,16 @@ struct TeensyVFSFile
   sqlite3_int64 iBufferOfst;      /* Offset in file of zBuffer[0] */
 };
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+/*
+** Function to set the SdFs filesystem pointer for RDI_DEVELOPMENTS_REV3
+** Must be called before T41SQLite::begin() with a valid, initialized SdFs pointer
+*/
+void teensyVfsSetFilesystem(SdFs* fs) {
+  g_sdfs_filesystem = fs;
+}
+#endif
+
 /*
 ** Write directly to the file passed as the first argument. Even if the
 ** file has a write-buffer (TeensyVFSFile.aBuffer), ignore it.
@@ -164,7 +183,11 @@ static int teensyDirectWrite(
     return SQLITE_IOERR_WRITE;
   }
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+  if (not p->teensyFile->seek(iOfst))
+#else
   if (not p->teensyFile->seek(iOfst, SeekSet))
+#endif
   {
     return SQLITE_IOERR_WRITE;
   }
@@ -220,9 +243,17 @@ static int teensyClose(sqlite3_file *pFile)
 
   TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN("VFS_DEBUG_CLOSE");
   TEENSY_41_SQLITE_DEBUG_SERIAL_PRINT("VFS_DEBUG_CLOSE_FILE ");
-  TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN(p->teensyFile->name());
-
+  
+#if defined(RDI_DEVELOPMENTS_REV3)
+  char nameBuf[256];
+  p->teensyFile->getName(nameBuf, sizeof(nameBuf));
+  TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN(nameBuf);
   p->teensyFile->close();
+  delete p->teensyFile;
+#else
+  TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN(p->teensyFile->name());
+  p->teensyFile->close();
+  #endif
 
   return rc;
 }
@@ -264,7 +295,12 @@ static int teensyRead(
   TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN(p->teensyFile->position());
 
   uint64_t seekPosition = min(static_cast<uint64_t>(iOfst), p->teensyFile->size());
+  
+#if defined(RDI_DEVELOPMENTS_REV3)
+  if (not p->teensyFile->seek(seekPosition))
+#else
   if (not p->teensyFile->seek(seekPosition, SeekSet))
+#endif
   {
     TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN("VFS_DEBUG_READ_SEEK_FAIL");
     return SQLITE_IOERR_READ;
@@ -513,6 +549,42 @@ static int teensyOpen(
     }
   }
   
+#if defined(RDI_DEVELOPMENTS_REV3)
+  // Determine SdFat open flags
+  uint8_t openFlags;
+  if (flags & SQLITE_OPEN_READONLY) {
+    openFlags = O_READ;
+  } else if (flags & SQLITE_OPEN_CREATE) {
+    openFlags = O_RDWR | O_CREAT;
+  } else {
+    openFlags = O_RDWR;
+  }
+
+  // Check if filesystem pointer is set
+  if (!g_sdfs_filesystem) {
+    TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN("ERROR: SdFs filesystem not set! Call teensyVfsSetFilesystem() first");
+    sqlite3_free(aBuf);
+    return SQLITE_CANTOPEN;
+  }
+  
+  // Allocate TeensyFile and open through the filesystem object
+  // SdFs::open() returns an FsFile by value
+  TeensyFile tempFile = g_sdfs_filesystem->open(zName, openFlags);
+  
+
+  // Now allocate on heap
+  p->teensyFile = new TeensyFile(tempFile);
+   
+  // Check if the file opened successfully
+  if (!p->teensyFile->isOpen()) {
+    delete p->teensyFile;
+    sqlite3_free(aBuf);
+    return SQLITE_CANTOPEN;
+  }
+  
+  TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN("VFS_DEBUG: File opened successfully");
+#else
+  // Original code for standard SD library
   uint8_t openMode = (flags & SQLITE_OPEN_READONLY) ? FILE_READ : FILE_WRITE;
   memset(p, 0, sizeof(TeensyVFSFile));
   p->teensyFile = new TeensyFile(T41SQLite::getInstance().getFilesystem()->open(zName, openMode));
@@ -522,6 +594,7 @@ static int teensyOpen(
     sqlite3_free(aBuf);
     return SQLITE_CANTOPEN;
   }
+#endif
 
   p->aBuffer = aBuf;
 
@@ -546,7 +619,11 @@ static int teensyDelete(sqlite3_vfs *pVfs, const char *zPath, int dirSync)
   TEENSY_41_SQLITE_DEBUG_SERIAL_PRINT("VFS_DEBUG_DELETE_PATH ");
   TEENSY_41_SQLITE_DEBUG_SERIAL_PRINTLN(zPath);
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+  if (!g_sdfs_filesystem || !g_sdfs_filesystem->remove(zPath))
+#else
   if (not T41SQLite::getInstance().getFilesystem()->remove(zPath))
+#endif
   {
     return SQLITE_IOERR_DELETE;
   }
@@ -571,7 +648,11 @@ static int teensyAccess(
   // Because we cannot/don't need to check access permissions,
   // we will set *pResOut to T41SQLite::ACCESS_SUCCESFUL,
   // if a file with the given name exists.
+#if defined(RDI_DEVELOPMENTS_REV3)
+  if (g_sdfs_filesystem && g_sdfs_filesystem->exists(zPath))
+#else
   if (T41SQLite::getInstance().getFilesystem()->exists(zPath))
+#endif
   {
     *pResOut = T41SQLite::ACCESS_SUCCESFUL;
   }

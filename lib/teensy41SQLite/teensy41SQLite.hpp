@@ -4,6 +4,9 @@
 #include "sqlite3.h"
 
 #include <FS.h>
+#if defined(RDI_DEVELOPMENTS_REV3)
+#include <SdFat.h>
+#endif
 
 class T41SQLite
 {
@@ -18,7 +21,11 @@ class T41SQLite
   private:
     int m_sectorSize = 0;
     int m_deviceCharacteristics = 0;
+#if defined(RDI_DEVELOPMENTS_REV3)
+    SdFs* m_filesystem = nullptr;    
+#else
     FS* m_filesystem = nullptr;
+#endif    
     String m_dbDirFullpath = "/";
 
   private:
@@ -35,10 +42,14 @@ class T41SQLite
       return instance;
     }
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+    int begin(SdFs* io_filesystem);
+    SdFs* getFilesystem();
+#else
     int begin(FS* io_filesystem);
-    int end();
-    
     FS* getFilesystem();
+#endif    
+    int end();
     
     void setDBDirFullPath(const String& in_dbDirFullpath);
     const String& getDBDirFullPath() const;

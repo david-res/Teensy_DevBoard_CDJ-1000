@@ -11,9 +11,20 @@
 #include "inflate.h"
 #include "T4_PXP.h"
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+#include <SdFat.h>
+#define BACKLIGHT_PIN 24
+SdFs sd_io2;
+extern void teensyVfsSetFilesystem(SdFs* fs);
+#else
+#define BACKLIGHT_PIN A0
+SdExFat SD;
+#endif
+
 
 #include "i2s_sync.h"
 
+extern "C" void startup_middle_hook(void);
 void SAI_IRQHandler(void);
 
 #define LCDDISP
@@ -89,12 +100,15 @@ uint32_t height;
   uint32_t hpolarity; // 0 (active low hsync/negative) or LCDIF_VDCTRL0_HSYNC_POL (active high/positive)
   uint32_t pclkpolarity; // 0 (data valid on falling edge/negative) or LCDIF_VDCTRL0_DOTCLK_POL (data valid on rising edge/positive)ss
 */
-eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1, 1};
+#if defined(RDI_DEVELOPMENTS_REV3)
+eLCDIF_t4_config lcd_config = {480, 8, 4, 4, 800, 8, 4, 4, 25, 24, 0, 0};
+#else
+eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
+#endif
 
 //const char* dbName = "Engine Library/Database2/p.db";
 
-EXTMEM_NOCACHE uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
-//EXTMEM uint16_t lcdBuffer2[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
 
@@ -105,6 +119,19 @@ EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute_
 
 #endif
 
+void startup_middle_hook(void)
+{
+#if defined(USE_EXTMEM_NOCACHE)  
+  //Disable caching for first 4M of SDRAM
+	SCB_MPU_RBAR = 0x80000000 | (SCB_MPU_RBAR_REGION(11) | SCB_MPU_RBAR_VALID); // 0x80000000 | REGION(11);
+	SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(21) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_4M;
+#endif
+
+  // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
+  if (!sdram.begin(32, 198, 1)){
+    Serial.println("SDRAM init fail :( ...");
+  }
+}
 
 #ifdef REMDISP
 void refreshDisplayCallback()
@@ -141,8 +168,16 @@ FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 #endif
 
 #ifdef LCDDISP
+//Display driver
+#if (LVGL_VERSION_MAJOR == 8)
 static lv_disp_draw_buf_t disp_buf;
 static lv_disp_drv_t disp_drv;          /*A variable to hold the drivers. Must be static or global.*/
+lv_color_t * next_px_map;
+#endif
+#if (LVGL_VERSION_MAJOR == 9)
+lv_display_t * disp_drv;
+uint8_t * next_px_map;
+#endif
 volatile bool ps_framePending = false;
 #ifdef USE_PXP
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
@@ -171,35 +206,71 @@ FASTRUN void pxpCallback(){
 }
 
 #else
-
-FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map){
+#if (LVGL_VERSION_MAJOR == 8)
+FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
+{
   if (lv_disp_flush_is_last(&disp_drv)){
+#if !defined(USE_EXTMEM_NOCACHE)    
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
-    lcd.setNextBufferAddress((uint16_t*)px_map);
+#endif    
     ps_framePending = true;
+    next_px_map = px_map;
   }
   else{
     lv_disp_flush_ready(&disp_drv);
   }
 }
+#endif
+#if (LVGL_VERSION_MAJOR == 9)
+FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
+{
+  if (lv_disp_flush_is_last(disp_drv)){
+#if !defined(USE_EXTMEM_NOCACHE)    
+    arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
+#endif    
+    ps_framePending = true;
+    next_px_map = px_map;
+  }
+  else{
+    lv_disp_flush_ready(disp_drv);
+  }
+}
+#endif
 
 
 FASTRUN void lcdCallback(){
-  //ps_framePending = false;
-  if(ps_framePending){
+  if(ps_framePending == true){
+    lcd.setNextBufferAddress((uint16_t*)next_px_map);
+#if (LVGL_VERSION_MAJOR == 8)    
     lv_disp_flush_ready(&disp_drv);
+#endif
+#if (LVGL_VERSION_MAJOR == 9)
+    lv_disp_flush_ready(disp_drv);
+#endif    
     ps_framePending = false;
+  }
+  if (LCD_BUFFER_COUNT == 2 && dynamicBufferReady == true) {
+    memcpy((void *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2), dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
+    dynamicBufferReady = false;
   }
 }
 #endif
 
 #if LV_USE_LOG != 0
+#if (LVGL_VERSION_MAJOR == 9)
 void my_print( lv_log_level_t level, const char * buf )
 {
     LV_UNUSED(level);
     Serial.println(buf);
     Serial.flush();
 }
+#else
+void my_print(const char * buf)
+{
+    Serial.println(buf);
+    Serial.flush();
+}
+#endif
 #endif
 
 
@@ -208,8 +279,13 @@ lv_indev_t * ts_indev;
 // Touch controller instance
 Adafruit_FT6206 ctp = Adafruit_FT6206();
 
-
-void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data) {
+#if (LVGL_VERSION_MAJOR == 8)
+void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
+#endif
+#if (LVGL_VERSION_MAJOR == 9)
+void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
+#endif
+{
     // Check if there's a new touch event from interrupt
     TS_Point p = ctp.getPoint();
         if (ctp.touched()) {
@@ -255,38 +331,54 @@ void setup()
     Serial.print(CrashReport);
   }
 
-  if (!sdram.begin(32, 198,1)){
-    Serial.println("SDRAM init fail :( ...");
+  int resultBegin = -1;
+  T41SQLite::getInstance().setLogCallback(errorLogCallback);
+
+#if defined(RDI_DEVELOPMENTS_REV3)
+  teensyVfsSetFilesystem(&sd_io2);
+  if (!sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2)))
+  {
+    Serial.println("sd_io2.begin() failed! - Halting!");
+    while (true) { delay(1000); }
   }
 
+  resultBegin = T41SQLite::getInstance().begin(&sd_io2);
+#else
   if (!SD.begin(BUILTIN_SDCARD))
   {
     Serial.println("SD.begin() failed! - Halting!");
     while (true) { delay(1000); }
   }
 
+  resultBegin = T41SQLite::getInstance().begin(&SD);
+#endif
+
   //REMDISP_init();
   //REMDISP_register_callbacks();
-  memset(lcdBuffer1, 3333, sizeof(lcdBuffer1));
+  memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
   #ifdef REMDISP
-  remoteDisplay.init(800 , 480);
+  remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
   #endif
 
   #ifdef LCDDISP
 
-  pinMode(A0, OUTPUT);
-  analogWriteFrequency(A0, 200);
-  analogWrite(A0, 0);
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  analogWriteFrequency(BACKLIGHT_PIN, 200);
+  analogWrite(BACKLIGHT_PIN, 0);
   if (ctp.begin(20)) {
-        Serial.println("FT5316 touch controller initialized");
-    }
+    Serial.println("FT5316 touch controller initialized");
+  }
+#if defined(RDI_DEVELOPMENTS_REV3)
+  lcd.begin(lcd_config, BUS_16BIT, WORD_16BIT, PIXEL_16BIT);
+#else
   lcd.begin(BUS_16BIT, WORD_16BIT, lcd_config);
+#endif
   #ifndef USE_PXP
   lcd.onCompleteCallback(lcdCallback);
   #endif
-  lcd.setCurrentBufferAddress(lcdBuffer1);
-  lcd.setNextBufferAddress(lcdBuffer1);
+  lcd.setCurrentBufferAddress(lcdBuffer[LCD_BUFFER_COUNT - 1]);
+  lcd.setNextBufferAddress(lcdBuffer[0]);
 
   #ifdef USE_PXP
   PXP_init();
@@ -298,18 +390,21 @@ void setup()
   //PXP_enable_repeat(true);
   #endif
 
+#if !defined(RDI_DEVELOPMENTS_REV3)
   IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_05 = 5; // Set mux to GPIO mode
   GPIO6_GDIR |= (1 << 21); // Set as output
   GPIO6_DR_SET = (1 << 21);
   Serial.println("LCD ON");
+#endif
 
   #endif
   lv_init();
+  #if (LVGL_VERSION_MAJOR == 8)
   lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
   disp_drv.draw_buf = &disp_buf;          /*Set an initialized buffer*/
-  disp_drv.flush_cb = my_disp_flush;        /*Set a flush callback to draw to the display*/
-  disp_drv.hor_res = 800;                 /*Set the horizontal resolution in pixels*/
-  disp_drv.ver_res = 480;                 /*Set the vertical resolution in pixels*/
+  disp_drv.flush_cb = my_disp_flush;      /*Set a flush callback to draw to the display*/
+  disp_drv.hor_res = SCREEN_WIDTH;        /*Set the horizontal resolution in pixels*/
+  disp_drv.ver_res = SCREEN_HEIGHT;       /*Set the vertical resolution in pixels*/
   disp_drv.direct_mode = 1;
   disp_drv.full_refresh = 0;
   
@@ -318,7 +413,7 @@ void setup()
   #ifdef USE_PXP
   lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
   #else
-  lv_disp_draw_buf_init(&disp_buf, lcdBuffer1 ,NULL, 800*480);    
+  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], SCREEN_WIDTH * SCREEN_HEIGHT);    
   #endif
   lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
 
@@ -328,17 +423,32 @@ void setup()
     //indev_drv.read_cb = touch_glass_input;
     indev_drv.read_cb = touch_read_cb;
     lv_indev_drv_register( &indev_drv );
+#endif    
+#if (LVGL_VERSION_MAJOR == 9)
+  disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
+  lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
+  lv_display_set_buffers(disp_drv, lcdBuffer[0], LCD_BUFFER_COUNT == 2 ? lcdBuffer[1] : NULL, SCREEN_WIDTH * SCREEN_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
+
+  //Tick callback
+  lv_tick_set_cb(millis);
+
+  //Flush callback
+  lv_display_set_flush_cb(disp_drv, my_disp_flush);
+
+  ts_indev = lv_indev_create();
+  lv_indev_set_type(ts_indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(ts_indev, touch_read_cb);
+#endif
 
   #if LV_USE_LOG != 0
     lv_log_register_print_cb(my_print);
     #endif
 
-  analogWrite(A0, 220);
+    analogWrite(BACKLIGHT_PIN, 220);
+ 
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
   audio.begin(&SAI_IRQHandler);
 
-  T41SQLite::getInstance().setLogCallback(errorLogCallback);
-  int resultBegin = T41SQLite::getInstance().begin(&SD);
 
   if (resultBegin == SQLITE_OK)
   {
@@ -379,18 +489,16 @@ void setup()
   }
 }
 uint32_t bytes_read = 0;
-unsigned long previousMillis0 = 0; 
+uint32_t nextMillis = 0; 
 void loop()
 {
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis0 >= 3) {
+  if (millis() >= nextMillis) {
     // Save the last time lv_timer_handler was called
-    previousMillis0 = currentMillis;
 
     // Call lv_timer_handler
-    lv_timer_handler(); 
+    uint32_t nextTimeMS = lv_timer_handler(); 
+    nextMillis = millis() + nextTimeMS;
   }
-
 
   if(is_playing){
     static uint32_t play_adr_temp =0;
@@ -470,7 +578,7 @@ static int16_t * txreg = (int16_t *)((uint32_t)&I2S1_TDR0 + 2);
 volatile uint8_t  SAI_IRQ_state = 0;
 FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUDIO PROCESSING   44K1Hz//////////////////////////////
 {
-		if (SAI_IRQ_state == 0){
+    if (SAI_IRQ_state == 0){
         // Send first two bytes of the sample
         *txreg = (uint16_t)(SAMPLE[1] << 8) | SAMPLE[0];
         SAI_IRQ_state = 1; // Set state to send the last two bytes next time

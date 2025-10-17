@@ -12,8 +12,12 @@
 #include "DMAChannel.h"
 
 
+#if defined(RDI_DEVELOPMENTS_REV3)
+#include "SdFat.h"
+FsFile playFile;
+#else
 File playFile;
-
+#endif
 
 
 LV_FONT_DECLARE(exo2_16)
@@ -109,6 +113,8 @@ double samplesPerOverviewPoint = 0;
 EXTMEM uint8_t * uncompressedBuffer;
 EXTMEM uint8_t * highResBuffer;
 EXTMEM uint8_t * overviewBuffer;
+
+bool dynamicBufferReady = false;
 
 
 
@@ -858,7 +864,8 @@ void create_middle_container(void) {
     lv_obj_set_style_border_color(middle_container, lv_color_white(), 0);
     lv_obj_set_style_radius(middle_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(middle_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(middle_container, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_add_flag(middle_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(middle_container, LV_OBJ_FLAG_IGNORE_LAYOUT);
     
 
     // Dynamic waveform canvas
@@ -866,7 +873,8 @@ void create_middle_container(void) {
     lv_obj_set_size(daynamic_waveform_canvas, SCREEN_WIDTH, 164);
     lv_obj_center(daynamic_waveform_canvas);
     lv_obj_clear_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     // Create canvas buffer (16-bit RGB565)
     lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, 800, 164, LV_IMG_CF_TRUE_COLOR);
@@ -974,8 +982,11 @@ void dj_ui_init(Track * track) {
     //PXP_overlay_position(0, 158, 799, 321);
 
       
-
+#if defined(RDI_DEVELOPMENTS_REV3)
+    playFile.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
+#else
     playFile = SD.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
+#endif
     if (!playFile) {
       Serial.printf("Trying to open: %s\n", track->path);
       Serial.println("Failed to open audio file");
@@ -1071,8 +1082,11 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
 int DynamicWaveformZOOM =1;
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 {
+  if (dynamicBufferReady == true) {
+    return;
+  }
   //Clear canvas
-  int offset   = 800 * 82; // start of row 82
+  int offset = 800 * 82; // start of row 82
   memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
   
   uint32_t pos = (waveformOffset/420) / DynamicWaveformZOOM; 
@@ -1087,9 +1101,9 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     for (uint8_t i = 0; i < 6; i++) {
         uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
         if(i < 3) { 
-            drawFastVLine16Bit(x, ((164 -sampleValue) /2), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
+            drawFastVLine16Bit(x, ((chartHeight -sampleValue) /2), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
         }
-        //if (dynamicWaveSampleData[i][index] > 164) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
+        //if (dynamicWaveSampleData[i][index] > chartHeight) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
     }
   }
   memset((dynamicCanvasBuffer + offset), 0xFFFF, 1600);
@@ -1099,7 +1113,12 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
-  memcpy(lcdBuffer1 + (800 * 76 * 2), dynamicCanvasBuffer, (800 * 164 * 2));
+  if (LCD_BUFFER_COUNT == 1) {
+    lv_label_set_text(time_label, "03:00.4");
+    memcpy((void *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2), dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
+  } else {
+    dynamicBufferReady = true;
+  }
 }
 
 // Add these as global/static variables

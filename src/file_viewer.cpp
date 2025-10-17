@@ -107,7 +107,15 @@ FLASHMEM void createListScreen(){
     lv_obj_set_style_text_font(lbl_bpm_header, &exo2_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // Database operations
-    sqlite3_open("databases/m.db", &mdb);
+
+    Serial.println("Calling sqlite3_open for m.db");
+    int dbOpenResult = sqlite3_open("databases/m.db", &mdb);
+    Serial.printf("Result sqlite3_open for m.db: %d\n", dbOpenResult);
+
+    int extended_err = sqlite3_extended_errcode(mdb);
+        fprintf(stderr, "SQL error: %s (Primary Code: %d, Extended Code: %d)\n",
+                sqlite3_errmsg(mdb), dbOpenResult, extended_err);
+
     track_count = get_track_count(mdb);
     sqlite3_stmt *stmt;
     int first_id = -1;
