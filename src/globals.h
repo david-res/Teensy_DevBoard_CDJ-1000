@@ -3,7 +3,18 @@
 
 #include <Arduino.h>
 
+#define LCD_BUFFER_COUNT 1
+//#define USE_EXTMEM_NOCACHE
 
+#if defined(USE_EXTMEM_NOCACHE)
+#define EXTMEM_NOCACHE __attribute__((section(".externalram_nocache")))
+#else
+#define EXTMEM_NOCACHE EXTMEM
+#endif
+
+#if (LVGL_VERSION_MAJOR == 9)
+#define LV_IMG_CF_TRUE_COLOR LV_COLOR_FORMAT_NATIVE
+#endif
 
 /////////////////////
 //User defined params
@@ -40,13 +51,14 @@ extern uint8_t end_of_track;
 extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
+extern bool dynamicBufferReady;
 
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
 #define BUFFER_MEM DMAMEM //DMAMEM //EXTMEM //<blank for ITCM>
 
-extern EXTMEM_NOCACHE uint16_t lcdBuffer1[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+extern EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 
 extern DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
 
@@ -58,6 +70,7 @@ const uint16_t phaseMeterWidth = 75;
 const uint16_t phaseMeterHeight = 22;
 const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
+const uint16_t middleContainerPos = 158;
 
 /////////////////////////
 //End user defined params

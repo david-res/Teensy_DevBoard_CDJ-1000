@@ -28,6 +28,8 @@ FLASHMEM void i2s_sync::set_audioClock(int nfact, int32_t nmult, uint32_t ndiv) 
 
 FLASHMEM void i2s_sync::config_sai1()
 {
+  Serial.println("Entering config_sai1");
+  Serial.flush();
   CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON);  
   //PLL:
   int fs = AUDIO_SAMPLE_RATE_EXACT;
@@ -75,27 +77,34 @@ FLASHMEM void i2s_sync::config_sai1()
   I2S1_RCR4 = I2S_RCR4_FRSZ((2-1)) | I2S_RCR4_SYWD((32-1)) | I2S_RCR4_MF
         | I2S_RCR4_FSE | I2S_RCR4_FSP | I2S_RCR4_FSD;
   I2S1_RCR5 = I2S_RCR5_WNW((32-1)) | I2S_RCR5_W0W((32-1)) | I2S_RCR5_FBT((32-1));
-  
+
+#if !defined(RDI_DEVELOPMENTS_REV3)
   CORE_PIN23_CONFIG = 3;  // MCLK
   CORE_PIN21_CONFIG = 3;  // RX_BCLK
   CORE_PIN20_CONFIG = 3;  // RX_SYNC
   //CORE_PIN7_CONFIG  = 3;  // TX_DATA0
   IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 3;
+#endif
   
 
 
   I2S1_RCSR |= I2S_RCSR_RE | I2S_RCSR_BCE;
   I2S1_TCSR = I2S_TCSR_TE | I2S_TCSR_BCE  | I2S_TCSR_FRDE ;//<-- not using DMA */;
 
+  Serial.println("Leaving config_sai1");
+  Serial.flush();
+
 }
 
 
 FLASHMEM void i2s_sync::begin(CBF audio_irq){
+      Serial.println("In audio.begin");
+      Serial.flush();
       config_sai1();
       attachInterruptVector(IRQ_SAI1, audio_irq);
       NVIC_ENABLE_IRQ(IRQ_SAI1); 
       NVIC_SET_PRIORITY(IRQ_SAI1, 126);
-      //Serial.println("Audio started");
+      Serial.println("Audio started");
 }
 
 
