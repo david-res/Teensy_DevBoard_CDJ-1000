@@ -83,6 +83,8 @@ float COEF[8] = {            //////optimal 2x
  uint32_t LOOP_OUT = 0;                //adr LOOP OUT in frames 150
  uint8_t lock_control = 1;            
 
+volatile uint32_t interrupt_counter = 0;
+uint32_t last_check_time = 0;
 
 /*
 uint32_t height;
@@ -250,7 +252,8 @@ FASTRUN void lcdCallback(){
     ps_framePending = false;
   }
   if (LCD_BUFFER_COUNT == 2 && dynamicBufferReady == true) {
-    memcpy((void *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2), dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
+    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
+    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
     dynamicBufferReady = false;
   }
 }
@@ -492,6 +495,14 @@ uint32_t bytes_read = 0;
 uint32_t nextMillis = 0; 
 void loop()
 {
+  // Debug code for interrupt counts
+  uint32_t now = millis();
+  if (now - last_check_time >= 5000) {  // Every 5 seconds
+    Serial.printf("Interrupts per second: %ld\n", interrupt_counter / 5);
+    interrupt_counter = 0;
+    last_check_time = now;
+  }
+
   if (millis() >= nextMillis) {
     // Save the last time lv_timer_handler was called
 
@@ -572,19 +583,20 @@ void loop()
     } 
 }
 
-
-
-static int16_t * txreg = (int16_t *)((uint32_t)&I2S1_TDR0 + 2);
+static int16_t * txreg = (int16_t *)((uint32_t)&I2S_TDR0_REG + 2);
 volatile uint8_t  SAI_IRQ_state = 0;
+
 FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUDIO PROCESSING   44K1Hz//////////////////////////////
 {
-    if (SAI_IRQ_state == 0){
-        // Send first two bytes of the sample
-        *txreg = (uint16_t)(SAMPLE[1] << 8) | SAMPLE[0];
-        SAI_IRQ_state = 1; // Set state to send the last two bytes next time
-        //Serial.printf("TX1: %lu\n", play_adr);
-    }
-    else{
+  interrupt_counter++;
+  I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
+
+  if (SAI_IRQ_state == 0) {
+    // Send first two bytes of the sample
+    *txreg = (uint16_t)(SAMPLE[1] << 8) | SAMPLE[0];
+    SAI_IRQ_state = 1; // Set state to send the last two bytes next time
+    //Serial.printf("TX1: %lu\n", play_adr);
+  } else {
 		// Send last two bytes of the sample
         *txreg = (uint16_t)(SAMPLE[3] << 8) | SAMPLE[2];
         SAI_IRQ_state = 0; // Set state to send the first two bytes next time
@@ -734,4 +746,7 @@ FASTRUN void SAI_IRQHandler(void)												////////////////////////////////AUD
 	SAMPLE[0] = PCM_2[1]%256;
 	//HAL_GPIO_WritePin(GPIOB, LED_TAG_LIST_Pin, GPIO_PIN_RESET);
   }
+
+  I2S_TCSR_REG |= 0x00040000;     // Clear error flag
+  I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
 }
