@@ -3,16 +3,6 @@
 
 #include <Arduino.h>
 
-// For I2S Interrupt Enable
-#define I2S_TCSR_FRIE  ((uint32_t)0x00000100) 
-#if defined(RDI_DEVELOPMENTS_REV3)
-    #define I2S_TCSR_REG I2S3_TCSR
-    #define I2S_TDR0_REG I2S3_TDR0
-#else    
-    #define I2S_TCSR_REG I2S1_TCSR
-    #define I2S_TDR0_REG I2S1_TDR0
-#endif
-
 #define LCD_BUFFER_COUNT 2
 //#define USE_EXTMEM_NOCACHE
 

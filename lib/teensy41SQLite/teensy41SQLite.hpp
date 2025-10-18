@@ -1,6 +1,7 @@
 #ifndef TEENSY_41_SQLITE
 #define TEENSY_41_SQLITE
 
+#include "../include/device_defines.h"
 #include "sqlite3.h"
 
 #include <FS.h>
@@ -21,11 +22,7 @@ class T41SQLite
   private:
     int m_sectorSize = 0;
     int m_deviceCharacteristics = 0;
-#if defined(RDI_DEVELOPMENTS_REV3)
-    SdFs* m_filesystem = nullptr;    
-#else
-    FS* m_filesystem = nullptr;
-#endif    
+    SD_FILE_SYS* m_filesystem = nullptr;    
     String m_dbDirFullpath = "/";
 
   private:
@@ -42,13 +39,8 @@ class T41SQLite
       return instance;
     }
 
-#if defined(RDI_DEVELOPMENTS_REV3)
-    int begin(SdFs* io_filesystem);
-    SdFs* getFilesystem();
-#else
-    int begin(FS* io_filesystem);
-    FS* getFilesystem();
-#endif    
+    int begin(SD_FILE_SYS* io_filesystem);
+    SD_FILE_SYS* getFilesystem();
     int end();
     
     void setDBDirFullPath(const String& in_dbDirFullpath);

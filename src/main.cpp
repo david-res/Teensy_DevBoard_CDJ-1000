@@ -15,7 +15,6 @@
 #include <SdFat.h>
 #define BACKLIGHT_PIN 24
 SdFs sd_io2;
-extern void teensyVfsSetFilesystem(SdFs* fs);
 #else
 #define BACKLIGHT_PIN A0
 SdExFat SD;
@@ -338,23 +337,16 @@ void setup()
   T41SQLite::getInstance().setLogCallback(errorLogCallback);
 
 #if defined(RDI_DEVELOPMENTS_REV3)
-  teensyVfsSetFilesystem(&sd_io2);
-  if (!sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2)))
-  {
-    Serial.println("sd_io2.begin() failed! - Halting!");
-    while (true) { delay(1000); }
-  }
-
-  resultBegin = T41SQLite::getInstance().begin(&sd_io2);
+  if (sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2))) {
+    resultBegin = T41SQLite::getInstance().begin(&sd_io2);
 #else
-  if (!SD.begin(BUILTIN_SDCARD))
-  {
-    Serial.println("SD.begin() failed! - Halting!");
+  if (SD.begin(BUILTIN_SDCARD)) {
+    resultBegin = T41SQLite::getInstance().begin(&SD);
+#endif
+  } else {
+    Serial.println("sd.begin() failed! - Halting!");
     while (true) { delay(1000); }
   }
-
-  resultBegin = T41SQLite::getInstance().begin(&SD);
-#endif
 
   //REMDISP_init();
   //REMDISP_register_callbacks();

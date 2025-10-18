@@ -1,5 +1,6 @@
 
 #include "dj_screen.h"
+#include "../include/device_defines.h"
 #include "globals.h"
 #include "Arduino.h"
 #include "lv_utils.h"
@@ -14,10 +15,8 @@
 
 #if defined(RDI_DEVELOPMENTS_REV3)
 #include "SdFat.h"
-FsFile playFile;
-#else
-File playFile;
 #endif
+FILE_TYPE playFile;
 
 
 LV_FONT_DECLARE(exo2_16)

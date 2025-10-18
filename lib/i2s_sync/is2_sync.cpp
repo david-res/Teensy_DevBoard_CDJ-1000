@@ -1,4 +1,4 @@
-#include "../src/globals.h"
+#include "../include/device_defines.h"
 #include "i2s_sync.h"
 
 //volatile uint8_t  SAI_IRQ_state = 0;
@@ -30,21 +30,21 @@ FLASHMEM void i2s_sync::config_sai1()
   Serial.println("Entering config_sai1");
   Serial.flush();
 
+  // From AudioOutputI2S::config_i2s
+  CCM_CCGR5 |= CCM_SAI_CLK_EN(CCM_CCGR_ON);  
+  //PLL:
+  int fs = AUDIO_SAMPLE_RATE_EXACT;
+  // PLL between 27*24 = 648MHz und 54*24=1296MHz
+  int n1 = 4; //SAI prescaler 4 => (n1*n2) = multiple of 4
+  int n2 = 1 + (24000000 * 27) / (fs * 256 * n1);
+
+  double C = ((double)fs * 256 * n1 * n2) / 24000000;
+  int c0 = C;
+  int c2 = 10000;
+  int c1 = C * c2 - (c0 * c2);
+  set_audioClock(c0, c1, c2);
+
 #if defined(RDI_DEVELOPMENTS_REV3)
-      // From AudioOutputI2S::config_i2s
-      CCM_CCGR5 |= CCM_CCGR5_SAI3(CCM_CCGR_ON);
-      //PLL:
-      int fs = AUDIO_SAMPLE_RATE_EXACT;
-      // PLL between 27*24 = 648MHz und 54*24=1296MHz
-      int n1 = 4; //SAI prescaler 4 => (n1*n2) = multiple of 4
-      int n2 = 1 + (24000000 * 27) / (fs * 256 * n1);
-
-      double C = ((double)fs * 256 * n1 * n2) / 24000000;
-      int c0 = C;
-      int c2 = 10000;
-      int c1 = C * c2 - (c0 * c2);
-      set_audioClock(c0, c1, c2);
-
       // clear SAI3_CLK register locations
       CCM_CSCMR1 = (CCM_CSCMR1 & ~(CCM_CSCMR1_SAI3_CLK_SEL_MASK))
             | CCM_CSCMR1_SAI3_CLK_SEL(2); // &0x03 // (0,1,2): PLL3PFD0, PLL5, PLL4,
@@ -82,20 +82,6 @@ FLASHMEM void i2s_sync::config_sai1()
       // TX_DATA pin
       IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B1_01 = 8;  // SAI3_TX_DATA0
 #else
-  // From AudioOutputI2S::config_i2s
-  CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON);  
-  //PLL:
-  int fs = AUDIO_SAMPLE_RATE_EXACT;
-  // PLL between 27*24 = 648MHz und 54*24=1296MHz
-  int n1 = 4; //SAI prescaler 4 => (n1*n2) = multiple of 4
-  int n2 = 1 + (24000000 * 27) / (fs * 256 * n1);
-
-  double C = ((double)fs * 256 * n1 * n2) / 24000000;
-  int c0 = C;
-  int c2 = 10000;
-  int c1 = C * c2 - (c0 * c2);
-  set_audioClock(c0, c1, c2);
-
   // clear SAI1_CLK register locations
   CCM_CSCMR1 = (CCM_CSCMR1 & ~(CCM_CSCMR1_SAI1_CLK_SEL_MASK))
        | CCM_CSCMR1_SAI1_CLK_SEL(2); // &0x03 // (0,1,2): PLL3PFD0, PLL5, PLL4
@@ -151,15 +137,10 @@ FASTRUN void i2s_sync::begin(CBF audio_irq){
       Serial.println("In audio.begin");
       Serial.flush();
       config_sai1();
-#if defined(RDI_DEVELOPMENTS_REV3)
-      attachInterruptVector(IRQ_SAI3_TX, audio_irq);
-      NVIC_ENABLE_IRQ(IRQ_SAI3_TX); 
-      NVIC_SET_PRIORITY(IRQ_SAI3_TX, 126);
-#else      
-      attachInterruptVector(IRQ_SAI1, audio_irq);
-      NVIC_ENABLE_IRQ(IRQ_SAI1); 
-      NVIC_SET_PRIORITY(IRQ_SAI1, 126);
-#endif      
+      attachInterruptVector(IRQ_SAI, audio_irq);
+      NVIC_ENABLE_IRQ(IRQ_SAI); 
+      NVIC_SET_PRIORITY(IRQ_SAI, 126);
+  
       Serial.println("Audio started");
 }
 
