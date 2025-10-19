@@ -626,7 +626,7 @@
 
 #define LV_USE_LIST       1
 
-#define LV_USE_LOTTIE     1  /*Requires: lv_canvas, thorvg */
+#define LV_USE_LOTTIE     0  /*Requires: lv_canvas, thorvg */
 
 #define LV_USE_MENU       0
 
@@ -822,10 +822,10 @@
 
 /*Enable Vector Graphic APIs
  *Requires `LV_USE_MATRIX = 1`*/
-#define LV_USE_VECTOR_GRAPHIC  1
+#define LV_USE_VECTOR_GRAPHIC  0
 
 /* Enable ThorVG (vector graphics library) from the src/libs folder */
-#define LV_USE_THORVG_INTERNAL 1
+#define LV_USE_THORVG_INTERNAL 0
 
 /* Enable ThorVG by assuming that its installed and linked to the project */
 #define LV_USE_THORVG_EXTERNAL 0
