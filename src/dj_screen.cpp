@@ -994,7 +994,7 @@ void dj_ui_init(Track * track) {
     else{
       Serial.println("Audio file opened");
       is_playing = true;
-      I2S1_TCSR |= 1<<8;
+      I2S_TCSR_REG |= 1<<8;
       updateDynamicWaveform(0); 
     }
 
@@ -1079,6 +1079,7 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
 
 
 int DynamicWaveformZOOM =1;
+uint32_t nextLabelMs = 0;
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 {
   if (dynamicBufferReady == true) {
@@ -1112,6 +1113,10 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
+  if (millis() > nextLabelMs) {
+    lv_label_set_text_fmt(time_label, "%ld", millis());
+    nextLabelMs = millis() + 90;
+  }
   if (LCD_BUFFER_COUNT == 1) {
     uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
     memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2)); } else {

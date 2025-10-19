@@ -112,9 +112,10 @@ FLASHMEM void createListScreen(){
     int dbOpenResult = sqlite3_open("databases/m.db", &mdb);
     Serial.printf("Result sqlite3_open for m.db: %d\n", dbOpenResult);
 
-    int extended_err = sqlite3_extended_errcode(mdb);
-        fprintf(stderr, "SQL error: %s (Primary Code: %d, Extended Code: %d)\n",
-                sqlite3_errmsg(mdb), dbOpenResult, extended_err);
+    if (dbOpenResult != SQLITE_OK) {
+        int extended_err = sqlite3_extended_errcode(mdb);
+        fprintf(stderr, "SQL error: %s (Primary Code: %d, Extended Code: %d)\n", sqlite3_errmsg(mdb), dbOpenResult, extended_err);
+    }
 
     track_count = get_track_count(mdb);
     sqlite3_stmt *stmt;
