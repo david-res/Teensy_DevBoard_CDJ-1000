@@ -1,17 +1,10 @@
+#include "../include/device_defines.h"
 #include "teensy41SQLite.hpp"
 
-#if defined(RDI_DEVELOPMENTS_REV3)
-int T41SQLite::begin(SdFs* io_filesystem) {
+int T41SQLite::begin(SD_FILE_SYS* io_filesystem) {
     m_filesystem = io_filesystem;
     return sqlite3_initialize();
 }
-#else
-int T41SQLite::begin(FS* io_filesystem)
-{
-  m_filesystem = io_filesystem;
-  return sqlite3_initialize();
-}
-#endif
 
 int T41SQLite::end()
 {
@@ -20,16 +13,9 @@ int T41SQLite::end()
   return result;
 }
 
-#if defined(RDI_DEVELOPMENTS_REV3)
-SdFs* T41SQLite::getFilesystem() {
+SD_FILE_SYS* T41SQLite::getFilesystem() {
     return m_filesystem;
 }
-#else
-FS* T41SQLite::getFilesystem()
-{
-  return m_filesystem;
-}
-#endif
 
 void T41SQLite::setDBDirFullPath(const String &in_dbDirFullpath)
 {

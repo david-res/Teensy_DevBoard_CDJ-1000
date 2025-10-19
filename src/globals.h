@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-#define LCD_BUFFER_COUNT 1
+#define LCD_BUFFER_COUNT 2
 //#define USE_EXTMEM_NOCACHE
 
 #if defined(USE_EXTMEM_NOCACHE)
@@ -58,9 +58,9 @@ extern bool dynamicBufferReady;
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
 #define BUFFER_MEM DMAMEM //DMAMEM //EXTMEM //<blank for ITCM>
 
-extern EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+extern uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 
-extern DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
+extern uint16_t dynamicCanvasBuffer[800 * 164];
 
 
 const uint16_t chartWidth = 800;

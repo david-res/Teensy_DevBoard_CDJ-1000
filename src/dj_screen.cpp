@@ -1,5 +1,6 @@
 
 #include "dj_screen.h"
+#include "../include/device_defines.h"
 #include "globals.h"
 #include "Arduino.h"
 #include "lv_utils.h"
@@ -14,10 +15,8 @@
 
 #if defined(RDI_DEVELOPMENTS_REV3)
 #include "SdFat.h"
-FsFile playFile;
-#else
-File playFile;
 #endif
+FILE_TYPE playFile;
 
 
 LV_FONT_DECLARE(exo2_16)
@@ -1008,7 +1007,7 @@ void dj_ui_init(Track * track) {
 void update_track_info(const char *title, const char *artist, int bpm, const char *key) {
     lv_label_set_text(title_label, title);
     lv_label_set_text(artist_label, artist);
-    lv_label_set_text_fmt(bpm_label, "%d", "128");
+    lv_label_set_text_fmt(bpm_label, "%d", 128);
     lv_label_set_text(key_label, key);
 }
 
@@ -1114,9 +1113,8 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
   if (LCD_BUFFER_COUNT == 1) {
-    lv_label_set_text(time_label, "03:00.4");
-    memcpy((void *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2), dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
-  } else {
+    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
+    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2)); } else {
     dynamicBufferReady = true;
   }
 }
