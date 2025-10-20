@@ -25,7 +25,7 @@ SdExFat SD;
 
 extern "C" void startup_middle_hook(void);
 void SAI_IRQHandler(void);
-void advancePosition();
+void advancePosition_rezo();
 void advancePosition_claude();
 
 #define LCDDISP
@@ -42,18 +42,18 @@ eLCDIF_t4 lcd;
 i2s_sync audio;
 
 bool is_playing = false;
-uint32_t all_long = 0;                        //all long of Track in 0.5*frames   150 on 1 sec
-uint32_t play_adr = 0;                        //Playing adress in samples (44100 per second)
+uint32_t all_long = 0;                     //all long of Track in 0.5*frames   150 on 1 sec
+volatile uint32_t play_adr = 0;            //Playing adress in samples (44100 per second)
 uint32_t slip_play_adr = 0;                //Playing adress for SLIP MODE in samples (44100 per second)
-uint16_t start_adr_valid_data = 0;                            //filling adress in memory
-uint16_t end_adr_valid_data = 0;                                //filling adress in memory ()
+uint16_t start_adr_valid_data = 0;         //filling adress in memory
+uint16_t end_adr_valid_data = 0;           //filling adress in memory ()
 uint8_t filling_step = 0;
-uint8_t offset_adress = 0;            //address offset for calling CUE audio data (for work)
-uint8_t mem_offset_adress = 0;    //address offset for calling CUE audio data (for memory)
-EXTMEM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
+uint8_t offset_adress = 0;                 //address offset for calling CUE audio data (for work)
+uint8_t mem_offset_adress = 0;             //address offset for calling CUE audio data (for memory)
+EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
 uint16_t PCM_2[2] __attribute__((aligned(32)));
 int16_t LR[2][4] __attribute__((aligned(32)));
-uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
+volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
 int32_t even1, even2, odd1, odd2;
 float COEF[8] = {            //////optimal 2x
   0.45868970870461956,
@@ -68,21 +68,21 @@ float COEF[8] = {            //////optimal 2x
 
  uint8_t play_enable = 0;
  uint8_t slip_play_enable = 0;
- uint8_t reverse = 0;
- uint16_t pitch = 10000;    // 10000 = 100% step 0,01%            
- uint32_t position = 0;
+ volatile uint8_t reverse = 0;
+ volatile uint16_t pitch = 10000;         // 10000 = 100% step 0,01%            
+ volatile uint32_t position = 0;
  uint32_t slip_position = 0;
- uint16_t pitch_for_slip = 10000;    // 10000 = 100% step 0,01%    
+ uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
  float SAMPLE_BUFFER;
  float T;
  uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
- uint8_t    end_of_track = 0;            //end track flag
- uint8_t loop_active = 0;            //loop flag
- uint32_t LOOP_OUT = 0;                //adr LOOP OUT in frames 150
+ volatile uint8_t end_of_track = 0;       //end track flag
+ uint8_t loop_active = 0;                 //loop flag
+ uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
  uint8_t lock_control = 1;            
 
 volatile uint32_t interrupt_counter = 0;
-volatile uint32_t interrupt_duration = 0;
+
 uint32_t last_check_time = 0;
 
 /*
@@ -126,6 +126,11 @@ void startup_middle_hook(void)
   //Disable caching for first 4M of SDRAM
 	SCB_MPU_RBAR = 0x80000000 | (SCB_MPU_RBAR_REGION(11) | SCB_MPU_RBAR_VALID); // 0x80000000 | REGION(11);
 	SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(21) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_4M;
+
+  // Region 12: Next 8MB nocache (0x80400000 - 0x80BFFFFF) for PCM array
+  SCB_MPU_RBAR = 0x80400000 | (SCB_MPU_RBAR_REGION(12) | SCB_MPU_RBAR_VALID);
+  SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(22) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_8M;
+
 #endif
 
   // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
@@ -324,8 +329,17 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
   }
 }
 
-
 LV_FONT_DECLARE(exo2_18)
+
+FLASHMEM void reportAppConfig() {
+  Serial.println("\n========= App settings ===========");
+  Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
+  Serial.printf("LCD_BUFFER_COUNT: " SER_YELLOW "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
+  Serial.printf("LVGL: " SER_YELLOW "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
+ // buffer count, LVGL version
+  Serial.println("========= App settings ===========\n");
+}
+
 void setup()
 {
   Serial.begin (115200);
@@ -334,6 +348,8 @@ void setup()
   if(CrashReport){
     Serial.print(CrashReport);
   }
+
+  reportAppConfig();
 
   int resultBegin = -1;
   T41SQLite::getInstance().setLogCallback(errorLogCallback);
@@ -349,6 +365,10 @@ void setup()
     Serial.println("sd.begin() failed! - Halting!");
     while (true) { delay(1000); }
   }
+
+  Serial.println("Initializing PCM buffer...");
+  memset(PCM, 0, sizeof(PCM));
+  Serial.println("PCM buffer initialized");
 
   //REMDISP_init();
   //REMDISP_register_callbacks();
@@ -437,11 +457,11 @@ void setup()
   lv_indev_set_read_cb(ts_indev, touch_read_cb);
 #endif
 
-  #if LV_USE_LOG != 0
-    lv_log_register_print_cb(my_print);
-    #endif
+#if LV_USE_LOG != 0
+  lv_log_register_print_cb(my_print);
+#endif
 
-    analogWrite(BACKLIGHT_PIN, 220);
+  analogWrite(BACKLIGHT_PIN, 220);
  
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
   audio.begin(&SAI_IRQHandler);
@@ -484,26 +504,23 @@ void setup()
   {
     Serial.println("T41SQLite::getInstance().begin() failed!");
   }
-  // Delete LVGL display timer
-  lv_display_delete_refr_timer(disp_drv);
 }
+
 uint32_t bytes_read = 0;
-uint32_t nextMillis = 0; 
+
 void loop()
 {
   // Debug code for interrupt counts
   uint32_t now = millis();
   if (now - last_check_time >= 5000) {  // Every 5 seconds
-    Serial.printf("Interrupts per second: %ld, avg duration: %0.2fuS\n", interrupt_counter / 5, (float)interrupt_duration / (float)interrupt_counter);
+    Serial.printf("Interrupts per second: %ld\n", interrupt_counter / 5);
     interrupt_counter = 0;
-    interrupt_duration = 0;
     last_check_time = now;
   }
 
   if (lvgl_framePending == true) {
       lvgl_framePending = false;
-      lv_display_refr_timer(NULL);
-      lv_timer_handler(); // Call timer handler for other LVGL timers (indev, perf monitor, etc)
+      lv_timer_handler(); 
   }
 
   if(is_playing){
@@ -578,94 +595,84 @@ void loop()
     } 
 }
 
-static volatile uint32_t* txreg32 = (volatile uint32_t*)&I2S_TDR0_REG;
-
 FASTRUN void SAI_IRQHandler(void)
 {
   interrupt_counter++;
-  uint32_t start = micros();
 
-  // Send BOTH channels
-  uint32_t left_data = (uint32_t)((SAMPLE[1] << 8) | SAMPLE[0]) << 16;
-  *txreg32 = left_data;
+  I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
+
+  uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
+  I2S3_TDR0 = (uint32_t)left << 16;
   
-  uint32_t right_data = (uint32_t)((SAMPLE[3] << 8) | SAMPLE[2]) << 16;
-  *txreg32 = right_data;
+  uint16_t right = (SAMPLE[3] << 8) | SAMPLE[2];
+  I2S3_TDR0 = (uint32_t)right << 16;
   
   advancePosition_claude();
-
-  I2S_TCSR_REG |= 0x00040000;  // Clear the FIFO request flag
-
-  interrupt_duration += (micros() - start);
+  
+  I2S_TCSR_REG |= 0x00040000;     // Clear error flag
+  I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
 }
 
-/*
-FASTRUN void advancePosition() {
+FASTRUN void advancePosition_rezo() {
+  float c0, c1, c2, c3, r0, r1, r2, r3;
+  uint8_t step_position;
+  uint32_t sdram_adr;
+  
   position+= pitch;
 	
-	if(position>9999)	
-	{
-	step_position = position/10000;				
-	if(reverse==0 && end_of_track==0)					
-		{			
-		play_adr+= step_position;	
-		if(step_position==1)
-		{
-		LR[0][0] = LR[0][1];
-		LR[1][0] = LR[1][1];
-		LR[0][1] = LR[0][2];
-		LR[1][1] = LR[1][2];
-		LR[0][2] = LR[0][3];
-		LR[1][2] = LR[1][3];					
-		}
-		else
-		{
-		sdram_adr = play_adr&0xFFFFF;						
-		LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-		LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-		sdram_adr = (play_adr+1)&0xFFFFF;
-		LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
-		LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-		sdram_adr = (play_adr+2)&0xFFFFF;
-		LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
-		LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-		}
-		sdram_adr = (play_adr+3)&0xFFFFF;	
-		LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-		LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-		}
-	else if(reverse==1 && play_adr>=step_position)
-		{
-		play_adr-= step_position;
-		if(step_position==1)
-		{
-		LR[0][0] = LR[0][1];
-		LR[1][0] = LR[1][1];
-		LR[0][1] = LR[0][2];
-		LR[1][1] = LR[1][2];
-		LR[0][2] = LR[0][3];
-		LR[1][2] = LR[1][3];
-		sdram_adr = (play_adr)&0xFFFFF;	
-		LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-		LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-		}
-		else
-		{
-		sdram_adr = play_adr&0xFFFFF;						
-		LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-		LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-		sdram_adr = (play_adr+1)&0xFFFFF;
-		LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
-		LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-		sdram_adr = (play_adr+2)&0xFFFFF;
-		LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
-		LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-		sdram_adr = (play_adr+3)&0xFFFFF;	
-		LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-		LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];			
+	if (position>9999) {
+    step_position = position/10000;				
+    if (reverse==0 && end_of_track==0) {			
+      play_adr+= step_position;	
+      if (step_position==1) {
+        LR[0][0] = LR[0][1];
+        LR[1][0] = LR[1][1];
+        LR[0][1] = LR[0][2];
+        LR[1][1] = LR[1][2];
+        LR[0][2] = LR[0][3];
+        LR[1][2] = LR[1][3];					
+      }	else {
+        sdram_adr = play_adr&0xFFFFF;						
+        LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+        LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+        sdram_adr = (play_adr+1)&0xFFFFF;
+        LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
+        LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+        sdram_adr = (play_adr+2)&0xFFFFF;
+        LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
+        LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+      }
+      sdram_adr = (play_adr+3)&0xFFFFF;	
+      LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+      LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+		}	else if (reverse==1 && play_adr>=step_position)	{
+		  play_adr-= step_position;
+      if (step_position==1) {
+        LR[0][0] = LR[0][1];
+        LR[1][0] = LR[1][1];
+        LR[0][1] = LR[0][2];
+        LR[1][1] = LR[1][2];
+        LR[0][2] = LR[0][3];
+        LR[1][2] = LR[1][3];
+        sdram_adr = (play_adr)&0xFFFFF;	
+        LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+        LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+      } else {
+        sdram_adr = play_adr&0xFFFFF;						
+        LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+        LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+        sdram_adr = (play_adr+1)&0xFFFFF;
+        LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
+        LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+        sdram_adr = (play_adr+2)&0xFFFFF;
+        LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
+        LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+        sdram_adr = (play_adr+3)&0xFFFFF;	
+        LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+        LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];			
+      }	
 		}	
-		}	
-	position = position%10000;	
+	  position = position%10000;	
 	}	
 
 	T = position;
@@ -728,11 +735,10 @@ FASTRUN void advancePosition() {
 	SAMPLE[0] = PCM_2[1]%256;
 	//HAL_GPIO_WritePin(GPIOB, LED_TAG_LIST_Pin, GPIO_PIN_RESET);
 }
-*/
 
 FASTRUN void advancePosition_claude()
 {
-  int32_t PCM_2[2];  // Local output samples for both channels (signed 32-bit)
+  int32_t PCM_2[2];
   uint32_t step_position;
   uint32_t sdram_adr;
   
@@ -745,7 +751,6 @@ FASTRUN void advancePosition_claude()
           play_adr += step_position;
           
           if (step_position == 1) {
-              // Shift samples - manual unrolling is fastest on ARM Cortex-M7
               LR[0][0] = LR[0][1];
               LR[0][1] = LR[0][2];
               LR[0][2] = LR[0][3];
@@ -753,13 +758,12 @@ FASTRUN void advancePosition_claude()
               LR[1][1] = LR[1][2];
               LR[1][2] = LR[1][3];
           } else {
-              // Load 4 samples at once, computing address once
               uint32_t base_adr = play_adr & 0xFFFFF;
-              uint32_t bank_offset = offset_adress + (base_adr >> 13);
+              uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);  // MASK HERE
               
               for (int i = 0; i < 3; i++) {
                   uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = bank_offset + ((addr >> 13) - (base_adr >> 13));
+                  uint32_t bank = (bank_offset + ((addr >> 13) - (base_adr >> 13))) & 0x7F;
                   uint32_t idx = addr & 0x1FFF;
                   LR[0][i] = PCM[bank][idx][0];
                   LR[1][i] = PCM[bank][idx][1];
@@ -768,8 +772,9 @@ FASTRUN void advancePosition_claude()
           
           // Always load last sample
           sdram_adr = (play_adr + 3) & 0xFFFFF;
-          LR[0][3] = PCM[(sdram_adr >> 13) + offset_adress][sdram_adr & 0x1FFF][0];
-          LR[1][3] = PCM[(sdram_adr >> 13) + offset_adress][sdram_adr & 0x1FFF][1];
+          uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
+          LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
+          LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
       }
       else if (reverse == 1 && play_adr >= step_position) {
           play_adr -= step_position;
@@ -783,14 +788,15 @@ FASTRUN void advancePosition_claude()
               LR[1][2] = LR[1][3];
               
               sdram_adr = play_adr & 0xFFFFF;
-              LR[0][3] = PCM[(sdram_adr >> 13) + offset_adress][sdram_adr & 0x1FFF][0];
-              LR[1][3] = PCM[(sdram_adr >> 13) + offset_adress][sdram_adr & 0x1FFF][1];
+              uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
+              LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
+              LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
           } else {
               uint32_t base_adr = play_adr & 0xFFFFF;
               
               for (int i = 0; i < 4; i++) {
                   uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = (addr >> 13) + offset_adress;
+                  uint32_t bank = (((addr >> 13) + offset_adress) & 0x7F);  // MASK HERE
                   uint32_t idx = addr & 0x1FFF;
                   LR[0][3 - i] = PCM[bank][idx][0];
                   LR[1][3 - i] = PCM[bank][idx][1];
@@ -801,36 +807,29 @@ FASTRUN void advancePosition_claude()
       position %= 10000;
   }
 
-  // Pre-compute T once
+  // Rest of interpolation code unchanged...
   float T = (position * 0.0001f) - 0.5f;
 
-  // Process both channels in a loop to reduce code duplication
   for (int ch = 0; ch < 2; ch++) {
-      // Use 32-bit intermediate values to prevent overflow
       int32_t even1 = (int32_t)LR[ch][2] + (int32_t)LR[ch][1];
       int32_t odd1 = (int32_t)LR[ch][2] - (int32_t)LR[ch][1];
       int32_t even2 = (int32_t)LR[ch][3] + (int32_t)LR[ch][0];
       int32_t odd2 = (int32_t)LR[ch][3] - (int32_t)LR[ch][0];
       
-      // Compute polynomial coefficients
       float c0 = (float)even1 * COEF[0] + (float)even2 * COEF[1];
       float c1 = (float)odd1 * COEF[2] + (float)odd2 * COEF[3];
       float c2 = (float)even1 * COEF[4] + (float)even2 * COEF[5];
       float c3 = (float)odd1 * COEF[6] + (float)odd2 * COEF[7];
       
-      // Horner's method for polynomial evaluation - more efficient
       float result = c0 + T * (c1 + T * (c2 + T * c3));
       result *= 0.90f;
       
-      // Clamp result to prevent overflow on conversion to int32
       if (result > 2147483647.0f) result = 2147483647.0f;
       if (result < -2147483648.0f) result = -2147483648.0f;
       
       PCM_2[ch] = (int32_t)result;
   }
 
-  // Pack samples - use bit shifts instead of division/modulo
-  // Cast to uint32_t to ensure logical right shift (not arithmetic)
   SAMPLE[3] = (uint8_t)((uint32_t)PCM_2[0] >> 8);
   SAMPLE[2] = (uint8_t)(PCM_2[0] & 0xFF);
   SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);

@@ -4,12 +4,14 @@
 #include <Arduino.h>
 
 #define LCD_BUFFER_COUNT 2
-//#define USE_EXTMEM_NOCACHE
+#define USE_EXTMEM_NOCACHE
 
 #if defined(USE_EXTMEM_NOCACHE)
 #define EXTMEM_NOCACHE __attribute__((section(".externalram_nocache")))
+#define EXTMEM_NOCACHE_PCM __attribute__((section(".externalram_nocache_pcm")))
 #else
 #define EXTMEM_NOCACHE EXTMEM
+#define EXTMEM_NOCACHE_PCM EXTMEM
 #endif
 
 #if (LVGL_VERSION_MAJOR == 9)
@@ -21,33 +23,31 @@
 /////////////////////
 extern bool is_playing;
 extern uint32_t all_long;
-extern uint32_t play_adr;
+extern volatile uint32_t play_adr;
 extern uint32_t slip_play_adr;
-extern uint32_t sdram_adr;
-extern uint8_t SAMPLE[4];
-extern EXTMEM uint16_t PCM[206][8192][2];
+extern EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2];
+extern uint16_t PCM_2[2];
+extern int16_t LR[2][4];
+extern volatile uint8_t SAMPLE[4];
 extern uint16_t start_adr_valid_data;
 extern uint16_t end_adr_valid_data;
 extern uint8_t filling_step;
 extern uint8_t offset_adress;
 extern uint8_t mem_offset_adress;
-extern uint16_t PCM_2[2];
-extern int16_t LR[2][4];
 extern float c0, c1, c2, c3, r0, r1, r2, r3;
 extern int32_t even1, even2, odd1, odd2;
 extern float COEF[8];
 extern uint8_t play_enable;
 extern uint8_t slip_play_enable;
-extern uint8_t reverse;
-extern uint16_t pitch;
-extern uint32_t position;
+extern volatile uint8_t reverse;
+extern volatile uint16_t pitch;
+extern volatile uint32_t position;
 extern uint32_t slip_position;
 extern uint16_t pitch_for_slip;
-extern uint8_t step_position;
 extern float SAMPLE_BUFFER;
 extern float T;
 extern uint8_t QUANTIZE;
-extern uint8_t end_of_track;
+extern volatile uint8_t end_of_track;
 extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
