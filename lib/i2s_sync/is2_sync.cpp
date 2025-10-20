@@ -65,7 +65,7 @@ FLASHMEM void i2s_sync::config_sai1()
       int tsync = 0;  // TX is asynchronous (generates its own clock)
 
       I2S3_TMR = 0;
-      I2S3_TCR1 = I2S_TCR1_RFW(1);
+      I2S3_TCR1 = I2S_TCR1_RFW(2);  // Changed from 1 to 2 - wait until FIFO has space for 2 words
       I2S3_TCR2 = I2S_TCR2_SYNC(tsync) | I2S_TCR2_BCP
             | (I2S_TCR2_BCD | I2S_TCR2_DIV((1)) | I2S_TCR2_MSEL(1));
       I2S3_TCR3 = I2S_TCR3_TCE;
@@ -77,7 +77,7 @@ FLASHMEM void i2s_sync::config_sai1()
       I2S3_RCSR = 0;  // RX disabled 
       
       I2S3_TCSR = 0;  // Clear first
-      I2S3_TCSR |= I2S_TCSR_TE | I2S_TCSR_BCE | I2S_TCSR_FRIE | I2S_TCSR_FR;
+      I2S3_TCSR |= I2S_TCSR_BCE | I2S_TCSR_FR;
       
       // TX_DATA pin
       IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B1_01 = 8;  // SAI3_TX_DATA0
@@ -102,7 +102,7 @@ FLASHMEM void i2s_sync::config_sai1()
 
   I2S1_TMR = 0;
   //I2S1_TCSR = (1<<25); //Reset
-  I2S1_TCR1 = I2S_TCR1_RFW(1);
+  I2S1_TCR1 = I2S_TCR1_RFW(2);  // Changed from 1 to 2 - wait until FIFO has space for 2 words
   I2S1_TCR2 = I2S_TCR2_SYNC(tsync) | I2S_TCR2_BCP // sync=0; tx is async;
         | (I2S_TCR2_BCD | I2S_TCR2_DIV((1)) | I2S_TCR2_MSEL(1));
   I2S1_TCR3 = I2S_TCR3_TCE;
@@ -124,7 +124,7 @@ FLASHMEM void i2s_sync::config_sai1()
   // From AudioOutputI2Sslave::begin
   I2S1_RCSR |= I2S_RCSR_RE | I2S_RCSR_BCE;
   I2S1_TCSR = 0;  // Clear first
-  I2S1_TCSR |= I2S_TCSR_TE | I2S_TCSR_BCE | I2S_TCSR_FRIE | I2S_TCSR_FR;
+  I2S1_TCSR |= I2S_TCSR_BCE | I2S_TCSR_FR;
   IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 3;   //CORE_PIN7_CONFIG  = 3;  // TX_DATA0
 #endif
 

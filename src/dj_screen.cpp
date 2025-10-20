@@ -950,6 +950,18 @@ void create_bottom_container(void) {
         */
 }
 
+FASTRUN void startI2SInterrupt()
+{
+  // Start transmitter and interrupt
+  I2S_TCSR_REG |= I2S_TCSR_TE | I2S_TCSR_FRIE;
+}
+
+FASTRUN void stopI2SInterrupt()
+{
+  // Stop transmitter and interrupt
+  I2S_TCSR_REG &= ~(I2S_TCSR_TE | I2S_TCSR_FRIE);
+}
+
 
 void dj_ui_init(Track * track) {
     // Create main screen
@@ -994,7 +1006,7 @@ void dj_ui_init(Track * track) {
     else{
       Serial.println("Audio file opened");
       is_playing = true;
-      I2S_TCSR_REG |= 1<<8;
+      startI2SInterrupt();
       updateDynamicWaveform(0); 
     }
 
