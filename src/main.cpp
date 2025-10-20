@@ -606,8 +606,8 @@ FASTRUN void SAI_IRQHandler(void)
 
   __DMB();  // Data Memory Barrier - force ordering
   
-  I2S3_TDR0 = (uint32_t)left << 16;
-  I2S3_TDR0 = (uint32_t)right << 16;
+  I2S_TDR0_REG = (uint32_t)left << 16;
+  I2S_TDR0_REG = (uint32_t)right << 16;
   
   advancePosition_claude();
   
