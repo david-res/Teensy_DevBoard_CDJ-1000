@@ -508,7 +508,7 @@ void setup()
 
 uint32_t bytes_read = 0;
 
-void loop()
+FASTRUN void loop()
 {
   // Debug code for interrupt counts
   uint32_t now = millis();
@@ -599,18 +599,20 @@ FASTRUN void SAI_IRQHandler(void)
 {
   interrupt_counter++;
 
-  I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
+  //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
-  I2S3_TDR0 = (uint32_t)left << 16;
-  
   uint16_t right = (SAMPLE[3] << 8) | SAMPLE[2];
-  I2S3_TDR0 = (uint32_t)right << 16;
+
+  __DMB();  // Data Memory Barrier - force ordering
+  
+  I2S_TDR0_REG = (uint32_t)left << 16;
+  I2S_TDR0_REG = (uint32_t)right << 16;
   
   advancePosition_claude();
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
-  I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
+  //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
 }
 
 FASTRUN void advancePosition_rezo() {
@@ -834,4 +836,19 @@ FASTRUN void advancePosition_claude()
   SAMPLE[2] = (uint8_t)(PCM_2[0] & 0xFF);
   SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
   SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
+
+#if defined(RDI_DEVELOPMENTS_REV3)
+  // Lower volume
+  #define VOLUME_FACTOR 3277 // 90% reduced volume 
+  int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
+  int32_t scaled_left_32 = (int32_t)raw_left * VOLUME_FACTOR;
+  int16_t scaled_left = (int16_t)(scaled_left_32 >> 15); 
+  int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);
+  int32_t scaled_right_32 = (int32_t)raw_right * VOLUME_FACTOR;
+  int16_t scaled_right = (int16_t)(scaled_right_32 >> 15);
+  SAMPLE[2] = (uint8_t)(scaled_right & 0xFF);    
+  SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 
+  SAMPLE[0] = (uint8_t)(scaled_left & 0xFF);       
+  SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
+#endif  
 }
