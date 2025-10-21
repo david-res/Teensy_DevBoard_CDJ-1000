@@ -3,6 +3,7 @@
 #include "teensy41SQLite.hpp"
 #include <SD.h>
 #include "globals.h"
+#include "stats/app_stats.h"
 #include "file_viewer.h"
 #include "dj_screen.h"
 #include <SDRAM_t4.h>
@@ -11,13 +12,16 @@
 #include "inflate.h"
 #include "T4_PXP.h"
 
+#if defined(USE_REM_DISP)
+#include "RemoteDisplay.h"
+#endif
+
 #if defined(RDI_DEVELOPMENTS_REV3)
 #include <SdFat.h>
 #define BACKLIGHT_PIN 24
 SdFs sd_io2;
 #else
 #define BACKLIGHT_PIN A0
-SdExFat SD;
 #endif
 
 
@@ -29,9 +33,15 @@ void advancePosition_rezo();
 void advancePosition_claude();
 
 #define LCDDISP
-//#define REMDISP
+
+#if defined(USE_REM_DISP)
+RemoteDisplay remoteDisplay;
+#endif  
 
 //#define USE_PXP
+
+//For stats
+AppStats appStats = AppStats();
 
 //SdFat sd;
 FsFile perfDB;
@@ -80,10 +90,6 @@ float COEF[8] = {            //////optimal 2x
  uint8_t loop_active = 0;                 //loop flag
  uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
  uint8_t lock_control = 1;            
-
-volatile uint32_t interrupt_counter = 0;
-
-uint32_t last_check_time = 0;
 
 /*
 uint32_t height;
@@ -134,12 +140,12 @@ void startup_middle_hook(void)
 #endif
 
   // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
-  if (!sdram.begin(32, 198, 1)){
-    Serial.println("SDRAM init fail :( ...");
+  if (!sdram.begin(32, SDRAM_SPEED, 1)){
+    Serial.printf("SDRAM init at %ldMHz failed\n", SDRAM_SPEED);
   }
 }
 
-#ifdef REMDISP
+#ifdef USE_REM_DISP
 void refreshDisplayCallback()
 {
   lv_area_t area;
@@ -147,18 +153,24 @@ void refreshDisplayCallback()
   lv_obj_invalidate_area(lv_scr_act(), &area);
 }
 
-
-
+#if (LVGL_VERSION_MAJOR == 8)
+FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
+{
+  if (remoteDisplay.sendRemoteScreen == true ) {
+    remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
+  }
+  lv_disp_flush_ready(display);
+}
+#endif
+#if (LVGL_VERSION_MAJOR == 9)
 FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
 {
   if (remoteDisplay.sendRemoteScreen == true ) {
     remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
   }
-    lv_display_flush_ready(display);
-    
+  lv_disp_flush_ready(display);
 }
- 
-
+#endif
 
 
 FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
@@ -213,7 +225,7 @@ FASTRUN void pxpCallback(){
 }
 
 #else
-#if (LVGL_VERSION_MAJOR == 8)
+#if (LVGL_VERSION_MAJOR == 8) && !defined(USE_REM_DISP)
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
 {
   if (lv_disp_flush_is_last(&disp_drv)){
@@ -228,7 +240,7 @@ FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_col
   }
 }
 #endif
-#if (LVGL_VERSION_MAJOR == 9)
+#if (LVGL_VERSION_MAJOR == 9) && !defined(USE_REM_DISP)
 FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
 {
   if (lv_disp_flush_is_last(disp_drv)){
@@ -332,12 +344,15 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
 LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
-  Serial.println("\n========= App settings ===========");
+  Serial.println("\n=============== App Settings =================");
+  Serial.printf("COMPILED: " SER_YELLOW "%s %s" SER_RESET " with GCC " SER_YELLOW "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
+  Serial.printf("F_BUS_ACTUAL: " SER_YELLOW "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_YELLOW "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
-  Serial.printf("LCD_BUFFER_COUNT: " SER_YELLOW "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
+  Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
+   Serial.printf("LCD_BUFFER_COUNT: " SER_YELLOW "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
   Serial.printf("LVGL: " SER_YELLOW "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
  // buffer count, LVGL version
-  Serial.println("========= App settings ===========\n");
+  Serial.println("=============== App Settings =================\n");
 }
 
 void setup()
@@ -370,10 +385,10 @@ void setup()
   memset(PCM, 0, sizeof(PCM));
   Serial.println("PCM buffer initialized");
 
-  //REMDISP_init();
-  //REMDISP_register_callbacks();
+  //USE_REM_DISP_init();
+  //USE_REM_DISP_register_callbacks();
   memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
-  #ifdef REMDISP
+  #ifdef USE_REM_DISP
   remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
   #endif
@@ -461,7 +476,7 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
-  analogWrite(BACKLIGHT_PIN, 220);
+  analogWrite(BACKLIGHT_PIN, 255);
  
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
   audio.begin(&SAI_IRQHandler);
@@ -508,14 +523,39 @@ void setup()
 
 uint32_t bytes_read = 0;
 
+FASTRUN void playFileSeek(uint64_t pos) 
+{
+  appStats.start();
+
+  CrashReport.breadcrumb(1, 1);
+  playFile.seek(pos);
+  CrashReport.breadcrumb(1, 0);
+
+  appStats.playFileSeekTime += appStats.end();
+  appStats.playFileSeekCount += 1;
+
+}
+
+FASTRUN int playFileRead(void *buf, size_t count)
+{
+  appStats.start();
+
+  uint32_t bytes_read = 0;
+  CrashReport.breadcrumb(1, 2);
+  bytes_read = playFile.read(buf, count);
+  CrashReport.breadcrumb(1, 0);  
+
+  appStats.playFileReadTime += appStats.end();
+  appStats.playFileReadCount += 1;
+  appStats.playFileReadBytes += bytes_read;
+  return bytes_read;
+}
+
 FASTRUN void loop()
 {
-  // Debug code for interrupt counts
-  uint32_t now = millis();
-  if (now - last_check_time >= 5000) {  // Every 5 seconds
-    Serial.printf("Interrupts per second: %ld\n", interrupt_counter / 5);
-    interrupt_counter = 0;
-    last_check_time = now;
+  // Stats
+  if (appStats.readyToReport() == true) {
+    appStats.report();
   }
 
   if (lvgl_framePending == true) {
@@ -534,8 +574,8 @@ FASTRUN void loop()
     
     
       if(end_adr_valid_data<128){
-        bytes_read = playFile.read(PCM[end_adr_valid_data][0], 32768);
-        Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
+        bytes_read = playFileRead(PCM[end_adr_valid_data][0], 32768);
+        //Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
         end_adr_valid_data++;
           
         }
@@ -543,11 +583,12 @@ FASTRUN void loop()
     else if((end_adr_valid_data<((play_adr>>13)+42)) && (filling_step==0 || filling_step==6)){
       						//filling the buffer forward
       if(filling_step==6){
-        playFile.seek((32768*end_adr_valid_data)+44);
+
+        playFileSeek((32768*end_adr_valid_data)+44);
         filling_step = 0;	
         }
 
-      bytes_read = playFile.read(PCM[end_adr_valid_data&0x7F][0], 32768);
+      bytes_read = playFileRead(PCM[end_adr_valid_data&0x7F][0], 32768);
       //Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
       //Serial.printf("all_long %d play_adr %d \n", all_long, play_adr);		
       //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
@@ -563,27 +604,27 @@ FASTRUN void loop()
           end_adr_valid_data = start_adr_valid_data+124;	
           }	
         start_adr_valid_data-= 4;	
-        playFile.seek((32768*(start_adr_valid_data))+44);
+        playFileSeek((32768*(start_adr_valid_data))+44);
         filling_step = 1;	
         }
 
       else if(filling_step==1){
-        playFile.read(PCM[start_adr_valid_data&0x7F][0], 32768);
+        playFileRead(PCM[start_adr_valid_data&0x7F][0], 32768);
         filling_step = 2;	
         }
 
       else if(filling_step==2){
-        playFile.read(PCM[(start_adr_valid_data+1)&0x7F][0], 32768);
+        playFileRead(PCM[(start_adr_valid_data+1)&0x7F][0], 32768);
         filling_step = 3;	
         }
 
       else if(filling_step==3){
-        playFile.read(PCM[(start_adr_valid_data+2)&0x7F][0], 32768);
+        playFileRead(PCM[(start_adr_valid_data+2)&0x7F][0], 32768);
         filling_step = 4;	
         }
 
       else if(filling_step==4){
-        playFile.read(PCM[(start_adr_valid_data+3)&0x7F][0], 32768);
+        playFileRead(PCM[(start_adr_valid_data+3)&0x7F][0], 32768);
         filling_step = 5;	
         }
 
@@ -597,14 +638,14 @@ FASTRUN void loop()
 
 FASTRUN void SAI_IRQHandler(void)
 {
-  interrupt_counter++;
+  appStats.interruptCounter++;
 
   //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
   uint16_t right = (SAMPLE[3] << 8) | SAMPLE[2];
 
-  __DMB();  // Data Memory Barrier - force ordering
+  __DSB();  // completes when all explicit memory accesses before this instruction complete
   
   I2S_TDR0_REG = (uint32_t)left << 16;
   I2S_TDR0_REG = (uint32_t)right << 16;
@@ -837,7 +878,7 @@ FASTRUN void advancePosition_claude()
   SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
   SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
-#if defined(RDI_DEVELOPMENTS_REV3)
+#if !defined(RDI_DEVELOPMENTS_REV3)
   // Lower volume
   #define VOLUME_FACTOR 3277 // 90% reduced volume 
   int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);

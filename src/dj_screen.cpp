@@ -116,8 +116,6 @@ EXTMEM uint8_t * overviewBuffer;
 bool dynamicBufferReady = false;
 
 
-
-
 FLASHMEM bool loadDynamicWaveformData(uint16_t track_id){
   int32_t fileSize = 0;
   Serial.printf("Starting to open track_id %d \n", track_id);
@@ -436,7 +434,7 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
       // Add proper rounding for integer conversion
       float finalValue = interpolatedValue * heightRatio * waveformUserGain[j];
       overViewWaveSampleData[j][i] = (uint8_t)(finalValue + 0.5f); // Round to nearest
-      Serial.printf("ov[%d][%d] = %d\n", j, i, overViewWaveSampleData[j][i]);
+      //Serial.printf("ov[%d][%d] = %d\n", j, i, overViewWaveSampleData[j][i]);
     }
   }
 
@@ -723,7 +721,7 @@ FLASHMEM void drawOverviewCanvas()
   for (uint16_t x = 0; x < chartWidth; x++) {
     for (uint8_t i = 0; i < 3; i++) {
       drawFastVLine16BitOverview(x, overviewChartHeight - (overViewWaveSampleData[i][x]), (overViewWaveSampleData[i][x]), waveformColors[i], overviewCanvasBuffer, chartWidth);
-      Serial.printf("drawing x=%d, height=%d\n", x, (overViewWaveSampleData[i][x]));
+      //Serial.printf("drawing x=%d, height=%d\n", x, (overViewWaveSampleData[i][x]));
     }
   }
   //Invalidate canvas, as this is updated done rarely
@@ -992,26 +990,21 @@ void dj_ui_init(Track * track) {
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
 
-      
+     const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
 #if defined(RDI_DEVELOPMENTS_REV3)
-    playFile.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
+    playFile.open(fName, FILE_READ);
 #else
-    playFile = SD.open("mixxx-export/86 - raise_your_hands.wav", FILE_READ);
+    playFile = SD.open(fName, FILE_READ);
 #endif
     if (!playFile) {
-      Serial.printf("Trying to open: %s\n", track->path);
-      Serial.println("Failed to open audio file");
-    
+      Serial.printf("Failed trying to open file: %s\n", fName);
     }
     else{
-      Serial.println("Audio file opened");
+      Serial.printf("Opened audio file: %s\n", fName);
       is_playing = true;
       startI2SInterrupt();
       updateDynamicWaveform(0); 
     }
-
-    
-
 }
 
 // Update functions for dynamic content
@@ -1097,6 +1090,10 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   if (dynamicBufferReady == true) {
     return;
   }
+
+  // Start time for stats
+  appStats.start();
+
   //Clear canvas
   int offset = 800 * 82; // start of row 82
   memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
@@ -1134,6 +1131,9 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2)); } else {
     dynamicBufferReady = true;
   }
+  // Finish stats
+  appStats.waveformRenderTime += appStats.end();
+  appStats.waveformRenderCount += 1;
 }
 
 // Add these as global/static variables
