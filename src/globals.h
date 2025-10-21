@@ -2,9 +2,12 @@
 #define GLOBALS_H
 
 #include <Arduino.h>
+#include "stats/app_stats.h"
 
 #define LCD_BUFFER_COUNT 2
+#define SDRAM_SPEED 198
 #define USE_EXTMEM_NOCACHE
+//#define USE_REM_DISP
 
 #if defined(USE_EXTMEM_NOCACHE)
 #define EXTMEM_NOCACHE __attribute__((section(".externalram_nocache")))
@@ -17,6 +20,8 @@
 #if (LVGL_VERSION_MAJOR == 9)
 #define LV_IMG_CF_TRUE_COLOR LV_COLOR_FORMAT_NATIVE
 #endif
+
+extern AppStats appStats;
 
 /////////////////////
 //User defined params
