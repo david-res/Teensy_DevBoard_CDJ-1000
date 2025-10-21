@@ -5,7 +5,8 @@
 #include "stats/app_stats.h"
 
 #define LCD_BUFFER_COUNT 2
-#define SDRAM_SPEED 198
+#define SDRAM_SPEED 198      // 166, 198, 221
+#define SD_CARD_SPEED 50'000 // 20'000, 33'000, 50'000 (default), 66'000, 99'000, 198'000 (usually doesn't work)
 #define USE_EXTMEM_NOCACHE
 //#define USE_REM_DISP
 

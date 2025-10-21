@@ -11,6 +11,7 @@
 #include <Adafruit_FT6206.h>
 #include "inflate.h"
 #include "T4_PXP.h"
+#include "utils/changeSDSpeed.h"
 
 #if defined(USE_REM_DISP)
 #include "RemoteDisplay.h"
@@ -345,18 +346,35 @@ LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
   Serial.println("\n=============== App Settings =================");
-  Serial.printf("COMPILED: " SER_YELLOW "%s %s" SER_RESET " with GCC " SER_YELLOW "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
-  Serial.printf("F_BUS_ACTUAL: " SER_YELLOW "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_YELLOW "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
+  Serial.printf("F_BUS_ACTUAL: " SER_CYAN "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
-   Serial.printf("LCD_BUFFER_COUNT: " SER_YELLOW "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
-  Serial.printf("LVGL: " SER_YELLOW "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
+  Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
+  Serial.printf("LVGL: " SER_CYAN "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
  // buffer count, LVGL version
   Serial.println("=============== App Settings =================\n");
 }
 
+FLASHMEM void errorHalt(const char* message)
+{
+  Serial.printf("CRITICAL ERROR: %s - halting execution\n", message);
+  while (true) {
+    delay(1000);
+  }
+}
+
 void setup()
 {
+#ifdef LCDDISP
+  // Turn off backlight
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  analogWriteFrequency(BACKLIGHT_PIN, 200);
+  analogWrite(BACKLIGHT_PIN, 0);
+#endif  
+
+  // Initialize Serial
   Serial.begin (115200);
   while (!Serial) {};
   delay(1000);
@@ -364,43 +382,57 @@ void setup()
     Serial.print(CrashReport);
   }
 
+  // Report on configuration
   reportAppConfig();
 
-  int resultBegin = -1;
+  // Start SDcard
+#if defined(RDI_DEVELOPMENTS_REV3)
+  bool sdCardResult = sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2));
+#else
+  bool sdCardResult = SD.begin(BUILTIN_SDCARD)
+#endif
+
+  if (sdCardResult == true) {
+    setSDCardClock(SD_CARD_SPEED, MACRO_EXISTS(RDI_DEVELOPMENTS_REV3));
+  } else {
+    errorHalt("sd.begin() failed");
+  }
+
+  // Start SQLite
   T41SQLite::getInstance().setLogCallback(errorLogCallback);
 
 #if defined(RDI_DEVELOPMENTS_REV3)
-  if (sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2))) {
-    resultBegin = T41SQLite::getInstance().begin(&sd_io2);
+  int resultBegin = T41SQLite::getInstance().begin(&sd_io2);
 #else
-  if (SD.begin(BUILTIN_SDCARD)) {
-    resultBegin = T41SQLite::getInstance().begin(&SD);
+  int resultBegin = T41SQLite::getInstance().begin(&SD);
 #endif
-  } else {
-    Serial.println("sd.begin() failed! - Halting!");
-    while (true) { delay(1000); }
-  }
 
-  Serial.println("Initializing PCM buffer...");
-  memset(PCM, 0, sizeof(PCM));
-  Serial.println("PCM buffer initialized");
+  if (resultBegin == SQLITE_OK) {
+    Serial.println("T41SQLite::getInstance().begin() succeded!");
+  } else {
+    errorHalt("T41SQLite::getInstance().begin failed");
+  }
 
   //USE_REM_DISP_init();
   //USE_REM_DISP_register_callbacks();
+  
+  // Init buffers
+  memset(PCM, 0, sizeof(PCM));
   memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
+
   #ifdef USE_REM_DISP
   remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
   #endif
 
-  #ifdef LCDDISP
+#ifdef LCDDISP
 
-  pinMode(BACKLIGHT_PIN, OUTPUT);
-  analogWriteFrequency(BACKLIGHT_PIN, 200);
-  analogWrite(BACKLIGHT_PIN, 0);
+  // Init touch screen
   if (ctp.begin(20)) {
     Serial.println("FT5316 touch controller initialized");
   }
+
+  // Init LCD, PXP
 #if defined(RDI_DEVELOPMENTS_REV3)
   lcd.begin(lcd_config, BUS_16BIT, WORD_16BIT, PIXEL_16BIT);
 #else
@@ -429,7 +461,8 @@ void setup()
   Serial.println("LCD ON");
 #endif
 
-  #endif
+#endif // LCDDISP
+
   lv_init();
   #if (LVGL_VERSION_MAJOR == 8)
   lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
@@ -476,49 +509,43 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
-  analogWrite(BACKLIGHT_PIN, 255);
- 
-  lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-  audio.begin(&SAI_IRQHandler);
+  /*
+  lv_obj_t * btn = lv_btn_create(lv_scr_act());
+  lv_obj_set_size(btn, 120, 50);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
 
+  lv_obj_t * label = lv_label_create(btn);
+  lv_label_set_text(label, "Play");
+  lv_obj_set_style_text_font(label, &exo2_18, 0);
+  lv_obj_center(label);
+  */
 
-  if (resultBegin == SQLITE_OK)
+  //readWaveFormBlob();
+  createListScreen();
+  lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+  //dj_ui_init();
+    
+  /*
+  int resultEnd = T41SQLite::getInstance().end();
+
+  if (resultEnd == SQLITE_OK)
   {
-    Serial.println("T41SQLite::getInstance().begin() succeded!");
-    /*
-    lv_obj_t * btn = lv_btn_create(lv_scr_act());
-    lv_obj_set_size(btn, 120, 50);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t * label = lv_label_create(btn);
-    lv_label_set_text(label, "Play");
-    lv_obj_set_style_text_font(label, &exo2_18, 0);
-    lv_obj_center(label);
-    */
-
-    //readWaveFormBlob();
-      createListScreen();
-      lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
-      //dj_ui_init();
-      
-    /*
-    int resultEnd = T41SQLite::getInstance().end();
-
-    if (resultEnd == SQLITE_OK)
-    {
-      Serial.println("T41SQLite::getInstance().end() succeded!");
-    }
-    else
-    {
-      Serial.print("T41SQLite::getInstance().end() failed! result code: ");
-      Serial.println(resultEnd);
-    }
-      */
+    Serial.println("T41SQLite::getInstance().end() succeded!");
   }
   else
   {
-    Serial.println("T41SQLite::getInstance().begin() failed!");
+    Serial.print("T41SQLite::getInstance().end() failed! result code: ");
+    Serial.println(resultEnd);
   }
+    */
+  
+  audio.begin(&SAI_IRQHandler);
+
+#ifdef LCDDISP
+  // Setup complete, turn on LCD
+  analogWrite(BACKLIGHT_PIN, 200);
+  lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
+#endif 
 }
 
 uint32_t bytes_read = 0;

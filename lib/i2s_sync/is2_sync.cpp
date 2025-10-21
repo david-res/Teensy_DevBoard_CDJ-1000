@@ -77,7 +77,7 @@ FLASHMEM void i2s_sync::config_sai1()
       I2S3_RCSR = 0;  // RX disabled 
       
       I2S3_TCSR = 0;  // Clear first
-      I2S3_TCSR |= I2S_TCSR_BCE | I2S_TCSR_FR;
+      I2S3_TCSR |= I2S_TCSR_FR;
       
       // TX_DATA pin
       IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B1_01 = 8;  // SAI3_TX_DATA0
@@ -124,7 +124,7 @@ FLASHMEM void i2s_sync::config_sai1()
   // From AudioOutputI2Sslave::begin
   I2S1_RCSR |= I2S_RCSR_RE | I2S_RCSR_BCE;
   I2S1_TCSR = 0;  // Clear first
-  I2S1_TCSR |= I2S_TCSR_BCE | I2S_TCSR_FR;
+  I2S1_TCSR |= I2S_TCSR_FR;
   IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 3;   //CORE_PIN7_CONFIG  = 3;  // TX_DATA0
 #endif
 

@@ -948,18 +948,19 @@ void create_bottom_container(void) {
         */
 }
 
-FASTRUN void startI2SInterrupt()
-{
-  // Start transmitter and interrupt
-  I2S_TCSR_REG |= I2S_TCSR_TE | I2S_TCSR_FRIE;
+FASTRUN void startI2SInterrupt() {
+  // Enable clocks, transmitter, and interrupt
+  I2S_TCSR_REG |= I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE;
+  NVIC_ENABLE_IRQ(IRQ_SAI);
+  Serial.printf("Enabled I2S clock, transmitter and interrupt\n");
 }
 
-FASTRUN void stopI2SInterrupt()
-{
-  // Stop transmitter and interrupt
-  I2S_TCSR_REG &= ~(I2S_TCSR_TE | I2S_TCSR_FRIE);
+FASTRUN void stopI2SInterrupt() {
+  // Stop transmitter, interrupt, and clocks
+  NVIC_DISABLE_IRQ(IRQ_SAI);
+  I2S_TCSR_REG &= ~(I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE);
+  Serial.printf("Disabled I2S clock, transmitter and interrupt\n");
 }
-
 
 void dj_ui_init(Track * track) {
     // Create main screen
