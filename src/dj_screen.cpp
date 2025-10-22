@@ -98,22 +98,25 @@ const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
 const float waveformUserGain[3] = {1.0, 0.66, 0.33};
 
-EXTMEM uint8_t * dynamicWaveSampleData[6]; // 0=lo samples, 1=med samples, 2=hi samples
+uint8_t * dynamicWaveSampleData[6]; // 0=lo samples, 1=med samples, 2=hi samples
 DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
 uint64_t dynamicWaveformSampleCount = 0;
 double samplesPerDaynamicPoint = 0;
 
 //To store repeating group data of samples for the overview waveform
-EXTMEM uint8_t * overViewWaveSampleData[3];
-DMAMEM uint16_t overviewCanvasBuffer[800 * 64];
+uint8_t * overViewWaveSampleData[3];
+DMAMEM uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 uint64_t overviewWaveformSampleCount = 0;
 double samplesPerOverviewPoint = 0;
 
-EXTMEM uint8_t * uncompressedBuffer;
-EXTMEM uint8_t * highResBuffer;
-EXTMEM uint8_t * overviewBuffer;
+uint8_t * uncompressedBuffer;
+uint8_t * highResBuffer;
+uint8_t * overviewBuffer;
 
-bool dynamicBufferReady = false;
+volatile bool dynamicBufferReady = false;
+
+uint16_t oldIndicatorBuffer[2 * overviewChartHeight];  // 2px wide x 64px height
+uint16_t newIndicatorBuffer[2 * overviewChartHeight];  // 2px wide x 64px height
 
 
 FLASHMEM bool loadDynamicWaveformData(uint16_t track_id){
@@ -716,7 +719,7 @@ bool loadBeatgridData(int track_id, Beatgrid *beatgrid) {
 FLASHMEM void drawOverviewCanvas()
 {
   //Clear overview canvas
-  memset(overviewCanvasBuffer, 0, 800*64*2);
+  memset(overviewCanvasBuffer, 0, chartWidth * overviewChartHeight * 2);
 
   for (uint16_t x = 0; x < chartWidth; x++) {
     for (uint8_t i = 0; i < 3; i++) {
@@ -853,8 +856,8 @@ void create_top_container(Track * track) {
 
 void create_middle_container(void) {
     middle_container = lv_obj_create(main_screen);
-    lv_obj_set_size(middle_container, SCREEN_WIDTH, 164);
-    lv_obj_set_pos(middle_container, 0, 164);
+    lv_obj_set_size(middle_container, chartWidth, middleContainerPos);
+    lv_obj_set_pos(middle_container, 0, middleContainerPos);
     lv_obj_set_style_bg_color(middle_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(middle_container, 0, 0);
     //lv_obj_set_style_pad_all(middle_container, 10, 0);
@@ -867,20 +870,20 @@ void create_middle_container(void) {
 
     // Dynamic waveform canvas
     daynamic_waveform_canvas = lv_canvas_create(middle_container);
-    lv_obj_set_size(daynamic_waveform_canvas, SCREEN_WIDTH, 164);
+    lv_obj_set_size(daynamic_waveform_canvas, chartWidth, chartHeight);
     lv_obj_center(daynamic_waveform_canvas);
     lv_obj_clear_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     // Create canvas buffer (16-bit RGB565)
-    lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, 800, 164, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, chartWidth, chartHeight, LV_IMG_CF_TRUE_COLOR);
 }
 
 void create_bottom_container(void) {
     bottom_container = lv_obj_create(main_screen);
-    lv_obj_set_size(bottom_container, SCREEN_WIDTH, 158);
-    lv_obj_set_pos(bottom_container, 0, 322);
+    lv_obj_set_size(bottom_container, chartWidth, 158);
+    lv_obj_set_pos(bottom_container, 0, bottomContainerPos);
     lv_obj_set_style_bg_color(bottom_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(bottom_container, 0, 0);
     lv_obj_set_style_pad_all(bottom_container, 0, 0);
@@ -893,7 +896,7 @@ void create_bottom_container(void) {
 
     // Static waveform container
     lv_obj_t *static_wave_container = lv_obj_create(bottom_container);
-    lv_obj_set_size(static_wave_container, SCREEN_WIDTH, 64);
+    lv_obj_set_size(static_wave_container, chartWidth, overviewChartHeight);
     lv_obj_set_pos(static_wave_container, 0, 0);
     lv_obj_set_style_bg_color(static_wave_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(static_wave_container, 1, 0);
@@ -903,8 +906,8 @@ void create_bottom_container(void) {
 
     // Static waveform canvas
     static_waveform_canvas = lv_canvas_create(static_wave_container);
-    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t *)overviewCanvasBuffer, 800, 64, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_set_size(static_waveform_canvas, SCREEN_WIDTH, 64);
+    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t *)overviewCanvasBuffer, chartWidth, overviewChartHeight, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_set_size(static_waveform_canvas, chartWidth, overviewChartHeight);
     lv_obj_center(static_waveform_canvas);
     lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -1047,7 +1050,7 @@ FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 FASTRUN void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
 {
   if (h <= 0) return;
-  //if(y+h >= 64 ) return;
+  //if(y+h >= overviewChartHeight ) return;
     uint16_t *p = buffer + y * stride + x;
     for (int i = 0; i < h; ++i)
     {
@@ -1127,14 +1130,12 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     lv_label_set_text_fmt(time_label, "%ld", millis());
     nextLabelMs = millis() + 90;
   }
-  if (LCD_BUFFER_COUNT == 1) {
-    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
-    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2)); } else {
-    dynamicBufferReady = true;
-  }
+
+  dynamicBufferReady = true;
+ 
   // Finish stats
-  appStats.waveformRenderTime += appStats.end();
-  appStats.waveformRenderCount += 1;
+  appStats.dynamicRenderTime += appStats.end();
+  appStats.dynamicRenderCount += 1;
 }
 
 // Add these as global/static variables
@@ -1143,6 +1144,10 @@ static uint16_t oldX = 0xFFFF; // Initialize to invalid position
 FASTRUN void updatePlaybackPosition(uint16_t newX)
 {
   if(oldX == newX) return; // No change, skip update
+
+  // Start time for stats
+  appStats.start();
+
   // Restore the old position by redrawing the waveform data
   if (oldX < chartWidth && oldX + 1 < chartWidth) {
     // Clear the old indicator position (both pixels)
@@ -1192,4 +1197,21 @@ FASTRUN void updatePlaybackPosition(uint16_t newX)
   
   // Update stored position
   oldX = newX;
+
+  // Finish stats
+  appStats.overviewCopyTime += appStats.end();
+  appStats.overviewCopyCount += 1;
+}
+
+
+FASTRUN void updatePlaybackPosition_new(uint16_t newX)
+{
+  if((oldX != newX) && (newX < (chartWidth - 1) && (staticBufferReady == false))) {
+    staticBufferReady = true;
+    oldStaticBufferX = oldX;
+    newStaticBufferX = newX;
+    oldX = newX;
+  }
+
+  return;
 }

@@ -139,7 +139,7 @@ FASTRUN void i2s_sync::begin(CBF audio_irq){
       config_sai1();
       attachInterruptVector(IRQ_SAI, audio_irq);
       NVIC_ENABLE_IRQ(IRQ_SAI); 
-      NVIC_SET_PRIORITY(IRQ_SAI, 126);
+      NVIC_SET_PRIORITY(IRQ_SAI, 128);
   
       Serial.println("Audio started");
 }

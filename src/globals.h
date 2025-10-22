@@ -57,7 +57,7 @@ extern volatile uint8_t end_of_track;
 extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
-extern bool dynamicBufferReady;
+extern volatile bool dynamicBufferReady;
 
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
@@ -77,6 +77,13 @@ const uint16_t phaseMeterHeight = 22;
 const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
 const uint16_t middleContainerPos = 158;
+const uint16_t bottomContainerPos = 322;
+
+// For static buffer indicator
+extern bool staticBufferReady;
+extern uint16_t oldStaticBufferX;
+extern uint16_t newStaticBufferX;
+extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 
 /////////////////////////
 //End user defined params

@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include "../include/device_defines.h"
 
-const uint32_t nextReportPeriod = 5; // Number of seconds between reports
+const uint32_t nextReportPeriod = 1; // Number of seconds between reports
 
 class AppStats
 {
@@ -17,8 +17,17 @@ public:
 
     volatile uint32_t interruptCounter = 0;
 
-    uint32_t waveformRenderTime = 0;
-    uint32_t waveformRenderCount = 0;
+    uint32_t lvTimerHandlerCount = 0;
+    uint32_t lvTimerHandlerTime = 0;
+    uint32_t lvTimerHandlerMax = 0;
+
+    uint32_t dynamicRenderTime = 0;
+    uint32_t dynamicRenderCount = 0;
+    uint32_t dynamicMemCpyTime = 0;
+    uint32_t dynamicMemCpyCount = 0;
+
+    uint32_t overviewCopyTime = 0;
+    uint32_t overviewCopyCount = 0;
 
     uint32_t playFileReadCount = 0;
     uint32_t playFileReadBytes = 0;
