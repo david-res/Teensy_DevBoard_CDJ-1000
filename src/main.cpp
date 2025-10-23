@@ -11,12 +11,14 @@
 #include <Adafruit_FT6206.h>
 #include "inflate.h"
 #include "T4_PXP.h"
+#include "utils/changeSDSpeed.h"
 
 #if defined(USE_REM_DISP)
 #include "RemoteDisplay.h"
 #endif
 
 #if defined(RDI_DEVELOPMENTS_REV3)
+#include "battery/battery.h"
 #include <SdFat.h>
 #define BACKLIGHT_PIN 24
 SdFs sd_io2;
@@ -27,10 +29,13 @@ SdFs sd_io2;
 
 #include "i2s_sync.h"
 
+// Forward declarations
 extern "C" void startup_middle_hook(void);
 void SAI_IRQHandler(void);
+void copyWaveformsToLCD();
 void advancePosition_rezo();
 void advancePosition_claude();
+void advancePosition_claude_optimized();
 
 #define LCDDISP
 
@@ -61,7 +66,6 @@ uint8_t filling_step = 0;
 uint8_t offset_adress = 0;                 //address offset for calling CUE audio data (for work)
 uint8_t mem_offset_adress = 0;             //address offset for calling CUE audio data (for memory)
 EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
-uint16_t PCM_2[2] __attribute__((aligned(32)));
 int16_t LR[2][4] __attribute__((aligned(32)));
 volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
 int32_t even1, even2, odd1, odd2;
@@ -90,6 +94,19 @@ float COEF[8] = {            //////optimal 2x
  uint8_t loop_active = 0;                 //loop flag
  uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
  uint8_t lock_control = 1;            
+
+
+ // For static buffer indicator
+ bool staticBufferReady = false;
+ uint16_t oldStaticBufferX = 0;
+ uint16_t newStaticBufferX = 0;
+ uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
+ uint16_t * staticDestPtr = NULL;
+
+// Local vars for calculatePosition_claude, defined here to keep them off the stack inside an ISR
+uint16_t PCM_2[2] __attribute__((aligned(32)));
+uint32_t step_position;
+uint32_t sdram_adr;
 
 /*
 uint32_t height;
@@ -258,6 +275,7 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
 
 
 FASTRUN void lcdCallback() {
+  CrashReport.breadcrumb(3, 1);
   lvgl_framePending = true;
   if(ps_framePending == true) {
     lcd.setNextBufferAddress((uint16_t*)next_px_map);
@@ -269,11 +287,7 @@ FASTRUN void lcdCallback() {
 #endif    
     ps_framePending = false;
   }
-  if (LCD_BUFFER_COUNT == 2 && dynamicBufferReady == true) {
-    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
-    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
-    dynamicBufferReady = false;
-  }
+  CrashReport.breadcrumb(3, 0);
 }
 #endif
 
@@ -345,18 +359,39 @@ LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
   Serial.println("\n=============== App Settings =================");
-  Serial.printf("COMPILED: " SER_YELLOW "%s %s" SER_RESET " with GCC " SER_YELLOW "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
-  Serial.printf("F_BUS_ACTUAL: " SER_YELLOW "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_YELLOW "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
+  Serial.printf("F_BUS_ACTUAL: " SER_CYAN "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
-   Serial.printf("LCD_BUFFER_COUNT: " SER_YELLOW "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
-  Serial.printf("LVGL: " SER_YELLOW "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
+  Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
+  Serial.printf("LVGL: " SER_CYAN "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
  // buffer count, LVGL version
   Serial.println("=============== App Settings =================\n");
 }
 
+FLASHMEM void errorHalt(const char* message)
+{
+  Serial.printf("CRITICAL ERROR: %s - halting execution\n", message);
+  while (true) {
+    delay(1000);
+  }
+}
+
 void setup()
 {
+#ifdef LCDDISP
+  // Turn off backlight
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  analogWriteFrequency(BACKLIGHT_PIN, 200);
+  analogWrite(BACKLIGHT_PIN, 0);
+#endif  
+
+#if defined(RDI_DEVELOPMENTS_REV3)
+  Battery.init();
+#endif
+
+  // Initialize Serial
   Serial.begin (115200);
   while (!Serial) {};
   delay(1000);
@@ -364,43 +399,58 @@ void setup()
     Serial.print(CrashReport);
   }
 
+  // Report on configuration
   reportAppConfig();
 
-  int resultBegin = -1;
+  // Start SDcard
+#if defined(RDI_DEVELOPMENTS_REV3)
+  bool sdCardResult = sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2));
+#else
+  bool sdCardResult = SD.begin(BUILTIN_SDCARD);
+#endif
+
+  if (sdCardResult == true) {
+    setSDCardClock(SD_CARD_SPEED, MACRO_EXISTS(RDI_DEVELOPMENTS_REV3));
+  } else {
+    errorHalt("sd.begin() failed");
+  }
+
+  // Start SQLite
   T41SQLite::getInstance().setLogCallback(errorLogCallback);
 
 #if defined(RDI_DEVELOPMENTS_REV3)
-  if (sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2))) {
-    resultBegin = T41SQLite::getInstance().begin(&sd_io2);
+  int resultBegin = T41SQLite::getInstance().begin(&sd_io2);
 #else
-  if (SD.begin(BUILTIN_SDCARD)) {
-    resultBegin = T41SQLite::getInstance().begin(&SD);
+  int resultBegin = T41SQLite::getInstance().begin(&SD);
 #endif
-  } else {
-    Serial.println("sd.begin() failed! - Halting!");
-    while (true) { delay(1000); }
-  }
 
-  Serial.println("Initializing PCM buffer...");
-  memset(PCM, 0, sizeof(PCM));
-  Serial.println("PCM buffer initialized");
+  if (resultBegin == SQLITE_OK) {
+    Serial.println("T41SQLite::getInstance().begin() succeded!");
+  } else {
+    errorHalt("T41SQLite::getInstance().begin failed");
+  }
 
   //USE_REM_DISP_init();
   //USE_REM_DISP_register_callbacks();
+  
+  // Init buffers
+  memset(PCM, 0, sizeof(PCM));
   memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
+  memset(staticIndicatorBuffer, 0xFF, overviewChartHeight * 2 * 2); // White is easy - if marker color hi/li bytes differ, use a loop to fill color
+
   #ifdef USE_REM_DISP
   remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
   #endif
 
-  #ifdef LCDDISP
+#ifdef LCDDISP
 
-  pinMode(BACKLIGHT_PIN, OUTPUT);
-  analogWriteFrequency(BACKLIGHT_PIN, 200);
-  analogWrite(BACKLIGHT_PIN, 0);
+  // Init touch screen
   if (ctp.begin(20)) {
     Serial.println("FT5316 touch controller initialized");
   }
+
+  // Init LCD, PXP
 #if defined(RDI_DEVELOPMENTS_REV3)
   lcd.begin(lcd_config, BUS_16BIT, WORD_16BIT, PIXEL_16BIT);
 #else
@@ -429,7 +479,8 @@ void setup()
   Serial.println("LCD ON");
 #endif
 
-  #endif
+#endif // LCDDISP
+
   lv_init();
   #if (LVGL_VERSION_MAJOR == 8)
   lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
@@ -476,49 +527,43 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
-  analogWrite(BACKLIGHT_PIN, 255);
- 
-  lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-  audio.begin(&SAI_IRQHandler);
+  /*
+  lv_obj_t * btn = lv_btn_create(lv_scr_act());
+  lv_obj_set_size(btn, 120, 50);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
 
+  lv_obj_t * label = lv_label_create(btn);
+  lv_label_set_text(label, "Play");
+  lv_obj_set_style_text_font(label, &exo2_18, 0);
+  lv_obj_center(label);
+  */
 
-  if (resultBegin == SQLITE_OK)
+  //readWaveFormBlob();
+  createListScreen();
+  lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+  //dj_ui_init();
+    
+  /*
+  int resultEnd = T41SQLite::getInstance().end();
+
+  if (resultEnd == SQLITE_OK)
   {
-    Serial.println("T41SQLite::getInstance().begin() succeded!");
-    /*
-    lv_obj_t * btn = lv_btn_create(lv_scr_act());
-    lv_obj_set_size(btn, 120, 50);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t * label = lv_label_create(btn);
-    lv_label_set_text(label, "Play");
-    lv_obj_set_style_text_font(label, &exo2_18, 0);
-    lv_obj_center(label);
-    */
-
-    //readWaveFormBlob();
-      createListScreen();
-      lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
-      //dj_ui_init();
-      
-    /*
-    int resultEnd = T41SQLite::getInstance().end();
-
-    if (resultEnd == SQLITE_OK)
-    {
-      Serial.println("T41SQLite::getInstance().end() succeded!");
-    }
-    else
-    {
-      Serial.print("T41SQLite::getInstance().end() failed! result code: ");
-      Serial.println(resultEnd);
-    }
-      */
+    Serial.println("T41SQLite::getInstance().end() succeded!");
   }
   else
   {
-    Serial.println("T41SQLite::getInstance().begin() failed!");
+    Serial.print("T41SQLite::getInstance().end() failed! result code: ");
+    Serial.println(resultEnd);
   }
+    */
+  
+  audio.begin(&SAI_IRQHandler);
+
+#ifdef LCDDISP
+  // Setup complete, turn on LCD
+  analogWrite(BACKLIGHT_PIN, 200);
+  lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
+#endif 
 }
 
 uint32_t bytes_read = 0;
@@ -551,6 +596,60 @@ FASTRUN int playFileRead(void *buf, size_t count)
   return bytes_read;
 }
 
+FASTRUN void drawVerticalStrip(uint16_t* srcBuffer, uint16_t xPos, uint16_t height, uint16_t* destBuffer, uint16_t srcWidth, uint16_t destWidth)
+{
+  for (uint16_t y = 0; y < height; y++) {
+    uint16_t destOffset = (y * destWidth) + xPos;
+    uint16_t srcOffset = y * srcWidth;  
+    destBuffer[destOffset] = srcBuffer[srcOffset];
+    destBuffer[destOffset + 1] = srcBuffer[srcOffset + 1];
+  }
+}
+
+FASTRUN void copyWaveformsToLCD()
+{
+  
+  if (dynamicBufferReady == true) {
+
+    // Start time for stats
+    appStats.start();
+
+    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
+    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
+
+    dynamicBufferReady = false;
+
+    // Finish stats
+    appStats.dynamicMemCpyTime += appStats.end();
+    appStats.dynamicMemCpyCount += 1;
+  }
+
+  if (staticBufferReady == true) {
+
+    // Start time for stats
+    appStats.start();
+
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
+    // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+    // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+
+    staticDestPtr = (uint16_t *)(lcdBuffer[0] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
+    drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+    drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+    if (LCD_BUFFER_COUNT == 2) {
+      staticDestPtr = (uint16_t *)(lcdBuffer[1] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
+      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+    }
+
+    staticBufferReady = false;
+  
+    // Finish stats
+    appStats.overviewCopyTime += appStats.end();
+    appStats.overviewCopyCount += 1;
+  }
+}
+
 FASTRUN void loop()
 {
   // Stats
@@ -559,8 +658,20 @@ FASTRUN void loop()
   }
 
   if (lvgl_framePending == true) {
-      lvgl_framePending = false;
+      appStats.start();
       lv_timer_handler(); 
+      uint32_t handlerTime = appStats.end();
+      appStats.lvTimerHandlerTime += handlerTime;
+      appStats.lvTimerHandlerCount += 1;
+      if (handlerTime > appStats.lvTimerHandlerMax) {
+        appStats.lvTimerHandlerMax = handlerTime;
+      }
+
+      if (is_playing == true) {
+        copyWaveformsToLCD();
+      }
+      
+      lvgl_framePending = false;
   }
 
   if(is_playing){
@@ -568,7 +679,7 @@ FASTRUN void loop()
     if ((play_adr_temp/420) != (play_adr/420)) {
       //Serial.printf("Play adr: %lu\n", play_adr);
       updateDynamicWaveform(play_adr);
-      updatePlaybackPosition((play_adr/420)*799/all_long);
+      updatePlaybackPosition_new((play_adr/420)*799/all_long);
       play_adr_temp = play_adr; 
     }
     
@@ -638,6 +749,7 @@ FASTRUN void loop()
 
 FASTRUN void SAI_IRQHandler(void)
 {
+  CrashReport.breadcrumb(2, 1);
   appStats.interruptCounter++;
 
   //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
@@ -650,10 +762,11 @@ FASTRUN void SAI_IRQHandler(void)
   I2S_TDR0_REG = (uint32_t)left << 16;
   I2S_TDR0_REG = (uint32_t)right << 16;
   
-  advancePosition_claude();
+  advancePosition_claude_optimized();
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
+  CrashReport.breadcrumb(2, 0);
 }
 
 FASTRUN void advancePosition_rezo() {
@@ -781,10 +894,6 @@ FASTRUN void advancePosition_rezo() {
 
 FASTRUN void advancePosition_claude()
 {
-  int32_t PCM_2[2];
-  uint32_t step_position;
-  uint32_t sdram_adr;
-  
   position += pitch;
 
   if (position > 9999) {
@@ -878,7 +987,7 @@ FASTRUN void advancePosition_claude()
   SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
   SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
-#if !defined(RDI_DEVELOPMENTS_REV3)
+#if defined(RDI_DEVELOPMENTS_REV3)
   // Lower volume
   #define VOLUME_FACTOR 3277 // 90% reduced volume 
   int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
@@ -891,5 +1000,161 @@ FASTRUN void advancePosition_claude()
   SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 
   SAMPLE[0] = (uint8_t)(scaled_left & 0xFF);       
   SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
+#endif  
+}
+
+// Precompute these as constants (outside ISR, during initialization)
+// Original COEF values converted to Q15.16 fixed point (multiply by 65536)
+// Example values - replace with your actual COEF[] converted to fixed point
+static const int32_t COEF_FIXED[8] = {
+    (int32_t)(COEF[0] * 65536.0f),
+    (int32_t)(COEF[1] * 65536.0f),
+    (int32_t)(COEF[2] * 65536.0f),
+    (int32_t)(COEF[3] * 65536.0f),
+    (int32_t)(COEF[4] * 65536.0f),
+    (int32_t)(COEF[5] * 65536.0f),
+    (int32_t)(COEF[6] * 65536.0f),
+    (int32_t)(COEF[7] * 65536.0f)
+};
+
+// 0.90 as Q15.16 fixed point
+static const int32_t SCALE_090 = 59000; // 0.90 * 65536
+
+FASTRUN void advancePosition_claude_optimized()
+{
+    position += pitch;
+
+    if (position > 9999) {
+        step_position = position / 10000;
+        
+        if (reverse == 0 && end_of_track == 0) {
+            play_adr += step_position;
+            
+            if (step_position == 1) {
+                // Shift samples using 32-bit copies (faster than individual assignments)
+                LR[0][0] = LR[0][1];
+                LR[0][1] = LR[0][2];
+                LR[0][2] = LR[0][3];
+                LR[1][0] = LR[1][1];
+                LR[1][1] = LR[1][2];
+                LR[1][2] = LR[1][3];
+                
+                // Load only the new sample
+                sdram_adr = (play_adr + 3) & 0xFFFFF;
+                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+                uint32_t idx = sdram_adr & 0x1FFF;
+                LR[0][3] = PCM[bank_index][idx][0];
+                LR[1][3] = PCM[bank_index][idx][1];
+            } else {
+                // Multi-step advance
+                uint32_t base_adr = play_adr & 0xFFFFF;
+                uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);
+                uint32_t base_bank_shift = base_adr >> 13;
+                
+                for (int i = 0; i < 4; i++) {
+                    uint32_t addr = (base_adr + i) & 0xFFFFF;
+                    uint32_t bank = (bank_offset + ((addr >> 13) - base_bank_shift)) & 0x7F;
+                    uint32_t idx = addr & 0x1FFF;
+                    LR[0][i] = PCM[bank][idx][0];
+                    LR[1][i] = PCM[bank][idx][1];
+                }
+            }
+        }
+        else if (reverse == 1 && play_adr >= step_position) {
+            play_adr -= step_position;
+            
+            if (step_position == 1) {
+                // Shift samples
+                LR[0][0] = LR[0][1];
+                LR[0][1] = LR[0][2];
+                LR[0][2] = LR[0][3];
+                LR[1][0] = LR[1][1];
+                LR[1][1] = LR[1][2];
+                LR[1][2] = LR[1][3];
+                
+                sdram_adr = play_adr & 0xFFFFF;
+                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+                LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
+                LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
+            } else {
+                uint32_t base_adr = play_adr & 0xFFFFF;
+                
+                for (int i = 0; i < 4; i++) {
+                    uint32_t addr = (base_adr + i) & 0xFFFFF;
+                    uint32_t bank = ((addr >> 13) + offset_adress) & 0x7F;
+                    uint32_t idx = addr & 0x1FFF;
+                    LR[0][3 - i] = PCM[bank][idx][0];
+                    LR[1][3 - i] = PCM[bank][idx][1];
+                }
+            }
+        }
+        
+        position %= 10000;
+    }
+
+    // ===== OPTIMIZED INTERPOLATION USING FIXED-POINT MATH =====
+    // T ranges from -0.5 to 0.5, convert to Q15.16 fixed point
+    // T_fixed = (position - 5000) * 65536 / 10000 = (position - 5000) * 6.5536
+    // Approximate as (position - 5000) * 13107 >> 14 (13107/16384 ≈ 0.8, close enough)
+    int32_t T_fixed = ((int32_t)position - 5000) * 13107 >> 14;
+    
+    int32_t PCM_2_temp[2];
+    
+    for (int ch = 0; ch < 2; ch++) {
+        // Load samples once
+        int32_t s0 = LR[ch][0];
+        int32_t s1 = LR[ch][1];
+        int32_t s2 = LR[ch][2];
+        int32_t s3 = LR[ch][3];
+        
+        int32_t even1 = s2 + s1;
+        int32_t odd1 = s2 - s1;
+        int32_t even2 = s3 + s0;
+        int32_t odd2 = s3 - s0;
+        
+        // Fixed-point multiplication: (a * b) >> 16
+        int64_t c0_64 = ((int64_t)even1 * COEF_FIXED[0] + (int64_t)even2 * COEF_FIXED[1]) >> 16;
+        int64_t c1_64 = ((int64_t)odd1 * COEF_FIXED[2] + (int64_t)odd2 * COEF_FIXED[3]) >> 16;
+        int64_t c2_64 = ((int64_t)even1 * COEF_FIXED[4] + (int64_t)even2 * COEF_FIXED[5]) >> 16;
+        int64_t c3_64 = ((int64_t)odd1 * COEF_FIXED[6] + (int64_t)odd2 * COEF_FIXED[7]) >> 16;
+        
+        // Polynomial evaluation: c0 + T*(c1 + T*(c2 + T*c3))
+        int64_t temp3 = (c3_64 * T_fixed) >> 16;
+        int64_t temp2 = ((c2_64 + temp3) * T_fixed) >> 16;
+        int64_t temp1 = ((c1_64 + temp2) * T_fixed) >> 16;
+        int64_t result = c0_64 + temp1;
+        
+        // Apply 0.90 scaling
+        result = (result * SCALE_090) >> 16;
+        
+        // Clamp to int32 range
+        if (result > 2147483647LL) result = 2147483647LL;
+        if (result < -2147483648LL) result = -2147483648LL;
+        
+        PCM_2_temp[ch] = (int32_t)result;
+    }
+    
+    PCM_2[0] = PCM_2_temp[0];
+    PCM_2[1] = PCM_2_temp[1];
+
+    // Pack samples
+    SAMPLE[3] = (uint8_t)((uint32_t)PCM_2[0] >> 8);
+    SAMPLE[2] = (uint8_t)(PCM_2[0] & 0xFF);
+    SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
+    SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
+
+#if defined(RDI_DEVELOPMENTS_REV3)
+    // Optimized volume scaling using int16_t directly
+    int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
+    int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);
+    
+    // Single multiply-shift operation
+    int16_t scaled_left = (int16_t)(((int32_t)raw_left * 3277) >> 15);
+    int16_t scaled_right = (int16_t)(((int32_t)raw_right * 3277) >> 15);
+    
+    SAMPLE[2] = (uint8_t)(scaled_right & 0xFF);    
+    SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 
+    SAMPLE[0] = (uint8_t)(scaled_left & 0xFF);       
+    SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
 #endif  
 }

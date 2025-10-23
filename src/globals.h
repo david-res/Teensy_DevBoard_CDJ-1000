@@ -5,7 +5,8 @@
 #include "stats/app_stats.h"
 
 #define LCD_BUFFER_COUNT 2
-#define SDRAM_SPEED 198
+#define SDRAM_SPEED 198      // 166, 198, 221
+#define SD_CARD_SPEED 50'000 // 20'000, 33'000, 50'000 (default), 66'000, 99'000, 198'000 (usually doesn't work)
 #define USE_EXTMEM_NOCACHE
 //#define USE_REM_DISP
 
@@ -56,7 +57,7 @@ extern volatile uint8_t end_of_track;
 extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
-extern bool dynamicBufferReady;
+extern volatile bool dynamicBufferReady;
 
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
@@ -76,6 +77,13 @@ const uint16_t phaseMeterHeight = 22;
 const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
 const uint16_t middleContainerPos = 158;
+const uint16_t bottomContainerPos = 322;
+
+// For static buffer indicator
+extern bool staticBufferReady;
+extern uint16_t oldStaticBufferX;
+extern uint16_t newStaticBufferX;
+extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 
 /////////////////////////
 //End user defined params
