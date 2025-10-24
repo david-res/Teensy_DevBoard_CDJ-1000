@@ -276,6 +276,9 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
 
 FASTRUN void lcdCallback() {
   CrashReport.breadcrumb(3, 1);
+
+  appStats.start(ISR_LCD);
+  
   lvgl_framePending = true;
   if(ps_framePending == true) {
     lcd.setNextBufferAddress((uint16_t*)next_px_map);
@@ -287,6 +290,7 @@ FASTRUN void lcdCallback() {
 #endif    
     ps_framePending = false;
   }
+  appStats.end(ISR_LCD);
   CrashReport.breadcrumb(3, 0);
 }
 #endif
@@ -358,16 +362,18 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
 LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
-  Serial.println("\n=============== App Settings =================");
-  Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
-  Serial.printf("F_BUS_ACTUAL: " SER_CYAN "%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.println("\n======================== App Settings ==========================");
+  Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
   Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
-  Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
-  Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_GREEN : SER_RED, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
+  Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
   Serial.printf("LVGL: " SER_CYAN "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
- // buffer count, LVGL version
-  Serial.println("=============== App Settings =================\n");
+  Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_RED : SER_CYAN, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
+  Serial.printf("USE_STATS: %s%s" SER_RESET "\n",  MACRO_EXISTS(USE_STATS) ? SER_YELLOW : SER_GREEN, MACRO_EXISTS(USE_STATS) ? "TRUE" : "FALSE");
+  Serial.printf("IRQ_GEN: %s%s" SER_RESET "\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S");
+  // buffer count, LVGL version
+  Serial.println("======================== App Settings ==========================\n");
 }
 
 FLASHMEM void errorHalt(const char* message)
@@ -570,29 +576,28 @@ uint32_t bytes_read = 0;
 
 FASTRUN void playFileSeek(uint64_t pos) 
 {
-  appStats.start();
+  appStats.start(PLAYFILE_SEEK);
 
   CrashReport.breadcrumb(1, 1);
   playFile.seek(pos);
   CrashReport.breadcrumb(1, 0);
 
-  appStats.playFileSeekTime += appStats.end();
-  appStats.playFileSeekCount += 1;
-
+  appStats.end(PLAYFILE_SEEK);
 }
 
 FASTRUN int playFileRead(void *buf, size_t count)
 {
-  appStats.start();
+  appStats.start(PLAYFILE_READ);
 
   uint32_t bytes_read = 0;
   CrashReport.breadcrumb(1, 2);
+  //noInterrupts();
   bytes_read = playFile.read(buf, count);
+  //interrupts();
   CrashReport.breadcrumb(1, 0);  
 
-  appStats.playFileReadTime += appStats.end();
-  appStats.playFileReadCount += 1;
-  appStats.playFileReadBytes += bytes_read;
+  appStats.end(PLAYFILE_READ);
+  appStats.addByteCount(PLAYFILE_READ, bytes_read);
   return bytes_read;
 }
 
@@ -612,22 +617,22 @@ FASTRUN void copyWaveformsToLCD()
   if (dynamicBufferReady == true) {
 
     // Start time for stats
-    appStats.start();
+    appStats.start(DYNAMIC_MEMCPY);
 
     uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
-    memcpy(destPtr, dynamicCanvasBuffer, (SCREEN_WIDTH * chartHeight * 2));
-
+    memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+    
     dynamicBufferReady = false;
 
     // Finish stats
-    appStats.dynamicMemCpyTime += appStats.end();
-    appStats.dynamicMemCpyCount += 1;
+    appStats.end(DYNAMIC_MEMCPY);
+    appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
   }
 
   if (staticBufferReady == true) {
 
     // Start time for stats
-    appStats.start();
+    appStats.start(OVERVIEW_COPY);
 
     // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
     // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
@@ -645,8 +650,7 @@ FASTRUN void copyWaveformsToLCD()
     staticBufferReady = false;
   
     // Finish stats
-    appStats.overviewCopyTime += appStats.end();
-    appStats.overviewCopyCount += 1;
+    appStats.end(OVERVIEW_COPY);
   }
 }
 
@@ -657,15 +661,12 @@ FASTRUN void loop()
     appStats.report();
   }
 
+  appStats.start(MAIN_LOOP);
+
   if (lvgl_framePending == true) {
-      appStats.start();
+      appStats.start(LV_TIMER_HANDLER);
       lv_timer_handler(); 
-      uint32_t handlerTime = appStats.end();
-      appStats.lvTimerHandlerTime += handlerTime;
-      appStats.lvTimerHandlerCount += 1;
-      if (handlerTime > appStats.lvTimerHandlerMax) {
-        appStats.lvTimerHandlerMax = handlerTime;
-      }
+      appStats.end(LV_TIMER_HANDLER);
 
       if (is_playing == true) {
         copyWaveformsToLCD();
@@ -674,7 +675,7 @@ FASTRUN void loop()
       lvgl_framePending = false;
   }
 
-  if(is_playing){
+  if(is_playing) {
     static uint32_t play_adr_temp =0;
     if ((play_adr_temp/420) != (play_adr/420)) {
       //Serial.printf("Play adr: %lu\n", play_adr);
@@ -710,48 +711,33 @@ FASTRUN void loop()
       }
     else if(((end_adr_valid_data>((play_adr>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)){					//filling the buffer back
     Serial.println("filling buffers backwards");		
-      if(filling_step==0 || filling_step==6){
-        if((end_adr_valid_data-start_adr_valid_data)>127)	{
-          end_adr_valid_data = start_adr_valid_data+124;	
-          }	
-        start_adr_valid_data-= 4;	
-        playFileSeek((32768*(start_adr_valid_data))+44);
+    if(filling_step == 0 || filling_step == 6) {
+        if((end_adr_valid_data - start_adr_valid_data) > 127) {
+            end_adr_valid_data = start_adr_valid_data + 124;	
+        }	
+        start_adr_valid_data -= 4;	
+        playFileSeek((32768 * start_adr_valid_data) + 44);
         filling_step = 1;	
-        }
-
-      else if(filling_step==1){
-        playFileRead(PCM[start_adr_valid_data&0x7F][0], 32768);
-        filling_step = 2;	
-        }
-
-      else if(filling_step==2){
-        playFileRead(PCM[(start_adr_valid_data+1)&0x7F][0], 32768);
-        filling_step = 3;	
-        }
-
-      else if(filling_step==3){
-        playFileRead(PCM[(start_adr_valid_data+2)&0x7F][0], 32768);
-        filling_step = 4;	
-        }
-
-      else if(filling_step==4){
-        playFileRead(PCM[(start_adr_valid_data+3)&0x7F][0], 32768);
-        filling_step = 5;	
-        }
-
-      else if(filling_step==5){
+    }
+    else if(filling_step >= 1 && filling_step <= 4) {
+        playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
+        filling_step++;
+    }
+    else if(filling_step == 5) {
         //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
         filling_step = 6;		
-        }
+    }
       }
     } 
+    appStats.end(MAIN_LOOP);
 }
 
 FASTRUN void SAI_IRQHandler(void)
 {
   CrashReport.breadcrumb(2, 1);
-  appStats.interruptCounter++;
+  appStats.start(ISR_I2S);
 
+#if !defined(IRQ_FROM_INT_TIMER)
   //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
@@ -761,11 +747,13 @@ FASTRUN void SAI_IRQHandler(void)
   
   I2S_TDR0_REG = (uint32_t)left << 16;
   I2S_TDR0_REG = (uint32_t)right << 16;
+#endif
   
   advancePosition_claude_optimized();
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
+  appStats.end(ISR_I2S);
   CrashReport.breadcrumb(2, 0);
 }
 
@@ -1022,7 +1010,15 @@ static const int32_t SCALE_090 = 59000; // 0.90 * 65536
 
 FASTRUN void advancePosition_claude_optimized()
 {
-    position += pitch;
+  if(((play_adr+step_position+3)<=(420*all_long))) {						//change all_long extract!
+		end_of_track = 0;	
+	}	else {
+    Serial.println("END OF TRACK");
+		end_of_track = 1;	
+    return;
+	}
+  
+  position += pitch;
 
     if (position > 9999) {
         step_position = position / 10000;

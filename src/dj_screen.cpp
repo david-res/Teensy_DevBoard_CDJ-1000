@@ -16,6 +16,13 @@
 #if defined(RDI_DEVELOPMENTS_REV3)
 #include "SdFat.h"
 #endif
+
+#if defined(IRQ_FROM_INT_TIMER)
+IntervalTimer irqTimer;
+extern void SAI_IRQHandler();
+#endif
+
+
 FILE_TYPE playFile;
 
 
@@ -952,17 +959,28 @@ void create_bottom_container(void) {
 }
 
 FASTRUN void startI2SInterrupt() {
+#if defined(IRQ_FROM_INT_TIMER)
+  irqTimer.priority(128);
+  irqTimer.begin(SAI_IRQHandler, 23); // 44.1Khz is 22.675uS
+  Serial.printf("Enabled Interval Timer\n");
+#else
   // Enable clocks, transmitter, and interrupt
   I2S_TCSR_REG |= I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE;
   NVIC_ENABLE_IRQ(IRQ_SAI);
   Serial.printf("Enabled I2S clock, transmitter and interrupt\n");
+#endif  
 }
 
 FASTRUN void stopI2SInterrupt() {
+#if defined(IRQ_FROM_INT_TIMER)
+  irqTimer.end();
+  Serial.printf("Disabled Interval Timer\n");
+#else  
   // Stop transmitter, interrupt, and clocks
   NVIC_DISABLE_IRQ(IRQ_SAI);
   I2S_TCSR_REG &= ~(I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE);
   Serial.printf("Disabled I2S clock, transmitter and interrupt\n");
+#endif  
 }
 
 void dj_ui_init(Track * track) {
@@ -1096,7 +1114,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   }
 
   // Start time for stats
-  appStats.start();
+  appStats.start(DYNAMIC_RENDER);
 
   //Clear canvas
   int offset = 800 * 82; // start of row 82
@@ -1134,79 +1152,16 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   dynamicBufferReady = true;
  
   // Finish stats
-  appStats.dynamicRenderTime += appStats.end();
-  appStats.dynamicRenderCount += 1;
+  appStats.end(DYNAMIC_RENDER);
 }
 
 // Add these as global/static variables
 static uint16_t oldX = 0xFFFF; // Initialize to invalid position
 // New function to update position efficiently
-FASTRUN void updatePlaybackPosition(uint16_t newX)
-{
-  if(oldX == newX) return; // No change, skip update
-
-  // Start time for stats
-  appStats.start();
-
-  // Restore the old position by redrawing the waveform data
-  if (oldX < chartWidth && oldX + 1 < chartWidth) {
-    // Clear the old indicator position (both pixels)
-    for (uint8_t px = 0; px < 2; px++) {
-      uint16_t xPos = oldX + px;
-      drawFastVLine16BitOverview(xPos, 0, overviewChartHeight, 0x0000, 
-                                 overviewCanvasBuffer, chartWidth);
-      // Redraw the waveform at old position
-      for (uint8_t i = 0; i < 3; i++) {
-        uint16_t height = overViewWaveSampleData[i][xPos];
-        uint16_t startY = overviewChartHeight - height;
-        
-        drawFastVLine16BitOverview(xPos, startY, height, waveformColors[i], 
-                                   overviewCanvasBuffer, chartWidth);
-      }
-    }
-    
-    // Invalidate old area
-    lv_area_t area;
-    area.x1 = newX;
-    area.y1 = 0;
-    area.x2 = newX + 1;
-    area.y2 = overviewChartHeight - 1;
-    lv_obj_invalidate_area(static_waveform_canvas, &area);
-  }
-  
-  // Draw the new position indicator (2px wide)
-  if (newX < chartWidth && newX + 1 < chartWidth) {
-    uint16_t indicatorColor = 0xFFFF; // White, or use your preferred indicator color
-    
-    for (uint8_t px = 0; px < 2; px++) {
-      uint16_t xPos = newX + px;
-      
-      // Draw full-height indicator line
-      drawFastVLine16BitOverview(xPos, 0, overviewChartHeight, indicatorColor, 
-                                 overviewCanvasBuffer, chartWidth);
-    }
-    
-    // Invalidate new area
-    lv_area_t area;
-    area.x1 = oldX;
-    area.y1 = 0;
-    area.x2 = oldX + 1;
-    area.y2 = overviewChartHeight - 1;
-    lv_obj_invalidate_area(static_waveform_canvas, &area);
-  }
-  
-  // Update stored position
-  oldX = newX;
-
-  // Finish stats
-  appStats.overviewCopyTime += appStats.end();
-  appStats.overviewCopyCount += 1;
-}
-
 
 FASTRUN void updatePlaybackPosition_new(uint16_t newX)
 {
-  if((oldX != newX) && (newX < (chartWidth - 1) && (staticBufferReady == false))) {
+  if((oldX != newX) && (newX < (chartWidth - 1) && (end_of_track == 0) && (staticBufferReady == false))) {
     staticBufferReady = true;
     oldStaticBufferX = oldX;
     newStaticBufferX = newX;

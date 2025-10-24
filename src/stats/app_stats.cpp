@@ -1,9 +1,12 @@
 #include <Arduino.h>
 #include "globals.h"
 #include "app_stats.h"
+#include "../include/device_defines.h"
 #if defined(RDI_DEVELOPMENTS_REV3)  
 #include "battery/battery.h"
 #endif 
+
+#if defined(USE_STATS)
 
 FLASHMEM bool AppStats::readyToReport()
 {
@@ -12,21 +15,34 @@ FLASHMEM bool AppStats::readyToReport()
 
 FLASHMEM void AppStats::report()
 {
-    // Report data
-    Serial.printf("IRQ/s: %ld\n", interruptCounter / nextReportPeriod);
-    if (is_playing == true) {
-        Serial.printf("timerHandler/s:    %2ld, avg: %8.2fµS, max: %ldµS\n", lvTimerHandlerCount / nextReportPeriod, lvTimerHandlerCount == 0 ? 0 : (float)lvTimerHandlerTime / (float)lvTimerHandlerCount, lvTimerHandlerMax);
-        Serial.printf("dynamic render/s:  %2ld, avg: %8.2fµS\n", dynamicRenderCount / nextReportPeriod, dynamicRenderCount == 0 ? 0 : (float)dynamicRenderTime / (float)dynamicRenderCount);
-        Serial.printf("dynamic copy/s:    %2ld, avg: %8.2fµS\n", dynamicMemCpyCount / nextReportPeriod, dynamicMemCpyCount == 0 ? 0 : (float)dynamicMemCpyTime / (float)dynamicMemCpyCount);
-        Serial.printf("static copy/s:     %2ld, avg: %8.2fµS\n", overviewCopyCount / nextReportPeriod, overviewCopyCount == 0 ? 0 : (float)overviewCopyTime / (float)overviewCopyCount);
-        Serial.printf("PlayFile: Read/s:  %2ld, avg: %8.2fµS, rate: %0.2fMB/s\n", playFileReadCount / nextReportPeriod, playFileReadCount == 0 ? 0 : (float)playFileReadTime / (float)playFileReadCount, 
-                    playFileReadCount == 0 ? 0 : (float)(playFileReadBytes * 1'000'000.0) / (float)(playFileReadTime * 1024.0 * 1024.0));
-        Serial.printf("PlayFile: Seek/s:  %2ld, avg: %8.2fµS\n", playFileSeekCount / nextReportPeriod, playFileSeekCount == 0 ? 0 : (float)playFileSeekTime / (float)playFileSeekCount);
+    // Report all stats generically
+    for (int i = 0; i < STAT_COUNT; i++) {
+        const StatConfig& config = statConfigs[i];
+        const StatData& stat = stats[i];
+        
+        // Skip stats that should only show when playing
+        if (config.showOnlyWhenPlaying && !is_playing) {
+            continue;
+        }
+       
+        // Print name and count
+        Serial.printf("%s %7ld, avg: %8.2fµS  max: %6.0fµS", config.name, stat.count / nextReportPeriod, 
+            stat.count > 0 ? getAvgMicros(stat.count, stat.totalCycles) : 0, stat.maxCycles > 0 ? getMaxMicros(stat.maxCycles) : 0);
+        
+        // Print rate if configured (for file reads)
+        if (config.showRate && stat.byteCount > 0) {
+            float rate = (float)(stat.byteCount * (float)F_CPU_ACTUAL) / (float)(stat.totalCycles * 1024.0 * 1024.0);
+            Serial.printf("  rate: %0.2fMB/s", rate);
+        }
+        
+        Serial.println();
     }
+    
 #if defined(RDI_DEVELOPMENTS_REV3)  
     Battery.getUpdates();   
     float currentMA = Battery.getCurrent();
-    Serial.printf("Battery current:  %0.2fmA\n", currentMA < 0 ? 0 : currentMA);
+    Serial.printf("Battery current:   %3.2fmA, CPU temp: %0.2f°C\n", 
+        currentMA < 0 ? 0 : currentMA, tempmonGetTemp());
 #endif
     Serial.println("--");
 
@@ -34,46 +50,95 @@ FLASHMEM void AppStats::report()
     reset();
 }
 
-FASTRUN void AppStats::start()
+FASTRUN void AppStats::start(StatType type)
 {
-    if (_started == true) {
+    StatData& stat = stats[type];
+    
+    if (stat.started == true) {
         Serial.println("Overlapping stats.start() without stats.end()");
     }
-    _startTime = micros();
-    _started = true;
+    
+    stat.started = true;
+    stat.startCycle = ARM_DWT_CYCCNT;
 }
 
-FASTRUN uint32_t AppStats::end()
+FASTRUN uint32_t AppStats::end(StatType type)
 {
-    _started = false;
-    return micros() - _startTime;
+    StatData& stat = stats[type];
+    
+    uint32_t cycles = ARM_DWT_CYCCNT - stat.startCycle;
+    
+    stat.started = false;
+    stat.count++;
+    stat.totalCycles += cycles;
+    
+    // Update max if this cycle count is larger
+    if (cycles > stat.maxCycles) {
+        stat.maxCycles = cycles;
+    }
+    
+    return cycles;
 }
 
 FLASHMEM void AppStats::reset()
 {
-    // Reset counters
-    interruptCounter = 0;
-
-    lvTimerHandlerCount = 0;
-    lvTimerHandlerTime = 0;
-    lvTimerHandlerMax = 0;
-
-    dynamicRenderTime = 0;
-    dynamicRenderCount = 0;
-    dynamicMemCpyTime = 0;
-    dynamicMemCpyCount = 0;
-
-    overviewCopyTime = 0;
-    overviewCopyCount = 0;
-
-    playFileReadCount = 0;
-    playFileReadBytes = 0;
-    playFileReadTime = 0;
-
-    playFileSeekCount = 0;
-    playFileSeekTime = 0;
+    // Reset all stats
+    for (int i = 0; i < STAT_COUNT; i++) {
+        stats[i].count = 0;
+        stats[i].totalCycles = 0;
+        stats[i].maxCycles = 0;
+        stats[i].byteCount = 0;
+        // Note: don't reset startCycle or started flag in case measurement is ongoing
+    }
 
     // Reset timer
     _lastCheckTime = millis();
-
 }
+
+void AppStats::addByteCount(StatType type, uint32_t bytes)
+{ 
+    StatData& stat = stats[type];
+    stat.byteCount += bytes;
+}
+    
+
+// Private helpers
+
+FASTRUN float AppStats::getAvgMicros(uint32_t count, uint32_t totalCycles)
+{
+    return (float)totalCycles * 1000000.0f / ((float)count * (float)F_CPU_ACTUAL);
+}
+
+FASTRUN float AppStats::getMaxMicros(uint32_t totalCycles)
+{
+    return (float)totalCycles * 1'000'000.0f / (float)F_CPU_ACTUAL;
+}
+#else
+    FLASHMEM bool AppStats::readyToReport() {
+        return false;
+    };
+
+    FLASHMEM void AppStats::report()
+    {
+        //
+    }
+    FLASHMEM void AppStats::start(StatType type)
+    {
+        //
+    }
+
+    FLASHMEM uint32_t AppStats::end(StatType type)
+    {
+        return 0;
+    }
+
+    FLASHMEM void AppStats::reset()
+    {
+        //
+    }
+
+    FLASHMEM void AppStats::addByteCount(StatType type, uint32_t bytes)
+    {
+        //
+    }
+#endif
