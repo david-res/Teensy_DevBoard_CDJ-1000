@@ -1126,14 +1126,14 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 
   
   //Draw waveforms - expanded, interpolated
+  const uint16_t chartHeightHalf = chartHeight / 2;
+
   for (uint16_t x = 0; x < 800; x++) {
     int64_t index = DynamicWaveformZOOM * (x + pos- (chartWidth/2));
     if (index < 0 || index >= all_long) continue;
-    for (uint8_t i = 0; i < 6; i++) {
+    for (uint8_t i = 0; i < 3; i++) {
         uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
-        if(i < 3) { 
-            drawFastVLine16Bit(x, ((chartHeight -sampleValue) /2), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
-        }
+        drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
         //if (dynamicWaveSampleData[i][index] > chartHeight) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
     }
   }
