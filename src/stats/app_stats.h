@@ -15,6 +15,7 @@ enum StatType {
     LV_TIMER_HANDLER,
     DYNAMIC_RENDER,
     BEAT_GRID_RENDER,
+    BEAT_DIGIT_RENDER,
     DYNAMIC_MEMCPY,
     OVERVIEW_COPY,
     PLAYFILE_READ,
@@ -63,6 +64,7 @@ private:
         {"timerHandler/s:  ",     true,                false},  // LV_TIMER_HANDLER
         {"dynamic render/s:",     true,                false},  // DYNAMIC_RENDER
         {"Beat render/s:   ",     true,                false},  // BEAT_GRID_RENDER
+        {"Bt num render/s: ",     true,                false},  // BEAT_DIGIT_RENDER
         {"dynamic copy/s:  ",     true,                true},   // DYNAMIC_MEMCPY
         {"static copy/s:   ",     true,                false},  // OVERVIEW_COPY
         {"PlayFile: Read/s:",     true,                true},   // PLAYFILE_READ

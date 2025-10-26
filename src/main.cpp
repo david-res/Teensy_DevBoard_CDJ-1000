@@ -28,6 +28,7 @@ SdFs sd_io2;
 
 
 #include "i2s_sync.h"
+#include "utils/digit_renderer.h"
 
 // Forward declarations
 extern "C" void startup_middle_hook(void);
@@ -58,6 +59,7 @@ i2s_sync audio;
 
 bool is_playing = false;
 uint32_t all_long = 0;                     //all long of Track in 0.5*frames   150 on 1 sec
+uint32_t baseSampPerWavePoint = 420;       //Number of samples per wavepoint in dynamic waveform. Updated from the database later
 volatile uint32_t play_adr = 0;            //Playing adress in samples (44100 per second)
 uint32_t slip_play_adr = 0;                //Playing adress for SLIP MODE in samples (44100 per second)
 uint16_t start_adr_valid_data = 0;         //filling adress in memory
@@ -359,6 +361,7 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
   }
 }
 
+LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
@@ -533,6 +536,9 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
+  // Create in memory rendered
+  prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
+
   /*
   lv_obj_t * btn = lv_btn_create(lv_scr_act());
   lv_obj_set_size(btn, 120, 50);
@@ -619,8 +625,14 @@ FASTRUN void copyWaveformsToLCD()
     // Start time for stats
     appStats.start(DYNAMIC_MEMCPY);
 
-    uint8_t *destPtr = (uint8_t *)LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2);
+    uint8_t *destPtr = (uint8_t *)(LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
     memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use
+    if (LCD_BUFFER_COUNT == 2) {
+      destPtr = (uint8_t *)(LCDIF_CUR_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
+      memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+    }
     
     dynamicBufferReady = false;
 
@@ -634,13 +646,14 @@ FASTRUN void copyWaveformsToLCD()
     // Start time for stats
     appStats.start(OVERVIEW_COPY);
 
-    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
     // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
     // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
 
     staticDestPtr = (uint16_t *)(lcdBuffer[0] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
     drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
     drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+    
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
     if (LCD_BUFFER_COUNT == 2) {
       staticDestPtr = (uint16_t *)(lcdBuffer[1] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
       drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
@@ -677,10 +690,10 @@ FASTRUN void loop()
 
   if(is_playing) {
     static uint32_t play_adr_temp =0;
-    if ((play_adr_temp/420) != (play_adr/420)) {
+    if ((play_adr_temp / baseSampPerWavePoint) != (play_adr / baseSampPerWavePoint)) {
       //Serial.printf("Play adr: %lu\n", play_adr);
       updateDynamicWaveform(play_adr);
-      updatePlaybackPosition_new((play_adr/420)*799/all_long);
+      updatePlaybackPosition_new((play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
       play_adr_temp = play_adr; 
     }
     
@@ -1010,7 +1023,7 @@ static const int32_t SCALE_090 = 59000; // 0.90 * 65536
 
 FASTRUN void advancePosition_claude_optimized()
 {
-  if(((play_adr+step_position+3)<=(420*all_long))) {						//change all_long extract!
+  if(((play_adr+step_position+3) <= (baseSampPerWavePoint * all_long))) {						//change all_long extract!
 		end_of_track = 0;	
 	}	else {
     Serial.println("END OF TRACK");
