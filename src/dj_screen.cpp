@@ -11,7 +11,9 @@
 #include "T4_PXP.h"
 #include <SDRAM_t4.h>
 #include "DMAChannel.h"
+#if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
+#endif
 
 
 #if defined(RDI_DEVELOPMENTS_REV3)
@@ -1201,6 +1203,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
         drawFastVLine16Bit(beatX, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
         drawFastVLine16Bit(beatX + 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
 
+#if defined(USE_BEAT_NUMBERS)
         // Draw beat numbers
         if (beat % 4 == 0) {
           
@@ -1212,6 +1215,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
             appStats.end(BEAT_DIGIT_RENDER);
           }
         }
+#endif        
       }
     }
     appStats.end(BEAT_GRID_RENDER);

@@ -28,7 +28,9 @@ SdFs sd_io2;
 
 
 #include "i2s_sync.h"
+#if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
+#endif
 
 // Forward declarations
 extern "C" void startup_middle_hook(void);
@@ -57,19 +59,37 @@ SDRAM_t4 sdram;
 eLCDIF_t4 lcd;
 i2s_sync audio;
 
-bool is_playing = false;
-uint32_t all_long = 0;                     //all long of Track in 0.5*frames   150 on 1 sec
-uint32_t baseSampPerWavePoint = 420;       //Number of samples per wavepoint in dynamic waveform. Updated from the database later
-volatile uint32_t play_adr = 0;            //Playing adress in samples (44100 per second)
-uint32_t slip_play_adr = 0;                //Playing adress for SLIP MODE in samples (44100 per second)
-uint16_t start_adr_valid_data = 0;         //filling adress in memory
-uint16_t end_adr_valid_data = 0;           //filling adress in memory ()
-uint8_t filling_step = 0;
-uint8_t offset_adress = 0;                 //address offset for calling CUE audio data (for work)
-uint8_t mem_offset_adress = 0;             //address offset for calling CUE audio data (for memory)
-EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
-int16_t LR[2][4] __attribute__((aligned(32)));
+
+// Used in the I2S ISR
+volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
+volatile uint32_t position = 0;
+volatile uint8_t reverse = 0;
+volatile uint8_t end_of_track = 0;                        //end track flag
+volatile uint32_t step_position = 0;
+volatile uint32_t sdram_adr = 0;
+volatile uint8_t offset_adress = 0;                       //address offset for calling CUE audio data (for work)
+volatile int16_t LR[2][4] __attribute__((aligned(32)));
+volatile uint16_t PCM_2[2] __attribute__((aligned(32)));
 volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
+
+// Used in I2S ISR and loop 
+volatile uint32_t play_adr = 0;                           //Playing adress in samples (44100 per second)
+volatile uint32_t baseSampPerWavePoint = 420;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
+volatile uint32_t all_long = 0;                           //all long of Track in 0.5*frames   150 on 1 sec
+
+// I dont think we mark big ass arrays as volatile?
+// TODO why is this 205 and not 128?
+EXTMEM_NOCACHE_PCM uint16_t PCM[205][8192][2] __attribute__((aligned(32)));
+
+// Make volatile as critical to buffer management
+volatile uint16_t start_adr_valid_data = 0;               //filling adress in memory
+volatile uint16_t end_adr_valid_data = 0;                 //filling adress in memory ()
+volatile uint8_t filling_step = 0;
+
+// Others
+bool is_playing = false;
+uint32_t slip_play_adr = 0;                      //Playing adress for SLIP MODE in samples (44100 per second)
+uint8_t mem_offset_adress = 0;                   //address offset for calling CUE audio data (for memory)
 int32_t even1, even2, odd1, odd2;
 float COEF[8] = {            //////optimal 2x
   0.45868970870461956,
@@ -84,15 +104,11 @@ float COEF[8] = {            //////optimal 2x
 
  uint8_t play_enable = 0;
  uint8_t slip_play_enable = 0;
- volatile uint8_t reverse = 0;
- volatile uint16_t pitch = 10000;         // 10000 = 100% step 0,01%            
- volatile uint32_t position = 0;
  uint32_t slip_position = 0;
  uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
  float SAMPLE_BUFFER;
  float T;
  uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
- volatile uint8_t end_of_track = 0;       //end track flag
  uint8_t loop_active = 0;                 //loop flag
  uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
  uint8_t lock_control = 1;            
@@ -105,10 +121,7 @@ float COEF[8] = {            //////optimal 2x
  uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
  uint16_t * staticDestPtr = NULL;
 
-// Local vars for calculatePosition_claude, defined here to keep them off the stack inside an ISR
-uint16_t PCM_2[2] __attribute__((aligned(32)));
-uint32_t step_position;
-uint32_t sdram_adr;
+
 
 /*
 uint32_t height;
@@ -536,8 +549,10 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
+#if defined(USE_BEAT_NUMBERS)
   // Create in memory rendered
   prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
+#endif  
 
   /*
   lv_obj_t * btn = lv_btn_create(lv_scr_act());
