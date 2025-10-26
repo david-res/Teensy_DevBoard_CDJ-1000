@@ -28,6 +28,7 @@ SdFs sd_io2;
 
 
 #include "i2s_sync.h"
+#include "utils/digit_renderer.h"
 
 // Forward declarations
 extern "C" void startup_middle_hook(void);
@@ -360,6 +361,7 @@ void checkSQLiteError(sqlite3* in_db, int in_rc)
   }
 }
 
+LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
@@ -533,6 +535,9 @@ void setup()
 #if LV_USE_LOG != 0
   lv_log_register_print_cb(my_print);
 #endif
+
+  // Create in memory rendered
+  prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
 
   /*
   lv_obj_t * btn = lv_btn_create(lv_scr_act());
