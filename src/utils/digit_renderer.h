@@ -4,6 +4,9 @@
 #include "lvgl.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include "globals.h"
+
+#if defined(USE_BEAT_NUMBERS)
 
 // Configuration - adjust these to match your needs
 
@@ -61,4 +64,5 @@ inline uint16_t get_digit_width(void) { return DIGIT_WIDTH; }
  */
 inline uint16_t get_digit_height(void) { return DIGIT_HEIGHT; }
 
+#endif // USE_BEAT_NUMBERS
 #endif // DIGIT_RENDERER_H

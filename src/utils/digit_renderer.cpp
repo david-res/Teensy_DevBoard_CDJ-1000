@@ -1,9 +1,11 @@
 #include "Arduino.h"
+#include "globals.h"
 #include "digit_renderer.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
+#if defined(USE_BEAT_NUMBERS)
 // Storage for pre-rendered digit buffers
 typedef struct {
     uint16_t *buffer;
@@ -163,3 +165,4 @@ FLASHMEM void free_digit_buffers(void) {
         }
     }
 }
+#endif
