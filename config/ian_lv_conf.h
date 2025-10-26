@@ -22,6 +22,8 @@
 #include "my_include.h"
 #endif
 
+#include "lv_version.h"
+
 /*====================
    COLOR SETTINGS
  *====================*/
@@ -127,7 +129,7 @@
 /* The stack size of the drawing thread.
  * NOTE: If FreeType or ThorVG is enabled, it is recommended to set it to 32KB or more.
  */
-#define LV_DRAW_THREAD_STACK_SIZE    (64 * 1024)   /*[bytes]*/
+#define LV_DRAW_THREAD_STACK_SIZE    (32 * 1024)   /*[bytes]*/
 
 #define LV_USE_DRAW_SW 1
 #if LV_USE_DRAW_SW == 1
@@ -140,10 +142,10 @@
 	 */
 
 	#define LV_DRAW_SW_SUPPORT_RGB565		1
-    #define LV_DRAW_SW_SUPPORT_RGB565A8		1
+    #define LV_DRAW_SW_SUPPORT_RGB565A8		0
 	#define LV_DRAW_SW_SUPPORT_RGB888		0 //Required for LV_USE_TJPGD to convert JPG
 	#define LV_DRAW_SW_SUPPORT_XRGB8888		0
-	#define LV_DRAW_SW_SUPPORT_ARGB8888		1 //Required for Lottie canvas, uses ~10k ITCM
+	#define LV_DRAW_SW_SUPPORT_ARGB8888		0 //Required for Lottie canvas, uses ~10k ITCM
 	#define LV_DRAW_SW_SUPPORT_L8			0
 	#define LV_DRAW_SW_SUPPORT_AL88			0
 	#define LV_DRAW_SW_SUPPORT_A8			0
@@ -299,11 +301,11 @@
     #define LV_LOG_TRACE_MEM        0
     #define LV_LOG_TRACE_TIMER      0
     #define LV_LOG_TRACE_INDEV      0
-    #define LV_LOG_TRACE_DISP_REFR  1
+    #define LV_LOG_TRACE_DISP_REFR  0
     #define LV_LOG_TRACE_EVENT      0
-    #define LV_LOG_TRACE_OBJ_CREATE 1
-    #define LV_LOG_TRACE_LAYOUT     1
-    #define LV_LOG_TRACE_ANIM       1
+    #define LV_LOG_TRACE_OBJ_CREATE 0
+    #define LV_LOG_TRACE_LAYOUT     0
+    #define LV_LOG_TRACE_ANIM       0
     #define LV_LOG_TRACE_CACHE      0
 
 #endif  /*LV_USE_LOG*/
@@ -457,7 +459,7 @@
 
 /*Enable matrix support
  *Requires `LV_USE_FLOAT = 1`*/
-#define LV_USE_MATRIX           1
+#define LV_USE_MATRIX           0
 
 /*Include `lvgl_private.h` in `lvgl.h` to access internal data and functions by default*/
 #define LV_USE_PRIVATE_API		1
@@ -512,13 +514,13 @@
 /*Enable handling large font and/or fonts with a lot of characters.
  *The limit depends on the font size, font face and bpp.
  *Compiler error will be triggered if a font needs it.*/
-#define LV_FONT_FMT_TXT_LARGE 1
+#define LV_FONT_FMT_TXT_LARGE 0
 
 /*Enables/disables support for compressed fonts.*/
 #define LV_USE_FONT_COMPRESSED 0
 
 /*Enable drawing placeholders when glyph dsc is not found*/
-#define LV_USE_FONT_PLACEHOLDER 1
+#define LV_USE_FONT_PLACEHOLDER 0
 
 /*=================
  *  TEXT SETTINGS
@@ -601,7 +603,7 @@
 
 #define LV_USE_CANVAS     1
 
-#define LV_USE_CHART      1
+#define LV_USE_CHART      0
 
 #define LV_USE_CHECKBOX   1
 
@@ -634,7 +636,7 @@
 
 #define LV_USE_ROLLER     1   /*Requires: lv_label*/
 
-#define LV_USE_SCALE      1
+#define LV_USE_SCALE      0
 
 #define LV_USE_SLIDER     1   /*Requires: lv_bar*/
 
@@ -655,7 +657,7 @@
     #define LV_TEXTAREA_DEF_PWD_SHOW_TIME 1500    /*ms*/
 #endif
 
-#define LV_USE_TABLE      1
+#define LV_USE_TABLE      0
 
 #define LV_USE_TABVIEW    1
 
@@ -704,7 +706,11 @@
 /*File system interfaces for common APIs */
 
 /*Setting a default driver letter allows skipping the driver prefix in filepaths*/
-#define LV_FS_DEFAULT_DRIVE_LETTER 'S' //TODO look at this
+#if (LVGL_VERSION_MINOR == 4)
+#define LV_FS_DEFAULT_DRIVER_LETTER 'S' 
+#else
+#define LV_FS_DEFAULT_DRIVE_LETTER 'S' 
+#endif
 
 /*API for fopen, fread, etc*/
 #define LV_USE_FS_STDIO 0
@@ -768,7 +774,7 @@
 #define LV_USE_LIBPNG 0
 
 /*BMP decoder library*/
-#define LV_USE_BMP 1
+#define LV_USE_BMP 0
 
 /* JPG + split JPG decoder library.
  * Split JPG is a custom format optimized for embedded systems. */
@@ -849,7 +855,7 @@
  *==================*/
 
 /*1: Enable API to take snapshot for object*/
-#define LV_USE_SNAPSHOT 1
+#define LV_USE_SNAPSHOT 0
 
 /*1: Enable system monitor component*/
 #define LV_USE_SYSMON   1

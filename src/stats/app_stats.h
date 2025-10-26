@@ -14,6 +14,7 @@ enum StatType {
     ISR_LCD,
     LV_TIMER_HANDLER,
     DYNAMIC_RENDER,
+    BEAT_GRID_RENDER,
     DYNAMIC_MEMCPY,
     OVERVIEW_COPY,
     PLAYFILE_READ,
@@ -61,6 +62,7 @@ private:
         {"LCD ISR/s:       ",     false,               false},  // ISR_LCD
         {"timerHandler/s:  ",     true,                false},  // LV_TIMER_HANDLER
         {"dynamic render/s:",     true,                false},  // DYNAMIC_RENDER
+        {"Beat render/s:   ",     true,                false},  // BEAT_GRID_RENDER
         {"dynamic copy/s:  ",     true,                true},   // DYNAMIC_MEMCPY
         {"static copy/s:   ",     true,                false},  // OVERVIEW_COPY
         {"PlayFile: Read/s:",     true,                true},   // PLAYFILE_READ

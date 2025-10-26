@@ -97,6 +97,8 @@ bool useOpa = false;
 uint64_t overviewSampleCount = 0;
 uint64_t highResSampleCount = 0;
 
+Beatgrid * beatgrid;
+
 
 const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
 const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0;
@@ -459,7 +461,7 @@ FLASHMEM bool loadOverviewWaveformData(uint16_t track_id)
 
 GlobalBeatLUT globalBeats = {0};
 
-bool loadBeatgridData(int track_id, Beatgrid *beatgrid) {
+bool loadBeatgridData(uint16_t track_id) {
     // Clear the beatgrid structure
     memset(beatgrid, 0, sizeof(Beatgrid));
     
@@ -1001,8 +1003,8 @@ void dj_ui_init(Track * track) {
     loadDynamicWaveformData(track->track_id);
     loadOverviewWaveformData(track->track_id);
 
-    Beatgrid * beatgrid = (Beatgrid*)malloc(sizeof(Beatgrid));
-    loadBeatgridData(track->track_id, beatgrid);
+    beatgrid = (Beatgrid*)malloc(sizeof(Beatgrid));
+    loadBeatgridData(track->track_id);
 
     // Create all containers
     create_top_container(track);
@@ -1120,20 +1122,20 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   int offset = 800 * 82; // start of row 82
   memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
   
-  uint32_t pos = (waveformOffset/420) / DynamicWaveformZOOM; 
+  uint32_t pos = (waveformOffset / 420) / DynamicWaveformZOOM; 
   /*If zoom is bigger than 1, need to find the highest value in between each jump*/
   //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
 
   
   //Draw waveforms - expanded, interpolated
+  const uint16_t chartHeightHalf = chartHeight / 2;
+
   for (uint16_t x = 0; x < 800; x++) {
-    int64_t index = DynamicWaveformZOOM * (x + pos- (chartWidth/2));
+    int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
     if (index < 0 || index >= all_long) continue;
-    for (uint8_t i = 0; i < 6; i++) {
+    for (uint8_t i = 0; i < 3; i++) {
         uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
-        if(i < 3) { 
-            drawFastVLine16Bit(x, ((chartHeight -sampleValue) /2), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
-        }
+        drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
         //if (dynamicWaveSampleData[i][index] > chartHeight) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
     }
   }
@@ -1144,6 +1146,61 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
+
+  // Draw beat grid
+  if (beatgrid && beatgrid->markerCount > 0) {
+    appStats.start(BEAT_GRID_RENDER);
+    // TODO check if these are correct values to use
+    uint16_t beatCount = beatgrid->markers[0].beatsUntilNext;
+    float firstSample = beatgrid->markers[0].sampleOffset;
+    float samplesPerBeat = (beatgrid->markers[beatgrid->markerCount - 1].sampleOffset - firstSample) / beatCount;
+    
+    // waveformOffset is in the center sample on screen, so calculate left most sample index
+    int64_t centerSample = waveformOffset;
+    int64_t leftmostSample = centerSample - ((chartWidth / 2) * 420 * DynamicWaveformZOOM);
+    
+    // Beat grid starts 4 beats before the first sample (I think?)
+    float beatZeroSample = firstSample - (4 * samplesPerBeat);
+    
+    // Calculate which beat number would be at the left edge of the screen
+    int16_t firstVisibleBeat = (int16_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
+    if (firstVisibleBeat < -4) firstVisibleBeat = -4;
+    
+    const uint16_t white_190 = 0xBDF7;
+    const uint16_t tickHeight = 10;
+    const uint16_t tickBottomStart = chartHeight - tickHeight - 1;
+    const float sampleToPixel = 1.0 / (420.0 * DynamicWaveformZOOM);
+    const int16_t halfWidth = chartWidth / 2;
+    
+    // Draw beats starting from the first visible one
+    for (int16_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
+      // Calculate beat position in pixels from center
+      int16_t beatX = (int16_t)(((beatZeroSample + (beat * samplesPerBeat) - centerSample) * sampleToPixel) + halfWidth);
+      
+      // Stop early, if we've gone past the right edge
+      if (beatX >= chartWidth - 1) break;
+
+      // Draw beat line with bounds checking (need room for ±1 pixel)
+      if (beatX >= 1) {
+        uint16_t tickColor = (beat % 4 == 0) ? 0xF800 : white_190;
+        
+        // Draw top tick (3 pixels wide)
+        drawFastVLine16Bit(beatX - 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(beatX, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(beatX + 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+        
+        // Draw middle section (1 pixel wide, dim white)
+        drawFastVLine16Bit(beatX, tickHeight, chartHeight - (2 * tickHeight), white_190, dynamicCanvasBuffer, chartWidth);
+        
+        // Draw bottom tick (3 pixels wide)
+        drawFastVLine16Bit(beatX - 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(beatX, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(beatX + 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      }
+    }
+    appStats.end(BEAT_GRID_RENDER);
+  }
+
   if (millis() > nextLabelMs) {
     lv_label_set_text_fmt(time_label, "%ld", millis());
     nextLabelMs = millis() + 90;
