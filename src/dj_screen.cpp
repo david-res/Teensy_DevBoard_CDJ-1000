@@ -250,6 +250,9 @@ FLASHMEM bool loadDynamicWaveformData(uint16_t track_id){
     b[23 - i] = uncompressedBuffer[i];
   }
 
+  Serial.printf("numSamplesPerWaveformPoint: %lf\n", numSamplesPerWaveformPoint);
+  baseSampPerWavePoint = numSamplesPerWaveformPoint;
+
   //Create data arrays - lo med high samples
   for (int8_t i = 0; i < 6; i++) {
     dynamicWaveSampleData[i] = (uint8_t *)malloc(dynamicWaveformSampleCount);
@@ -591,7 +594,7 @@ bool loadBeatgridData(uint16_t track_id) {
     beatgrid->numSamples = nsUnion.numSamples;
     offset += 8;
     Serial.printf("Number of samples: %lf\n", beatgrid->numSamples);
-    all_long = beatgrid->numSamples/420;
+    all_long = beatgrid->numSamples / baseSampPerWavePoint;
     Serial.printf("Number of all_long samples: %d\n", all_long);
 
     // Extract beatgrid exists flag
@@ -717,7 +720,7 @@ bool loadBeatgridData(uint16_t track_id) {
     }
 
     // Set samples per waveform point (use the same value from waveform data)
-    beatgrid->samplesPerWaveformPoint = 420; // From your waveform extraction
+    beatgrid->samplesPerWaveformPoint = baseSampPerWavePoint; // From your waveform extraction
 
     free(uncompressedBuffer);
     
@@ -1119,10 +1122,9 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   appStats.start(DYNAMIC_RENDER);
 
   //Clear canvas
-  int offset = 800 * 82; // start of row 82
   memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
   
-  uint32_t pos = (waveformOffset / 420) / DynamicWaveformZOOM; 
+  uint32_t pos = (waveformOffset / baseSampPerWavePoint) / DynamicWaveformZOOM; 
   /*If zoom is bigger than 1, need to find the highest value in between each jump*/
   //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
 
@@ -1130,7 +1132,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //Draw waveforms - expanded, interpolated
   const uint16_t chartHeightHalf = chartHeight / 2;
 
-  for (uint16_t x = 0; x < 800; x++) {
+  for (uint16_t x = 0; x < chartWidth; x++) {
     int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
     if (index < 0 || index >= all_long) continue;
     for (uint8_t i = 0; i < 3; i++) {
@@ -1139,7 +1141,8 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
         //if (dynamicWaveSampleData[i][index] > chartHeight) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
     }
   }
-  memset((dynamicCanvasBuffer + offset), 0xFFFF, 1600);
+  int midOffset = chartWidth * chartHeightHalf; 
+  memset((dynamicCanvasBuffer + midOffset), 0xFFFF, chartWidth * 2);
   //Draw mid-canvas line
   drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, dynamicCanvasBuffer, chartWidth);
   //lv_obj_invalidate(daynamic_waveform_canvas);
@@ -1157,7 +1160,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     
     // waveformOffset is in the center sample on screen, so calculate left most sample index
     int64_t centerSample = waveformOffset;
-    int64_t leftmostSample = centerSample - ((chartWidth / 2) * 420 * DynamicWaveformZOOM);
+    int64_t leftmostSample = centerSample - ((chartWidth / 2) * baseSampPerWavePoint * DynamicWaveformZOOM);
     
     // Beat grid starts 4 beats before the first sample (I think?)
     float beatZeroSample = firstSample - (4 * samplesPerBeat);
@@ -1169,7 +1172,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     const uint16_t white_190 = 0xBDF7;
     const uint16_t tickHeight = 10;
     const uint16_t tickBottomStart = chartHeight - tickHeight - 1;
-    const float sampleToPixel = 1.0 / (420.0 * DynamicWaveformZOOM);
+    const float sampleToPixel = 1.0 / (float)(baseSampPerWavePoint * DynamicWaveformZOOM);
     const int16_t halfWidth = chartWidth / 2;
     
     // Draw beats starting from the first visible one

@@ -31,6 +31,7 @@ extern AppStats appStats;
 /////////////////////
 extern bool is_playing;
 extern uint32_t all_long;
+extern uint32_t baseSampPerWavePoint;
 extern volatile uint32_t play_adr;
 extern uint32_t slip_play_adr;
 extern EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2];
