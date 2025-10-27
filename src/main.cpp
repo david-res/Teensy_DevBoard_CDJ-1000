@@ -590,7 +590,7 @@ void setup()
   // Setup complete, turn on LCD
   analogWrite(BACKLIGHT_PIN, 200);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-#endif 
+#endif  // LCDDISP
 }
 
 uint32_t bytes_read = 0;
@@ -685,7 +685,7 @@ FASTRUN void copyWaveformsToLCD()
 FASTRUN void loop()
 {
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
-  uint32_t play_adr_snapshot = play_adr;
+  uint32_t snapshot_play_adr = play_adr;
   
   // Stats
   if (appStats.readyToReport() == true) {
@@ -706,61 +706,55 @@ FASTRUN void loop()
       lvgl_framePending = false;
   }
 
-  if(is_playing) {
+  if (is_playing == true) {
     static uint32_t play_adr_temp = 0;
 
-    if ((play_adr_temp / baseSampPerWavePoint) != (play_adr_snapshot / baseSampPerWavePoint)) {
-      //Serial.printf("Play adr: %lu\n", play_adr_snapshot);
-      updateDynamicWaveform(play_adr_snapshot);
-      updatePlaybackPosition_new((play_adr_snapshot / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
-      play_adr_temp = play_adr_snapshot; 
+    if ((play_adr_temp / baseSampPerWavePoint) != (snapshot_play_adr / baseSampPerWavePoint)) {
+      //Serial.printf("Play adr: %lu\n", snapshot_play_adr);
+      updateDynamicWaveform(snapshot_play_adr);
+      updatePlaybackPosition_new((snapshot_play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
+      play_adr_temp = snapshot_play_adr; 
     }
     
-    
-      if(end_adr_valid_data<128){
-        bytes_read = playFileRead(PCM[end_adr_valid_data][0], 32768);
-        //Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
-        end_adr_valid_data++;
-          
-        }
-
-    else if((end_adr_valid_data<((play_adr_snapshot>>13)+42)) && (filling_step==0 || filling_step==6)){
-      						//filling the buffer forward
-      if(filling_step==6){
-
+    if(end_adr_valid_data<128) {
+      bytes_read = playFileRead(PCM[end_adr_valid_data][0], 32768);
+      //Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
+      end_adr_valid_data++;
+        
+    } else if((end_adr_valid_data<((snapshot_play_adr>>13)+42)) && (filling_step==0 || filling_step==6)) {
+      
+      //filling the buffer forward
+      if(filling_step==6) {
         playFileSeek((32768*end_adr_valid_data)+44);
         filling_step = 0;	
-        }
+      }
 
       bytes_read = playFileRead(PCM[end_adr_valid_data&0x7F][0], 32768);
       //Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
-      //Serial.printf("all_long %d play_adr_snapshot %d \n", all_long, play_adr_snapshot);		
+      //Serial.printf("all_long %d snapshot_play_adr %d \n", all_long, snapshot_play_adr);		
       //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
       end_adr_valid_data++;
-      if((end_adr_valid_data-start_adr_valid_data)>128){
+      if ((end_adr_valid_data-start_adr_valid_data)>128) {
         start_adr_valid_data = end_adr_valid_data-128;	
-        }
       }
-    else if(((end_adr_valid_data>((play_adr_snapshot>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)) {					//filling the buffer back
+    } else if(((end_adr_valid_data>((snapshot_play_adr>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)) {					//filling the buffer back
       Serial.println("filling buffers backwards");		
       if(filling_step == 0 || filling_step == 6) {
-          if((end_adr_valid_data - start_adr_valid_data) > 127) {
-              end_adr_valid_data = start_adr_valid_data + 124;	
-          }	
-          start_adr_valid_data -= 4;	
-          playFileSeek((32768 * start_adr_valid_data) + 44);
-          filling_step = 1;	
-      }
-      else if(filling_step >= 1 && filling_step <= 4) {
-          playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
-          filling_step++;
-      }
-      else if(filling_step == 5) {
-          //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
-          filling_step = 6;		
+        if((end_adr_valid_data - start_adr_valid_data) > 127) {
+          end_adr_valid_data = start_adr_valid_data + 124;	
+        }	
+        start_adr_valid_data -= 4;	
+        playFileSeek((32768 * start_adr_valid_data) + 44);
+        filling_step = 1;	
+      } else if (filling_step >= 1 && filling_step <= 4) {
+        playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
+        filling_step++;
+      } else if(filling_step == 5) {
+        //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
+        filling_step = 6;		
       }
     }
-  } 
+  }
   appStats.end(MAIN_LOOP);
 }
 

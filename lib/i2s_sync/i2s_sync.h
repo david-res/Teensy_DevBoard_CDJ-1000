@@ -13,6 +13,8 @@ class i2s_sync{
     static CBF _callback;
     void begin(CBF callback);
     void stop();
+    void startI2SInterrupt();
+    void stopI2SInterrupt();
     float sample_rate = 44100.0f;
 
     private:

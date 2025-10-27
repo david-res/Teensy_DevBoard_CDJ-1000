@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "stats/app_stats.h"
+#include "i2s_sync.h"
 
 #define LCD_BUFFER_COUNT 2
 #define SDRAM_SPEED 198      // 166, 198, 221
@@ -26,6 +27,7 @@
 #endif
 
 extern AppStats appStats;
+extern i2s_sync audio;
 
 // Used in the I2S ISR
 //extern volatile uint16_t pitch;
