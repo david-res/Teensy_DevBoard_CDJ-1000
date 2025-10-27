@@ -144,5 +144,29 @@ FASTRUN void i2s_sync::begin(CBF audio_irq){
       Serial.println("Audio started");
 }
 
+FASTRUN void i2s_sync::startI2SInterrupt() {
+#if defined(IRQ_FROM_INT_TIMER)
+  irqTimer.priority(128);
+  irqTimer.begin(SAI_IRQHandler, 23); // 44.1Khz is 22.675uS
+  Serial.printf("Enabled Interval Timer\n");
+#else
+  // Enable clocks, transmitter, and interrupt
+  I2S_TCSR_REG |= I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE;
+  NVIC_ENABLE_IRQ(IRQ_SAI);
+  Serial.printf("Enabled I2S clock, transmitter and interrupt\n");
+#endif  
+}
+
+FASTRUN void i2s_sync::stopI2SInterrupt() {
+#if defined(IRQ_FROM_INT_TIMER)
+  irqTimer.end();
+  Serial.printf("Disabled Interval Timer\n");
+#else  
+  // Stop transmitter, interrupt, and clocks
+  NVIC_DISABLE_IRQ(IRQ_SAI);
+  I2S_TCSR_REG &= ~(I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE);
+  Serial.printf("Disabled I2S clock, transmitter and interrupt\n");
+#endif  
+}
 
 FLASHMEM void i2s_sync::stop(){}

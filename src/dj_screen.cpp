@@ -966,31 +966,6 @@ void create_bottom_container(void) {
         */
 }
 
-FASTRUN void startI2SInterrupt() {
-#if defined(IRQ_FROM_INT_TIMER)
-  irqTimer.priority(128);
-  irqTimer.begin(SAI_IRQHandler, 23); // 44.1Khz is 22.675uS
-  Serial.printf("Enabled Interval Timer\n");
-#else
-  // Enable clocks, transmitter, and interrupt
-  I2S_TCSR_REG |= I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE;
-  NVIC_ENABLE_IRQ(IRQ_SAI);
-  Serial.printf("Enabled I2S clock, transmitter and interrupt\n");
-#endif  
-}
-
-FASTRUN void stopI2SInterrupt() {
-#if defined(IRQ_FROM_INT_TIMER)
-  irqTimer.end();
-  Serial.printf("Disabled Interval Timer\n");
-#else  
-  // Stop transmitter, interrupt, and clocks
-  NVIC_DISABLE_IRQ(IRQ_SAI);
-  I2S_TCSR_REG &= ~(I2S_TCSR_BCE | I2S_TCSR_TE | I2S_TCSR_FRIE);
-  Serial.printf("Disabled I2S clock, transmitter and interrupt\n");
-#endif  
-}
-
 void dj_ui_init(Track * track) {
     // Create main screen
     main_screen = lv_obj_create(NULL);
@@ -1032,7 +1007,8 @@ void dj_ui_init(Track * track) {
     else{
       Serial.printf("Opened audio file: %s\n", fName);
       is_playing = true;
-      startI2SInterrupt();
+      playFile.seek(44);
+      audio.startI2SInterrupt();
       updateDynamicWaveform(0); 
     }
 }
@@ -1222,7 +1198,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   }
 
   if (millis() > nextLabelMs) {
-    lv_label_set_text_fmt(time_label, "%ld", millis());
+    lv_label_set_text_fmt(time_label, "%ld", play_adr);
     nextLabelMs = millis() + 90;
   }
 

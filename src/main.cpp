@@ -7,14 +7,18 @@
 #include "file_viewer.h"
 #include "dj_screen.h"
 #include <SDRAM_t4.h>
+#include "inflate.h"
+#include "utils/changeSDSpeed.h"
+#include "lv_utils.h"
+
+#if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
 #include <Adafruit_FT6206.h>
-#include "inflate.h"
 #include "T4_PXP.h"
-#include "utils/changeSDSpeed.h"
+#endif
 
 #if defined(USE_REM_DISP)
-#include "RemoteDisplay.h"
+#include <RemoteDisplay.h>
 #endif
 
 #if defined(RDI_DEVELOPMENTS_REV3)
@@ -40,8 +44,6 @@ void advancePosition_rezo();
 void advancePosition_claude();
 void advancePosition_claude_optimized();
 
-#define LCDDISP
-
 #if defined(USE_REM_DISP)
 RemoteDisplay remoteDisplay;
 #endif  
@@ -58,6 +60,8 @@ FsFile metaDB;
 SDRAM_t4 sdram;
 eLCDIF_t4 lcd;
 i2s_sync audio;
+
+uint32_t play_count = 0;
 
 
 // Used in the I2S ISR
@@ -139,11 +143,13 @@ uint32_t height;
   uint32_t hpolarity; // 0 (active low hsync/negative) or LCDIF_VDCTRL0_HSYNC_POL (active high/positive)
   uint32_t pclkpolarity; // 0 (data valid on falling edge/negative) or LCDIF_VDCTRL0_DOTCLK_POL (data valid on rising edge/positive)ss
 */
+#if defined(USE_LCD_DISP)
 #if defined(RDI_DEVELOPMENTS_REV3)
 eLCDIF_t4_config lcd_config = {480, 8, 4, 4, 800, 8, 4, 4, 25, 24, 0, 0};
 #else
 eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
-#endif
+#endif // RDI_DEVELOPMENTS_REV3
+#endif // USE_LCD_DISP
 
 //const char* dbName = "Engine Library/Database2/p.db";
 
@@ -177,7 +183,7 @@ void startup_middle_hook(void)
   }
 }
 
-#ifdef USE_REM_DISP
+#if defined(USE_REM_DISP)
 void refreshDisplayCallback()
 {
   lv_area_t area;
@@ -189,7 +195,7 @@ void refreshDisplayCallback()
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
 {
   if (remoteDisplay.sendRemoteScreen == true ) {
-    remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
+    //remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
   }
   lv_disp_flush_ready(display);
 }
@@ -204,20 +210,9 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
 }
 #endif
 
+#endif // USE_REM_DISP
 
-FASTRUN void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
-{
-  //Handle touch from remote (overrides)
-  if (remoteDisplay.sendRemoteScreen == true) {
-      data->point.x = remoteDisplay.lastRemoteTouchX;
-      data->point.y = remoteDisplay.lastRemoteTouchY;
-      data->state = remoteDisplay.lastRemoteTouchState == RemoteDisplay::PRESSED ? LV_INDEV_STATE_PRESSED: LV_INDEV_STATE_RELEASED;
-  }
-}
-
-#endif
-
-#ifdef LCDDISP
+#if defined(USE_LCD_DISP) || defined(USE_REM_DISP)
 //Display driver
 #if (LVGL_VERSION_MAJOR == 8)
 static lv_disp_draw_buf_t disp_buf;
@@ -288,7 +283,6 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
 }
 #endif
 
-
 FASTRUN void lcdCallback() {
   CrashReport.breadcrumb(3, 1);
 
@@ -342,15 +336,23 @@ void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 {
     // Check if there's a new touch event from interrupt
     TS_Point p = ctp.getPoint();
-        if (ctp.touched()) {
-            // Touch detected - map coordinates to 800x480 screen
-            data->state = LV_INDEV_STATE_PRESSED;
-            data->point.x = p.x;
-            data->point.y = p.y;
-        } else {
-            // Touch released
-            data->state = LV_INDEV_STATE_RELEASED;
-        }
+    if (ctp.touched()) {
+        // Touch detected - map coordinates to 800x480 screen
+        data->state = LV_INDEV_STATE_PRESSED;
+        data->point.x = p.x;
+        data->point.y = p.y;
+    } else {
+        // Touch released
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+#if defined(USE_REM_DISP)    
+    if (remoteDisplay.sendRemoteScreen == true) {
+        //Handle touch from remote (overrides)
+        data->point.x = remoteDisplay.lastRemoteTouchX;
+        data->point.y = remoteDisplay.lastRemoteTouchY;
+        data->state = remoteDisplay.lastRemoteTouchState == RemoteDisplay::PRESSED ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    }
+#endif // USE_REM_DISP   
 }
 #endif
 
@@ -380,12 +382,13 @@ LV_FONT_DECLARE(exo2_18)
 FLASHMEM void reportAppConfig() {
   Serial.println("\n======================== App Settings ==========================");
   Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
-  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), SDRAM_SPEED);  
   Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
   Serial.printf("LVGL: " SER_CYAN "%d.%d.%d" SER_RESET "\n", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
-  Serial.printf("USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_REM_DISP) ? SER_RED : SER_CYAN, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
+  Serial.printf("DISPLAY: USE_LCD_DISP: %s%s" SER_RESET "  USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_LCD_DISP) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_LCD_DISP) ? "TRUE" : "FALSE",
+      MACRO_EXISTS(USE_REM_DISP) ? SER_RED : SER_CYAN, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
   Serial.printf("USE_STATS: %s%s" SER_RESET "\n",  MACRO_EXISTS(USE_STATS) ? SER_YELLOW : SER_GREEN, MACRO_EXISTS(USE_STATS) ? "TRUE" : "FALSE");
   Serial.printf("IRQ_GEN: %s%s" SER_RESET "\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S");
   // buffer count, LVGL version
@@ -402,7 +405,7 @@ FLASHMEM void errorHalt(const char* message)
 
 void setup()
 {
-#ifdef LCDDISP
+#if defined(USE_LCD_DISP)
   // Turn off backlight
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWriteFrequency(BACKLIGHT_PIN, 200);
@@ -452,20 +455,17 @@ void setup()
     errorHalt("T41SQLite::getInstance().begin failed");
   }
 
-  //USE_REM_DISP_init();
-  //USE_REM_DISP_register_callbacks();
-  
   // Init buffers
   memset(PCM, 0, sizeof(PCM));
   memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
   memset(staticIndicatorBuffer, 0xFF, overviewChartHeight * 2 * 2); // White is easy - if marker color hi/li bytes differ, use a loop to fill color
 
-  #ifdef USE_REM_DISP
+#ifdef USE_REM_DISP
   remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
-  #endif
+#endif
 
-#ifdef LCDDISP
+#if defined(USE_LCD_DISP)
 
   // Init touch screen
   if (ctp.begin(20)) {
@@ -501,7 +501,7 @@ void setup()
   Serial.println("LCD ON");
 #endif
 
-#endif // LCDDISP
+#endif // USE_LCD_DISP
 
   lv_init();
   #if (LVGL_VERSION_MAJOR == 8)
@@ -586,11 +586,11 @@ void setup()
   
   audio.begin(&SAI_IRQHandler);
 
-#ifdef LCDDISP
+#if defined(USE_LCD_DISP)
   // Setup complete, turn on LCD
   analogWrite(BACKLIGHT_PIN, 200);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-#endif 
+#endif  // USE_LCD_DISP
 }
 
 uint32_t bytes_read = 0;
@@ -610,10 +610,19 @@ FASTRUN int playFileRead(void *buf, size_t count)
 {
   appStats.start(PLAYFILE_READ);
 
-  uint32_t bytes_read = 0;
+    uint32_t bufAddr = (uint32_t)buf;
+  if (bufAddr < 0x80000000 || bufAddr > 0x81400000) {
+    Serial.printf("INVALID BUFFER ADDRESS: 0x%08X\n", bufAddr);
+    Serial.flush();
+  }
+
+  int32_t bytes_read = 0;
   CrashReport.breadcrumb(1, 2);
   //noInterrupts();
   bytes_read = playFile.read(buf, count);
+  if (bytes_read != count) {
+    Serial.printf(SER_RED "File read mismatch: count: %ld, bytes_read: %ld" SER_RESET "\n", count, bytes_read);
+  }
   //interrupts();
   CrashReport.breadcrumb(1, 0);  
 
@@ -634,56 +643,167 @@ FASTRUN void drawVerticalStrip(uint16_t* srcBuffer, uint16_t xPos, uint16_t heig
 
 FASTRUN void copyWaveformsToLCD()
 {
+  CrashReport.breadcrumb(4, 1);
   
   if (dynamicBufferReady == true) {
 
-    // Start time for stats
+    CrashReport.breadcrumb(4, 2);
+    
     appStats.start(DYNAMIC_MEMCPY);
-
-    uint8_t *destPtr = (uint8_t *)(LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
-    memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
-
-    // As this isn't updated per frame, it needs to be done in all LCD buffers in use
-    if (LCD_BUFFER_COUNT == 2) {
-      destPtr = (uint8_t *)(LCDIF_CUR_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
-      memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+        
+    // Calculate destination pointer
+    uint32_t offset = (SCREEN_WIDTH * middleContainerPos * 2);
+    uint32_t baseAddr = LCDIF_NEXT_BUF;
+    uint32_t destAddr = baseAddr + offset;
+    uint8_t *destPtr = (uint8_t *)destAddr;
+    
+    // Validate the destination address before using it
+    bool isValid = true;
+    
+    // Check if address is in valid EXTMEM range (your lcdBuffer array)
+    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
+      Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr=0x%08X, base=0x%08X, offset=%lu, middlePos=%d" SER_RESET "\n", 
+                    destAddr, baseAddr, offset, middleContainerPos);
+      isValid = false;
     }
     
-    dynamicBufferReady = false;
+    // Check if it would overflow the LCD buffer
+    uint32_t copySize = (chartWidth * chartHeight * 2);
+    if (destAddr + copySize > 0x81400000) {
+      Serial.printf(SER_RED "ERROR: Dynamic copy would overflow: dest=0x%08X, size=%lu" SER_RESET "\n", 
+                    destAddr, copySize);
+      isValid = false;
+    }
+    
+    // Check for the specific crash address
+    if (destAddr == 0x20300000) {
+      Serial.printf(SER_RED "CRITICAL: Calculated exact crash address 0x20300000!" SER_RESET "\n");
+      Serial.printf("  LCDIF_NEXT_BUF=0x%08X, middleContainerPos=%d, SCREEN_WIDTH=%d\n", 
+                    baseAddr, middleContainerPos, SCREEN_WIDTH);
+      isValid = false;
+    }
+    
+    // Only perform copy if address is valid
+    if (isValid) {
+      CrashReport.breadcrumb(4, 4); // Mark actual memcpy
+      memcpy(destPtr, dynamicCanvasBuffer, copySize);
+      CrashReport.breadcrumb(4, 2); // Back to dynamic section
+      
+      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
+      if (LCD_BUFFER_COUNT == 2) {
+        destPtr = (uint8_t *)(LCDIF_CUR_BUF + offset);
+        destAddr = (uint32_t)destPtr;
+        
+        // Validate second buffer too
+        if (destAddr >= 0x80000000 && destAddr <= 0x81400000 && 
+            destAddr + copySize <= 0x81400000) {
+          memcpy(destPtr, dynamicCanvasBuffer, copySize);
+        } else {
+          Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
+        }
+      }
+      
+      dynamicBufferReady = false;
+
+    } else {
+      // Skip copy, clear flag to prevent repeated errors
+      dynamicBufferReady = false;
+      Serial.println(SER_RED "Skipped dynamic waveform copy due to invalid address" SER_RESET);
+    }
 
     // Finish stats
     appStats.end(DYNAMIC_MEMCPY);
-    appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
+    appStats.addByteCount(DYNAMIC_MEMCPY, copySize); 
+    
+    CrashReport.breadcrumb(4, 1); // Back to main function
   }
 
   if (staticBufferReady == true) {
-
+    CrashReport.breadcrumb(4, 3);
+    
     // Start time for stats
     appStats.start(OVERVIEW_COPY);
-
-    // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
-    // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
-
-    staticDestPtr = (uint16_t *)(lcdBuffer[0] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
-    drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-    drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
     
-    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
-    if (LCD_BUFFER_COUNT == 2) {
-      staticDestPtr = (uint16_t *)(lcdBuffer[1] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
-      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+    // Calculate destination pointer for static waveform
+    uint32_t offset = (SCREEN_WIDTH * (bottomContainerPos + 1));
+    uint32_t destAddr = (uint32_t)(lcdBuffer[0] + offset);
+    uint16_t *staticDestPtr = (uint16_t *)destAddr;
+    
+    // Validate the destination address
+    bool isValid = true;
+    
+    // Check if address is in valid EXTMEM range
+    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
+      Serial.printf(SER_RED "ERROR: Invalid static destPtr=0x%08X, offset=%lu, bottomPos=%d" SER_RESET "\n", 
+                    destAddr, offset, bottomContainerPos);
+      isValid = false;
     }
+    
+    // Check for the specific crash address
+    if (destAddr == 0x20300000 || (destAddr >= 0x20200000 && destAddr <= 0x20400000)) {
+      Serial.printf(SER_RED "CRITICAL: Static pointer in crash range 0x%08X!" SER_RESET "\n", destAddr);
+      Serial.printf("  lcdBuffer[0]=0x%08X, bottomContainerPos=%d, SCREEN_WIDTH=%d\n", 
+                    (uint32_t)lcdBuffer[0], bottomContainerPos, SCREEN_WIDTH);
+      isValid = false;
+    }
+    
+    // Validate array indices
+    if (oldStaticBufferX >= chartWidth || newStaticBufferX >= chartWidth) {
+      Serial.printf(SER_RED "ERROR: Invalid static buffer X positions: old=%d, new=%d, chartWidth=%d" SER_RESET "\n",
+                    oldStaticBufferX, newStaticBufferX, chartWidth);
+      isValid = false;
+    }
+    
+    if (isValid) {
+      CrashReport.breadcrumb(4, 5); // Mark actual drawing
+      
+      // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer
+      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
+                       overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+      
+      // Draw new marker
+      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
+                       overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+      
+      CrashReport.breadcrumb(4, 3); // Back to static section
+      
+      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
+      if (LCD_BUFFER_COUNT == 2) {
+        staticDestPtr = (uint16_t *)(lcdBuffer[1] + offset);
+        destAddr = (uint32_t)staticDestPtr;
+        
+        // Validate second buffer too
+        if (destAddr >= 0x80000000 && destAddr <= 0x81400000) {
+          drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
+                           overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+          drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
+                           overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+        } else {
+          Serial.printf(SER_RED "ERROR: Invalid static destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
+        }
+      }
 
-    staticBufferReady = false;
-  
-    // Finish stats
-    appStats.end(OVERVIEW_COPY);
+      staticBufferReady = false;
+    
+      // Finish stats
+      appStats.end(OVERVIEW_COPY);
+    } else {
+      // Skip copy, clear flag
+      staticBufferReady = false;
+      Serial.println(SER_RED "Skipped static waveform copy due to invalid address" SER_RESET);
+    }
+    
+    CrashReport.breadcrumb(4, 1); // Back to main function
   }
+  
+  CrashReport.breadcrumb(4, 0); // Clear breadcrumb
 }
 
 FASTRUN void loop()
 {
+  // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
+  uint32_t snapshot_play_adr = play_adr;
+  
   // Stats
   if (appStats.readyToReport() == true) {
     appStats.report();
@@ -696,6 +816,10 @@ FASTRUN void loop()
       lv_timer_handler(); 
       appStats.end(LV_TIMER_HANDLER);
 
+#ifdef USE_REM_DISP
+      remoteDisplay.pollRemoteCommand();
+#endif
+
       if (is_playing == true) {
         copyWaveformsToLCD();
       }
@@ -703,65 +827,82 @@ FASTRUN void loop()
       lvgl_framePending = false;
   }
 
-  if(is_playing) {
-    static uint32_t play_adr_temp =0;
-    if ((play_adr_temp / baseSampPerWavePoint) != (play_adr / baseSampPerWavePoint)) {
-      //Serial.printf("Play adr: %lu\n", play_adr);
-      updateDynamicWaveform(play_adr);
-      updatePlaybackPosition_new((play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
-      play_adr_temp = play_adr; 
-    }
-    
-    
-      if(end_adr_valid_data<128){
+  if (is_playing == true) {
+    if (end_of_track == 0) {
+      static uint32_t play_adr_temp = 0;
+
+      if ((play_adr_temp / baseSampPerWavePoint) != (snapshot_play_adr / baseSampPerWavePoint)) {
+        //Serial.printf("Play adr: %lu\n", snapshot_play_adr);
+        updateDynamicWaveform(snapshot_play_adr);
+        updatePlaybackPosition_new((snapshot_play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
+        play_adr_temp = snapshot_play_adr; 
+      }
+      
+      if(end_adr_valid_data<128) {
         bytes_read = playFileRead(PCM[end_adr_valid_data][0], 32768);
         //Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
         end_adr_valid_data++;
           
+      } else if((end_adr_valid_data<((snapshot_play_adr>>13)+42)) && (filling_step==0 || filling_step==6)) {
+        
+        //filling the buffer forward
+        if(filling_step==6) {
+          playFileSeek((32768*end_adr_valid_data)+44);
+          filling_step = 0;	
         }
 
-    else if((end_adr_valid_data<((play_adr>>13)+42)) && (filling_step==0 || filling_step==6)){
-      						//filling the buffer forward
-      if(filling_step==6){
-
-        playFileSeek((32768*end_adr_valid_data)+44);
-        filling_step = 0;	
+        bytes_read = playFileRead(PCM[end_adr_valid_data&0x7F][0], 32768);
+        //Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
+        //Serial.printf("all_long %d snapshot_play_adr %d \n", all_long, snapshot_play_adr);		
+        //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
+        end_adr_valid_data++;
+        if ((end_adr_valid_data-start_adr_valid_data)>128) {
+          start_adr_valid_data = end_adr_valid_data-128;	
         }
-
-      bytes_read = playFileRead(PCM[end_adr_valid_data&0x7F][0], 32768);
-      //Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
-      //Serial.printf("all_long %d play_adr %d \n", all_long, play_adr);		
-      //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
-      end_adr_valid_data++;
-      if((end_adr_valid_data-start_adr_valid_data)>128){
-        start_adr_valid_data = end_adr_valid_data-128;	
-        }
-      }
-    else if(((end_adr_valid_data>((play_adr>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)){					//filling the buffer back
-    Serial.println("filling buffers backwards");		
-    if(filling_step == 0 || filling_step == 6) {
-        if((end_adr_valid_data - start_adr_valid_data) > 127) {
+      } else if(((end_adr_valid_data>((snapshot_play_adr>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)) {					//filling the buffer back
+        Serial.println("filling buffers backwards");		
+        if(filling_step == 0 || filling_step == 6) {
+          if((end_adr_valid_data - start_adr_valid_data) > 127) {
             end_adr_valid_data = start_adr_valid_data + 124;	
-        }	
-        start_adr_valid_data -= 4;	
-        playFileSeek((32768 * start_adr_valid_data) + 44);
-        filling_step = 1;	
-    }
-    else if(filling_step >= 1 && filling_step <= 4) {
-        playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
-        filling_step++;
-    }
-    else if(filling_step == 5) {
-        //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
-        filling_step = 6;		
-    }
+          }	
+          start_adr_valid_data -= 4;	
+          playFileSeek((32768 * start_adr_valid_data) + 44);
+          filling_step = 1;	
+        } else if (filling_step >= 1 && filling_step <= 4) {
+          playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
+          filling_step++;
+        } else if(filling_step == 5) {
+          //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
+          filling_step = 6;		
+        }
       }
+    } else {
+      audio.stopI2SInterrupt();
+      play_count += 1;
+      Serial.printf("END OF TRACK, plays: %ld\n", play_count);
+      // Restart
+      play_adr = 0;
+      sdram_adr = 0;
+      position = 0;
+      reverse = 0;
+      end_of_track = 0;
+      step_position = 0;
+      start_adr_valid_data = 0;
+      end_adr_valid_data = 0;
+      filling_step = 0;
+      playFile.seek(44);
+      audio.startI2SInterrupt();
     } 
-    appStats.end(MAIN_LOOP);
+  }
+  appStats.end(MAIN_LOOP);
 }
 
 FASTRUN void SAI_IRQHandler(void)
 {
+  if (play_adr > (baseSampPerWavePoint * all_long)) {
+    Serial.printf("ERROR: play_adr %lu exceeds track length %lu\n", 
+                  play_adr, baseSampPerWavePoint * all_long);
+}
   CrashReport.breadcrumb(2, 1);
   appStats.start(ISR_I2S);
 
@@ -1005,7 +1146,7 @@ FASTRUN void advancePosition_claude()
 
 #if defined(RDI_DEVELOPMENTS_REV3)
   // Lower volume
-  #define VOLUME_FACTOR 3277 // 90% reduced volume 
+  #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
   int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
   int32_t scaled_left_32 = (int32_t)raw_left * VOLUME_FACTOR;
   int16_t scaled_left = (int16_t)(scaled_left_32 >> 15); 
@@ -1041,7 +1182,6 @@ FASTRUN void advancePosition_claude_optimized()
   if(((play_adr+step_position+3) <= (baseSampPerWavePoint * all_long))) {						//change all_long extract!
 		end_of_track = 0;	
 	}	else {
-    Serial.println("END OF TRACK");
 		end_of_track = 1;	
     return;
 	}
@@ -1168,13 +1308,14 @@ FASTRUN void advancePosition_claude_optimized()
     SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
 #if defined(RDI_DEVELOPMENTS_REV3)
+    #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
     // Optimized volume scaling using int16_t directly
     int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
     int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);
     
     // Single multiply-shift operation
-    int16_t scaled_left = (int16_t)(((int32_t)raw_left * 3277) >> 15);
-    int16_t scaled_right = (int16_t)(((int32_t)raw_right * 3277) >> 15);
+    int16_t scaled_left = (int16_t)(((int32_t)raw_left * VOLUME_FACTOR) >> 15);
+    int16_t scaled_right = (int16_t)(((int32_t)raw_right * VOLUME_FACTOR) >> 15);
     
     SAMPLE[2] = (uint8_t)(scaled_right & 0xFF);    
     SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 

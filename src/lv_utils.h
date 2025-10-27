@@ -21,5 +21,6 @@ uint8_t lookupValue(uint8_t input);
 lv_color_t hex_string_to_color(const char* hex);
 lv_color_t getKeyColor(uint8_t numericValue);
 const char* formatDuration(const char* seconds_str);
+uint32_t get_voltage_mv();
 
 #endif // LV_UTILS_H
