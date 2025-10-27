@@ -1007,6 +1007,7 @@ void dj_ui_init(Track * track) {
     else{
       Serial.printf("Opened audio file: %s\n", fName);
       is_playing = true;
+      playFile.seek(44);
       audio.startI2SInterrupt();
       updateDynamicWaveform(0); 
     }

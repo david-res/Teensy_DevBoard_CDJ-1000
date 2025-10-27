@@ -885,7 +885,7 @@ FASTRUN void loop()
       start_adr_valid_data = 0;
       end_adr_valid_data = 0;
       filling_step = 0;
-      playFile.seek(0);
+      playFile.seek(44);
       audio.startI2SInterrupt();
     } 
   }
