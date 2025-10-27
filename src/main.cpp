@@ -645,8 +645,11 @@ FASTRUN void copyWaveformsToLCD()
   CrashReport.breadcrumb(4, 1);
   
   if (dynamicBufferReady == true) {
+
     CrashReport.breadcrumb(4, 2);
     
+    appStats.start(DYNAMIC_MEMCPY);
+        
     // Calculate destination pointer
     uint32_t offset = (SCREEN_WIDTH * middleContainerPos * 2);
     uint32_t baseAddr = LCDIF_NEXT_BUF;
@@ -700,15 +703,16 @@ FASTRUN void copyWaveformsToLCD()
       }
       
       dynamicBufferReady = false;
-      
-      // Finish stats
-      appStats.end(DYNAMIC_MEMCPY);
-      appStats.addByteCount(DYNAMIC_MEMCPY, copySize); 
+
     } else {
       // Skip copy, clear flag to prevent repeated errors
       dynamicBufferReady = false;
       Serial.println(SER_RED "Skipped dynamic waveform copy due to invalid address" SER_RESET);
     }
+
+    // Finish stats
+    appStats.end(DYNAMIC_MEMCPY);
+    appStats.addByteCount(DYNAMIC_MEMCPY, copySize); 
     
     CrashReport.breadcrumb(4, 1); // Back to main function
   }
