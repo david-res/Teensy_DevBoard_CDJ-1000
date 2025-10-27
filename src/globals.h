@@ -11,7 +11,8 @@
 #define USE_EXTMEM_NOCACHE
 #define USE_STATS
 //#define IRQ_FROM_INT_TIMER
-//#define USE_REM_DISP
+#define USE_REM_DISP
+#define USE_LCD_DISP
 //#define USE_BEAT_NUMBERS
 
 #if defined(USE_EXTMEM_NOCACHE)
@@ -20,6 +21,11 @@
 #else
 #define EXTMEM_NOCACHE EXTMEM
 #define EXTMEM_NOCACHE_PCM EXTMEM
+#endif
+
+#if defined(USE_REM_DISP)
+#undef LCD_BUFFER_COUNT
+#define LCD_BUFFER_COUNT 1
 #endif
 
 #if (LVGL_VERSION_MAJOR == 9)
@@ -42,7 +48,7 @@ extern volatile uint8_t end_of_track;
 //extern volatile uint8_t SAMPLE[4];
 
 // Used in I2S ISR and loop
-//extern volatile uint32_t play_adr;
+extern volatile uint32_t play_adr;
 extern volatile uint32_t baseSampPerWavePoint;
 extern volatile uint32_t all_long;
 

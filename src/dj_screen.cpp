@@ -1197,7 +1197,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   }
 
   if (millis() > nextLabelMs) {
-    lv_label_set_text_fmt(time_label, "%ld", millis());
+    lv_label_set_text_fmt(time_label, "%ld", play_adr);
     nextLabelMs = millis() + 90;
   }
 
