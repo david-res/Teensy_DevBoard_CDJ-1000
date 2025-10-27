@@ -9,6 +9,7 @@
 #include <SDRAM_t4.h>
 #include "inflate.h"
 #include "utils/changeSDSpeed.h"
+#include "lv_utils.h"
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
@@ -381,7 +382,7 @@ LV_FONT_DECLARE(exo2_18)
 FLASHMEM void reportAppConfig() {
   Serial.println("\n======================== App Settings ==========================");
   Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
-  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, SDRAM_SPEED);  
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), SDRAM_SPEED);  
   Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);

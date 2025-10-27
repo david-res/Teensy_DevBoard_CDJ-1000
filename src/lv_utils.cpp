@@ -54,3 +54,14 @@ const char* formatDuration(const char* seconds_str) {
     snprintf(formatted_time, sizeof(formatted_time), "%d:%02d", minutes, seconds);
     return formatted_time;
 }
+
+FLASHMEM uint32_t get_voltage_mv()
+{
+    uint32_t dcdc_val = DCDC_REG3;
+    uint32_t trg_field_bits = dcdc_val & DCDC_REG3_TRG_MASK;
+    uint32_t trg_value = trg_field_bits;
+
+    uint32_t voltage_mv = (trg_value * 25) + 800;
+
+    return voltage_mv;
+}
