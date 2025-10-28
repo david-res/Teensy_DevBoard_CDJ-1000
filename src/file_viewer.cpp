@@ -1,16 +1,11 @@
 #include "lvgl.h"
 #include "file_viewer.h"
-#include "sqlite3.h"
+#include "database/db_manager.h"
 #include "SD.h"
-#include "inflate.h"
 //#include "waveform.h"
 #include "dj_screen.h"
 #include "globals.h"
 #include "lv_utils.h"
-
-sqlite3 * mdb;
-sqlite3 * pdb;
-
 
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
@@ -36,12 +31,6 @@ int16_t track_count =0;
 #define LIST_WIDTH 800
 #define ITEM_HEIGHT 48
 #define RESERVED_WIDTH 400
-
-
-int get_track_by_id(sqlite3 *db, int track_id);
-int get_track_count(sqlite3 *db);
-
-
 
 
 // Color definitions to match the dark theme
@@ -108,29 +97,14 @@ FLASHMEM void createListScreen(){
 
     // Database operations
 
-    Serial.println("Calling sqlite3_open for m.db");
-    int dbOpenResult = sqlite3_open("databases/m.db", &mdb);
-    Serial.printf("Result sqlite3_open for m.db: %d\n", dbOpenResult);
-
-    if (dbOpenResult != SQLITE_OK) {
-        int extended_err = sqlite3_extended_errcode(mdb);
-        fprintf(stderr, "SQL error: %s (Primary Code: %d, Extended Code: %d)\n", sqlite3_errmsg(mdb), dbOpenResult, extended_err);
+   if (db_open() == false) {
+        Serial.println("Failed to initialize database");
+        return;
     }
 
-    track_count = get_track_count(mdb);
-    sqlite3_stmt *stmt;
-    int first_id = -1;
-
-    const char *sql = "SELECT id FROM Track ORDER BY id ASC LIMIT 1";
-
-    if (sqlite3_prepare_v2(mdb, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            first_id = sqlite3_column_int(stmt, 0);
-        }
-    }
-
-    sqlite3_finalize(stmt);
-    //sqlite3_close(mdb);
+    track_count = db_get_track_count();
+ 
+    int16_t first_id = db_get_first_track_id();
 
     add_track_item(filesScreen, first_id);
     top_num = 1;
@@ -141,75 +115,23 @@ FLASHMEM void createListScreen(){
     lv_obj_add_event_cb(filesScreen, scroll_cb, LV_EVENT_SCROLL, NULL);
 }
 
-FLASHMEM void load_track(lv_event_t * e) {
+FLASHMEM void select_track_cb(lv_event_t * e)
+{
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_CLICKED) {
         Track * track = (Track *)lv_event_get_user_data(e);
-        
-        //waveformView(track);
-        dj_ui_init(track);
-        lv_scr_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        load_dj_screen_with_track(track);
+        // Free after use
+        db_free_track(track);
     }
 }
 
-
-
-// Function to retrieve track data
-Track *getTrackData(sqlite3 *db, int track_id) {
-    Track *track = (Track *)calloc(1, sizeof(Track));
-    if (!track) return NULL;
-    Serial.printf("Track ID: %d\n", track_id);
-
-    sqlite3_stmt *stmt;
-
-    // Adjust query to match your schema
-    const char *sqlTrack =
-        "SELECT length, bpmAnalyzed, filename, path, title, artist, key, rating FROM Track WHERE id = ?";
-
-    if (sqlite3_prepare_v2(db, sqlTrack, -1, &stmt, NULL) != SQLITE_OK) {
-        free(track);
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
-        return NULL;
-    }
-
-    sqlite3_bind_int(stmt, 1, track_id);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        // length is stored as integer → convert to string for your struct
-        int lenVal = sqlite3_column_int(stmt, 0);
-        char buf[164];
-        snprintf(buf, sizeof(buf), "%d", lenVal);
-        track->trackLength = strdup(buf);
-
-        track->bpmAnalyzed = (float)sqlite3_column_double(stmt, 1);
-
-        const char *filename = (const char *)sqlite3_column_text(stmt, 2);
-        const char *path     = (const char *)sqlite3_column_text(stmt, 3);
-        const char *title    = (const char *)sqlite3_column_text(stmt, 4);
-        const char *artist   = (const char *)sqlite3_column_text(stmt, 5);
-        const char *key = (const char *)sqlite3_column_text(stmt, 6);
-        uint8_t rating = (uint8_t)sqlite3_column_int(stmt, 7);
-
-        if (filename) track->filename = strdup(filename);
-        if (path)     track->path     = strdup(path);
-        if (title)    track->title    = strdup(title);
-        if (artist)   track->artist   = strdup(artist);
-        if (key)      track->musical_key = strdup(key);
-        if (rating)   track->star_rating = lookupValue(rating);
-        Serial.println("crumble 7");
-        
-    }
-    
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
-
-    track->track_id = track_id;
-    // fileType, star_rating, musical_key not present in your table → keep NULL/0
-
-    return track;
+FLASHMEM void load_dj_screen_with_track(Track * track)
+{
+    //waveformView(track);
+    dj_ui_init(track);
+    lv_scr_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
 }
-
 
 
 // Function to freememory
@@ -240,12 +162,12 @@ void setFlexContainerProperties(lv_obj_t * cont, int32_t pad_row, int32_t pad_co
 }
 
 lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
-    Track *track = getTrackData(mdb, track_id);
+    Track *track = db_get_track_by_id(track_id);
     
     lv_obj_t * cont_outer = lv_obj_create(parent);
     setFlexContainerProperties(cont_outer, 0, 0, LV_FLEX_FLOW_COLUMN);
     lv_obj_add_flag(cont_outer, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(cont_outer, load_track, LV_EVENT_CLICKED, track);
+    lv_obj_add_event_cb(cont_outer, select_track_cb, LV_EVENT_CLICKED, track);
     
     // Style outer container
     lv_obj_set_style_bg_color(cont_outer, COLOR_TRACK_BG, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -460,24 +382,4 @@ FASTRUN static void scroll_cb(lv_event_t * e)
 {
     lv_obj_t * obj = lv_event_get_target(e);
     update_scroll(obj);
-}
-
-
-FLASHMEM int get_track_count(sqlite3 *db) {
-    sqlite3_stmt *stmt;  // Prepared statement pointer
-    int count = 0;
-
-    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM Track;", -1, &stmt, NULL) != SQLITE_OK) {
-        Serial.print("SQL error: ");
-        Serial.println(sqlite3_errmsg(db));
-        return -1;
-    }
-
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        count = sqlite3_column_int(stmt, 0);
-        Serial.printf("Total tracks: %d\n", count);
-    }
-
-    sqlite3_finalize(stmt);
-    return count;
 }

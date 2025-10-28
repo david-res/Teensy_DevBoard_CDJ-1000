@@ -361,21 +361,6 @@ void errorLogCallback(void *pArg, int iErrCode, const char *zMsg)
   Serial.printf("(%d) %s\n", iErrCode, zMsg);
 }
 
-void checkSQLiteError(sqlite3* in_db, int in_rc)
-{
-  if (in_rc == SQLITE_OK)
-  {
-    Serial.println(">>>> testSQLite - operation - success <<<<");
-  }
-  else
-  {
-    int ext_rc = sqlite3_extended_errcode(in_db);
-    Serial.print(ext_rc);
-    Serial.print(": ");
-    Serial.println(sqlite3_errstr(ext_rc));
-  }
-}
-
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
 
@@ -554,6 +539,8 @@ void setup()
   prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
 #endif  
 
+  audio.begin(&SAI_IRQHandler);
+  
   /*
   lv_obj_t * btn = lv_btn_create(lv_scr_act());
   lv_obj_set_size(btn, 120, 50);
@@ -566,25 +553,29 @@ void setup()
   */
 
   //readWaveFormBlob();
+
+  #if defined(RDI_DEVELOPMENTS_DB5)
+  //////////////////////////
+  // Directly start the song
+  //////////////////////////
+  if (db_open() == false) {
+    Serial.println("Failed to initialize database");
+    return;
+  }
+
+  int16_t first_id = db_get_first_track_id();
+  Track * track = db_get_track_by_id(first_id);
+  load_dj_screen_with_track(track);
+  
+  // Free after use
+  db_free_track(track);
+  //////////////////////////////
+  // End directly start the song
+  //////////////////////////////
+#else  
   createListScreen();
   lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
-  //dj_ui_init();
-    
-  /*
-  int resultEnd = T41SQLite::getInstance().end();
-
-  if (resultEnd == SQLITE_OK)
-  {
-    Serial.println("T41SQLite::getInstance().end() succeded!");
-  }
-  else
-  {
-    Serial.print("T41SQLite::getInstance().end() failed! result code: ");
-    Serial.println(resultEnd);
-  }
-    */
-  
-  audio.begin(&SAI_IRQHandler);
+#endif
 
 #if defined(USE_LCD_DISP)
   // Setup complete, turn on LCD
@@ -621,7 +612,7 @@ FASTRUN int playFileRead(void *buf, size_t count)
   //noInterrupts();
   bytes_read = playFile.read(buf, count);
   if (bytes_read != count) {
-    Serial.printf(SER_RED "File read mismatch: count: %ld, bytes_read: %ld" SER_RESET "\n", count, bytes_read);
+    Serial.printf(SER_YELLOW "File read mismatch: count: %ld, bytes_read: %ld, %s" SER_RESET "\n", count, bytes_read, bytes_read < 0 ? "error" : bytes_read == 0 ? "EOF" : "Last bytes or error?");
   }
   //interrupts();
   CrashReport.breadcrumb(1, 0);  
@@ -643,160 +634,51 @@ FASTRUN void drawVerticalStrip(uint16_t* srcBuffer, uint16_t xPos, uint16_t heig
 
 FASTRUN void copyWaveformsToLCD()
 {
-  CrashReport.breadcrumb(4, 1);
-  
   if (dynamicBufferReady == true) {
 
-    CrashReport.breadcrumb(4, 2);
-    
+    // Start time for stats
     appStats.start(DYNAMIC_MEMCPY);
-        
-    // Calculate destination pointer
-    uint32_t offset = (SCREEN_WIDTH * middleContainerPos * 2);
-    uint32_t baseAddr = LCDIF_NEXT_BUF;
-    uint32_t destAddr = baseAddr + offset;
-    uint8_t *destPtr = (uint8_t *)destAddr;
-    
-    // Validate the destination address before using it
-    bool isValid = true;
-    
-    // Check if address is in valid EXTMEM range (your lcdBuffer array)
-    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr=0x%08X, base=0x%08X, offset=%lu, middlePos=%d" SER_RESET "\n", 
-                    destAddr, baseAddr, offset, middleContainerPos);
-      isValid = false;
-    }
-    
-    // Check if it would overflow the LCD buffer
-    uint32_t copySize = (chartWidth * chartHeight * 2);
-    if (destAddr + copySize > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Dynamic copy would overflow: dest=0x%08X, size=%lu" SER_RESET "\n", 
-                    destAddr, copySize);
-      isValid = false;
-    }
-    
-    // Check for the specific crash address
-    if (destAddr == 0x20300000) {
-      Serial.printf(SER_RED "CRITICAL: Calculated exact crash address 0x20300000!" SER_RESET "\n");
-      Serial.printf("  LCDIF_NEXT_BUF=0x%08X, middleContainerPos=%d, SCREEN_WIDTH=%d\n", 
-                    baseAddr, middleContainerPos, SCREEN_WIDTH);
-      isValid = false;
-    }
-    
-    // Only perform copy if address is valid
-    if (isValid) {
-      CrashReport.breadcrumb(4, 4); // Mark actual memcpy
-      memcpy(destPtr, dynamicCanvasBuffer, copySize);
-      CrashReport.breadcrumb(4, 2); // Back to dynamic section
-      
-      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
-      if (LCD_BUFFER_COUNT == 2) {
-        destPtr = (uint8_t *)(LCDIF_CUR_BUF + offset);
-        destAddr = (uint32_t)destPtr;
-        
-        // Validate second buffer too
-        if (destAddr >= 0x80000000 && destAddr <= 0x81400000 && 
-            destAddr + copySize <= 0x81400000) {
-          memcpy(destPtr, dynamicCanvasBuffer, copySize);
-        } else {
-          Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
-        }
-      }
-      
-      dynamicBufferReady = false;
 
-    } else {
-      // Skip copy, clear flag to prevent repeated errors
-      dynamicBufferReady = false;
-      Serial.println(SER_RED "Skipped dynamic waveform copy due to invalid address" SER_RESET);
+    uint8_t *destPtr = (uint8_t *)(LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
+    memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use
+    if (LCD_BUFFER_COUNT == 2) {
+      destPtr = (uint8_t *)(LCDIF_CUR_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
+      memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
     }
+    
+    dynamicBufferReady = false;
 
     // Finish stats
     appStats.end(DYNAMIC_MEMCPY);
-    appStats.addByteCount(DYNAMIC_MEMCPY, copySize); 
-    
-    CrashReport.breadcrumb(4, 1); // Back to main function
+    appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
   }
 
   if (staticBufferReady == true) {
-    CrashReport.breadcrumb(4, 3);
-    
+
     // Start time for stats
     appStats.start(OVERVIEW_COPY);
-    
-    // Calculate destination pointer for static waveform
-    uint32_t offset = (SCREEN_WIDTH * (bottomContainerPos + 1));
-    uint32_t destAddr = (uint32_t)(lcdBuffer[0] + offset);
-    uint16_t *staticDestPtr = (uint16_t *)destAddr;
-    
-    // Validate the destination address
-    bool isValid = true;
-    
-    // Check if address is in valid EXTMEM range
-    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Invalid static destPtr=0x%08X, offset=%lu, bottomPos=%d" SER_RESET "\n", 
-                    destAddr, offset, bottomContainerPos);
-      isValid = false;
-    }
-    
-    // Check for the specific crash address
-    if (destAddr == 0x20300000 || (destAddr >= 0x20200000 && destAddr <= 0x20400000)) {
-      Serial.printf(SER_RED "CRITICAL: Static pointer in crash range 0x%08X!" SER_RESET "\n", destAddr);
-      Serial.printf("  lcdBuffer[0]=0x%08X, bottomContainerPos=%d, SCREEN_WIDTH=%d\n", 
-                    (uint32_t)lcdBuffer[0], bottomContainerPos, SCREEN_WIDTH);
-      isValid = false;
-    }
-    
-    // Validate array indices
-    if (oldStaticBufferX >= chartWidth || newStaticBufferX >= chartWidth) {
-      Serial.printf(SER_RED "ERROR: Invalid static buffer X positions: old=%d, new=%d, chartWidth=%d" SER_RESET "\n",
-                    oldStaticBufferX, newStaticBufferX, chartWidth);
-      isValid = false;
-    }
-    
-    if (isValid) {
-      CrashReport.breadcrumb(4, 5); // Mark actual drawing
-      
-      // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer
-      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
-                       overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-      
-      // Draw new marker
-      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
-                       overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
-      
-      CrashReport.breadcrumb(4, 3); // Back to static section
-      
-      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
-      if (LCD_BUFFER_COUNT == 2) {
-        staticDestPtr = (uint16_t *)(lcdBuffer[1] + offset);
-        destAddr = (uint32_t)staticDestPtr;
-        
-        // Validate second buffer too
-        if (destAddr >= 0x80000000 && destAddr <= 0x81400000) {
-          drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
-                           overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-          drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
-                           overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
-        } else {
-          Serial.printf(SER_RED "ERROR: Invalid static destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
-        }
-      }
 
-      staticBufferReady = false;
+    // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+    // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+
+    staticDestPtr = (uint16_t *)(lcdBuffer[0] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
+    drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+    drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
     
-      // Finish stats
-      appStats.end(OVERVIEW_COPY);
-    } else {
-      // Skip copy, clear flag
-      staticBufferReady = false;
-      Serial.println(SER_RED "Skipped static waveform copy due to invalid address" SER_RESET);
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
+    if (LCD_BUFFER_COUNT == 2) {
+      staticDestPtr = (uint16_t *)(lcdBuffer[1] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
+      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
+      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
     }
-    
-    CrashReport.breadcrumb(4, 1); // Back to main function
-  }
+
+    staticBufferReady = false;
   
-  CrashReport.breadcrumb(4, 0); // Clear breadcrumb
+    // Finish stats
+    appStats.end(OVERVIEW_COPY);
+  }
 }
 
 FASTRUN void loop()
@@ -1116,7 +998,6 @@ FASTRUN void advancePosition_claude()
       position %= 10000;
   }
 
-  // Rest of interpolation code unchanged...
   float T = (position * 0.0001f) - 0.5f;
 
   for (int ch = 0; ch < 2; ch++) {

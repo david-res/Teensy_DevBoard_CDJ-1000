@@ -11,7 +11,7 @@
 #define USE_EXTMEM_NOCACHE
 #define USE_STATS
 //#define IRQ_FROM_INT_TIMER
-#define USE_REM_DISP
+//#define USE_REM_DISP
 #define USE_LCD_DISP
 //#define USE_BEAT_NUMBERS
 
@@ -111,23 +111,6 @@ extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 
 
 
-
-
-typedef struct {
-    char *trackLength;
-    float bpmAnalyzed;
-    char *filename;
-    char *path;
-    char *title;
-    char *artist;
-    char *fileType;
-    uint16_t track_id;
-    uint8_t star_rating;
-    char *musical_key;
-    double numberOfSamples;
-    double sampleRate;
-} Track;
-
 struct KeyInfo {
     uint8_t numericValue;
     const char* key;
@@ -201,23 +184,6 @@ typedef struct {
     uint16_t beatCount;          // Total number of beats
     uint32_t samplesPerPoint;    // Cached for quick conversion
 } GlobalBeatLUT;
-
-
-typedef struct {
-    double sampleOffset;
-    int64_t beatIndex;
-    uint32_t beatsUntilNext;
-    uint32_t unknown;
-} BeatMarker;
-
-typedef struct {
-    double sampleRate;
-    double numSamples;
-    uint8_t hasGrid;
-    BeatMarker *markers;
-    int markerCount;
-    double samplesPerWaveformPoint; // e.g., 420 for 44.1kHz
-} Beatgrid;
 
 
 //////////////////
