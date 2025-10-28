@@ -50,6 +50,8 @@ int16_t db_get_track_count();
 int16_t db_get_first_track_id();
 Track* db_get_track_by_id(uint16_t track_id);
 void db_free_track(Track* track);
+Track** db_load_all_tracks(int16_t* track_count);
+void db_free_all_tracks(Track** tracks, int16_t track_count);
 
 // Waveform data operations
 bool db_load_dynamic_waveform_data(uint16_t track_id, uint8_t** dynamicWaveSampleData, uint64_t* dynamicWaveformSampleCount, uint32_t* baseSampPerWavePoint); 

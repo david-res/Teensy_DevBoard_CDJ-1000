@@ -14,24 +14,24 @@ LV_FONT_DECLARE(exo2_24)
 LV_FONT_DECLARE(exo2_28)
 LV_FONT_DECLARE(exo2_32)
 
-
-
 lv_obj_t * filesScreen;
 
-
-lv_obj_t * add_track_item(lv_obj_t *parent, int track_id);
+lv_obj_t * add_track_item(lv_obj_t *parent, Track *track);
 static void update_scroll(lv_obj_t * obj);
 static void scroll_cb(lv_event_t * e);
 
-static int32_t top_num;
-static int32_t bottom_num;
+// These track array indices, not database IDs
+static int32_t top_index;      // Index of topmost visible track in array
+static int32_t bottom_index;   // Index of bottommost visible track in array
 static bool update_scroll_running = false;
-int16_t track_count =0;
+
+// Store the tracks array globally so update_scroll can access it
+static Track** g_tracks = nullptr;
+static int16_t g_track_count = 0;
 
 #define LIST_WIDTH 800
 #define ITEM_HEIGHT 48
 #define RESERVED_WIDTH 400
-
 
 // Color definitions to match the dark theme
 #define COLOR_BACKGROUND    lv_color_hex(0x2A2A2A)
@@ -41,11 +41,12 @@ int16_t track_count =0;
 #define COLOR_GRAY          lv_color_hex(0xB0B0B0)
 #define COLOR_BORDER        lv_color_hex(0x555555)
 
-
-
-
-
-FLASHMEM void createListScreen(){
+FLASHMEM void createListScreen(Track** tracks, int16_t track_count)
+{
+    // Store tracks globally for scroll callbacks
+    g_tracks = tracks;
+    g_track_count = track_count;
+    
     static lv_style_t fileScreen_style;
     filesScreen = lv_obj_create(NULL);
     lv_obj_set_size(filesScreen, 800, 480);
@@ -95,20 +96,31 @@ FLASHMEM void createListScreen(){
     lv_obj_set_style_text_color(lbl_bpm_header, COLOR_GRAY, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(lbl_bpm_header, &exo2_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // Database operations
-
-   if (db_open() == false) {
-        Serial.println("Failed to initialize database");
-        return;
+    // Load initial batch of tracks from array
+    if (tracks != nullptr && track_count > 0) {
+        Serial.printf("Loading initial tracks into list screen (total: %d)\n", track_count);
+        
+        // Load first visible batch (e.g., first 10-15 tracks)
+        int16_t initial_load_count = (track_count < 15) ? track_count : 15;
+        
+        for (int16_t i = 0; i < initial_load_count; i++) {
+            if (tracks[i] != nullptr) {
+                add_track_item(filesScreen, tracks[i]);
+            } else {
+                Serial.printf("Warning: tracks[%d] is null, skipping\n", i);
+            }
+        }
+        
+        // Initialize indices (these are array indices, not track IDs)
+        top_index = 0;
+        bottom_index = initial_load_count - 1;
+        
+        Serial.printf("Initially loaded tracks [%d-%d]\n", top_index, bottom_index);
+    } else {
+        Serial.println("No tracks provided or track_count is 0");
+        top_index = 0;
+        bottom_index = -1;
     }
-
-    track_count = db_get_track_count();
- 
-    int16_t first_id = db_get_first_track_id();
-
-    add_track_item(filesScreen, first_id);
-    top_num = 1;
-    bottom_num = 1;
 
     lv_obj_update_layout(filesScreen);
     update_scroll(filesScreen);
@@ -121,8 +133,8 @@ FLASHMEM void select_track_cb(lv_event_t * e)
     if(code == LV_EVENT_CLICKED) {
         Track * track = (Track *)lv_event_get_user_data(e);
         load_dj_screen_with_track(track);
-        // Free after use
-        db_free_track(track);
+        // Note: Don't free the track here - it's still in the global array
+        // Only free when the entire tracks array is freed
     }
 }
 
@@ -132,21 +144,6 @@ FLASHMEM void load_dj_screen_with_track(Track * track)
     dj_ui_init(track);
     lv_scr_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
 }
-
-
-// Function to freememory
-void freeTrack(Track *track) {
-    if (!track) return;
-    free(track->title);
-    free(track->artist);
-    free(track->trackLength);
-    free(track->fileType);
-    free(track->path);
-    free(track->filename);
-    free(track->musical_key);
-    free(track);
-}
-
 
 void setFlexContainerProperties(lv_obj_t * cont, int32_t pad_row, int32_t pad_col, lv_flex_flow_t flow){
     lv_obj_remove_style_all(cont);
@@ -161,8 +158,12 @@ void setFlexContainerProperties(lv_obj_t * cont, int32_t pad_row, int32_t pad_co
     lv_obj_set_style_pad_column(cont, pad_col, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
-lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
-    Track *track = db_get_track_by_id(track_id);
+lv_obj_t * add_track_item(lv_obj_t *parent, Track *track)
+{
+    if (!track) {
+        Serial.println("Error: null track passed to add_track_item");
+        return nullptr;
+    }
     
     lv_obj_t * cont_outer = lv_obj_create(parent);
     setFlexContainerProperties(cont_outer, 0, 0, LV_FLEX_FLOW_COLUMN);
@@ -250,133 +251,63 @@ lv_obj_t * add_track_item(lv_obj_t *parent, int track_id){
     lv_obj_set_size(cont_bottomRow, 800 - 16, LV_SIZE_CONTENT);
     lv_obj_set_size(cont_outer, 800, LV_SIZE_CONTENT);
 
-    printf("Track ID: %d\n", track_id);
-    printf("Length: %s\n", track->trackLength);
-    printf("BPM Analyzed: %.2f\n", track->bpmAnalyzed);
-    printf("Title: %s\n", track->title);
-    printf("Artist: %s\n", track->artist);
-
     return cont_outer;
 }
-
-/*
-lv_obj_t * add_track_item(lv_obj_t *parent, int track_id) {
-    
-    
-    Track *track = getTrackData(mdb, track_id);
-    lv_obj_t *item = lv_obj_create(parent);
-    lv_obj_set_size(item, 700, 96);
-    //lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
-    //lv_obj_set_style_pad_all(item, 0, LV_PART_MAIN);
-    lv_obj_remove_flag(item, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t * id = lv_label_create(item);
-    //lv_obj_set_size(track_title, 400, 48); // Ensure label is 400px wide
-    char id_buf[6];
-    snprintf(id_buf, sizeof(id_buf), "%d", track->track_id);
-    lv_label_set_text(id, id_buf);
-    lv_label_set_long_mode(id, LV_LABEL_LONG_SCROLL_CIRCULAR); // Enables scrolling if text overflows
-    lv_obj_set_style_text_align(id, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(id, 0, 24);
-    
-    
-
-    // Track Title (Top Left)
-    lv_obj_t * track_title = lv_label_create(item);
-    lv_obj_set_size(track_title, 400, 48); // Ensure label is 400px wide
-    lv_label_set_text(track_title, track->title);
-    lv_label_set_long_mode(track_title, LV_LABEL_LONG_SCROLL_CIRCULAR); // Enables scrolling if text overflows
-    lv_obj_set_style_text_align(track_title, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(track_title, 40, 0);
-
-    // Track BPM (Top Right)
-    lv_obj_t * track_bpm = lv_label_create(item);
-    lv_obj_set_size(track_bpm, 200, 48); // Ensure label is 400px wide
-    char bpm_buf[6];
-    snprintf(bpm_buf, sizeof(bpm_buf), "%.2f", track->bpmAnalyzed);
-    lv_label_set_text(track_bpm, bpm_buf);
-    lv_obj_set_style_text_align(track_bpm, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(track_bpm, 400, 0);
-
-    
-    // Track Artist (Bottom Left)
-    lv_obj_t * track_artist = lv_label_create(item);
-    lv_obj_set_size(track_artist, 400, 48); // Ensure label is 400px wide
-    lv_label_set_text(track_artist, track->artist);
-    //lv_label_set_long_mode(track_artist, LV_LABEL_LONG_SCROLL_CIRCULAR); // Enables scrolling if text overflows
-    lv_obj_set_style_text_align(track_artist, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(track_artist, 40, 48);
-    
-    
-    // Track Length (Bottom Right)
-    lv_obj_t * track_length = lv_label_create(item);
-    lv_obj_set_size(track_length, 200, 48); // Ensure label is 400px wide
-    lv_label_set_text(track_length, track->trackLength);
-    lv_obj_set_style_text_align(track_length, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(track_length, 400, 48);
-    
-
-
-
-    
-    // Print the extracted values
-    printf("Track ID: %d\n", track_id);
-    printf("Length: %s\n", track->trackLength);
-    printf("BPM Analyzed: %.2f\n", track->bpmAnalyzed);
-    printf("Title: %s\n", track->title);
-    printf("Artist: %s\n", track->artist);
-
-    freeTrack(track);
-
-    return item;
-    
-}
-*/
-
-
 
 FASTRUN static void update_scroll(lv_obj_t * obj)
 {
     if(update_scroll_running) return;
+    if(!g_tracks || g_track_count == 0) return;
+    
     update_scroll_running = true;
 
     /* Load items when scrolling down */
-    while(bottom_num < track_count && lv_obj_get_scroll_bottom(obj) < 200) {
-        bottom_num += 1; 
-        add_track_item(obj, bottom_num);
-        LV_LOG_USER("Loaded bottom track ID: %" PRId32, bottom_num);
-         // ✅move forward
+    while(bottom_index < g_track_count - 1 && lv_obj_get_scroll_bottom(obj) < 200) {
+        bottom_index += 1;
+        if (g_tracks[bottom_index] != nullptr) {
+            add_track_item(obj, g_tracks[bottom_index]);
+            LV_LOG_USER("Loaded bottom track at index: %" PRId32 " (ID: %d)", 
+                       bottom_index, g_tracks[bottom_index]->track_id);
+        }
         lv_obj_update_layout(obj);
     }
 
     /* Load items when scrolling up */
-    while(top_num > 1 && lv_obj_get_scroll_top(obj) < 200) {  
-        top_num -= 1;  // ✅move backward
-        lv_obj_t * new_item = add_track_item(obj, top_num);
-        lv_obj_move_to_index(new_item, 0); //move to top
+    while(top_index > 0 && lv_obj_get_scroll_top(obj) < 200) {  
+        top_index -= 1;
+        if (g_tracks[top_index] != nullptr) {
+            lv_obj_t * new_item = add_track_item(obj, g_tracks[top_index]);
+            lv_obj_move_to_index(new_item, 1); // Move to top (after header)
+            LV_LOG_USER("Loaded top track at index: %" PRId32 " (ID: %d)", 
+                       top_index, g_tracks[top_index]->track_id);
+        }
         lv_obj_update_layout(obj);
-        LV_LOG_USER("Loaded top track ID: %" PRId32, top_num);
     }
 
-    /* Delete far items to savememory */
-    while(lv_obj_get_scroll_bottom(obj) > 600) {
-        bottom_num -= 1;
+    /* Delete far items to save memory */
+    while(lv_obj_get_scroll_bottom(obj) > 600 && bottom_index > top_index) {
+        bottom_index -= 1;
         lv_obj_t * child = lv_obj_get_child(obj, -1);
-        lv_obj_del(child);
+        if (child) {
+            lv_obj_del(child);
+            LV_LOG_USER("Deleted bottom track at index: %" PRId32, bottom_index + 1);
+        }
         lv_obj_update_layout(obj);
-        LV_LOG_USER("Deleted bottom track ID: %" PRId32, bottom_num);
     }
-    while(lv_obj_get_scroll_top(obj) > 600) {
-        top_num += 1;
-        lv_obj_t * child = lv_obj_get_child(obj, 0);
-        lv_obj_del(child);
+    
+    while(lv_obj_get_scroll_top(obj) > 600 && top_index < bottom_index) {
+        top_index += 1;
+        // Child 0 is the header, child 1 is the first track
+        lv_obj_t * child = lv_obj_get_child(obj, 1);
+        if (child) {
+            lv_obj_del(child);
+            LV_LOG_USER("Deleted top track at index: %" PRId32, top_index - 1);
+        }
         lv_obj_update_layout(obj);
-        LV_LOG_USER("Deleted top track ID: %" PRId32, top_num);
     }
 
     update_scroll_running = false;
 }
-
 
 FASTRUN static void scroll_cb(lv_event_t * e)
 {

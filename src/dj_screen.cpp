@@ -392,17 +392,23 @@ void dj_ui_init(Track * track) {
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
 
-     const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
+    char full_path[256];  // Adjust size as needed
+
+    // Combine folder + filename
+    snprintf(full_path, sizeof(full_path), "mixxx-export/%s", track->filename);
+
+
+     //const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
 #if defined(RDI_DEVELOPMENTS_REV3)
-    playFile.open(fName, FILE_READ);
+    playFile.open(full_path, FILE_READ);
 #else
-    playFile = SD.open(fName, FILE_READ);
+    playFile = SD.open(full_path, FILE_READ);
 #endif
     if (!playFile) {
-      Serial.printf("Failed trying to open file: %s\n", fName);
+      Serial.printf("Failed trying to open file: %s\n", full_path);
     }
     else{
-      Serial.printf("Opened audio file: %s\n", fName);
+      Serial.printf("Opened audio file: %s\n", full_path);
       is_playing = true;
       playFile.seek(44);
       audio.startI2SInterrupt();
@@ -486,7 +492,7 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
 }
 
 
-int DynamicWaveformZOOM =1;
+int DynamicWaveformZOOM = 1;
 uint32_t nextLabelMs = 0;
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 {

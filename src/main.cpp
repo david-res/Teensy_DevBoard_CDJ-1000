@@ -10,6 +10,7 @@
 #include "inflate.h"
 #include "utils/changeSDSpeed.h"
 #include "lv_utils.h"
+#include "clockspeed/beermat_clockspeed.h"
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
@@ -41,7 +42,6 @@ extern "C" void startup_middle_hook(void);
 void SAI_IRQHandler(void);
 void copyWaveformsToLCD();
 void advancePosition_rezo();
-void advancePosition_claude();
 void advancePosition_claude_optimized();
 
 #if defined(USE_REM_DISP)
@@ -166,6 +166,21 @@ EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute_
 
 void startup_middle_hook(void)
 {
+  uint32_t targetFrequency = CPU_SPEED_MHZ;
+
+  //Check reasonable range for safety
+  if (targetFrequency < 150 || targetFrequency > 720) {
+    targetFrequency = 528;
+  }
+
+  uint32_t cpuMilliVolts = CPU_MILLIVOLTS;
+
+  //Check reasonable range for safety
+  if (cpuMilliVolts < 800 || cpuMilliVolts > 1575) {
+    cpuMilliVolts = 1150;
+  }
+  beermat_set_arm_clock(targetFrequency * 1'000'000, cpuMilliVolts);
+
 #if defined(USE_EXTMEM_NOCACHE)  
   //Disable caching for first 4M of SDRAM
 	SCB_MPU_RBAR = 0x80000000 | (SCB_MPU_RBAR_REGION(11) | SCB_MPU_RBAR_VALID); // 0x80000000 | REGION(11);
@@ -405,10 +420,11 @@ void setup()
   Serial.begin (115200);
   while (!Serial) {};
   delay(1000);
-  if(CrashReport){
+
+  if (CrashReport) {
     Serial.print(CrashReport);
   }
-
+ 
   // Report on configuration
   reportAppConfig();
 
@@ -559,8 +575,7 @@ void setup()
   // Directly start the song
   //////////////////////////
   if (db_open() == false) {
-    Serial.println("Failed to initialize database");
-    return;
+    errorHalt("Failed to initialize database");
   }
 
   int16_t first_id = db_get_first_track_id();
@@ -573,7 +588,23 @@ void setup()
   // End directly start the song
   //////////////////////////////
 #else  
-  createListScreen();
+  if (db_open() == false) {
+    errorHalt("Failed to initialize database");
+  }
+  
+  int16_t track_count;
+  Track** all_tracks = db_load_all_tracks(&track_count);
+
+  if (all_tracks) {
+      // Use the tracks
+      for (int16_t i = 0; i < track_count; i++) {
+          Serial.printf("Track %d: %s - %s\n", 
+                        all_tracks[i]->track_id,
+                        all_tracks[i]->title,
+                        all_tracks[i]->artist);
+      }
+    createListScreen(all_tracks, track_count);
+  }
   lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
 #endif
 
@@ -715,7 +746,8 @@ FASTRUN void loop()
 
       if ((play_adr_temp / baseSampPerWavePoint) != (snapshot_play_adr / baseSampPerWavePoint)) {
         //Serial.printf("Play adr: %lu\n", snapshot_play_adr);
-        updateDynamicWaveform(snapshot_play_adr);
+        // TODO WeensyPiDJ creates mono waveform samples, this code plays stereo samples, so total stereo sample count is 2x waveform sample count
+        updateDynamicWaveform(snapshot_play_adr / 2);
         updatePlaybackPosition_new((snapshot_play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
         play_adr_temp = snapshot_play_adr; 
       }
@@ -817,7 +849,7 @@ FASTRUN void advancePosition_rezo() {
 	
 	if (position>9999) {
     step_position = position/10000;				
-    if (reverse==0 && end_of_track==0) {			
+    if (reverse==0 && end_of_track==0) {	
       play_adr+= step_position;	
       if (step_position==1) {
         LR[0][0] = LR[0][1];
@@ -931,116 +963,6 @@ FASTRUN void advancePosition_rezo() {
 	//HAL_GPIO_WritePin(GPIOB, LED_TAG_LIST_Pin, GPIO_PIN_RESET);
 }
 
-FASTRUN void advancePosition_claude()
-{
-  position += pitch;
-
-  if (position > 9999) {
-      step_position = position / 10000;
-      
-      if (reverse == 0 && end_of_track == 0) {
-          play_adr += step_position;
-          
-          if (step_position == 1) {
-              LR[0][0] = LR[0][1];
-              LR[0][1] = LR[0][2];
-              LR[0][2] = LR[0][3];
-              LR[1][0] = LR[1][1];
-              LR[1][1] = LR[1][2];
-              LR[1][2] = LR[1][3];
-          } else {
-              uint32_t base_adr = play_adr & 0xFFFFF;
-              uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);  // MASK HERE
-              
-              for (int i = 0; i < 3; i++) {
-                  uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = (bank_offset + ((addr >> 13) - (base_adr >> 13))) & 0x7F;
-                  uint32_t idx = addr & 0x1FFF;
-                  LR[0][i] = PCM[bank][idx][0];
-                  LR[1][i] = PCM[bank][idx][1];
-              }
-          }
-          
-          // Always load last sample
-          sdram_adr = (play_adr + 3) & 0xFFFFF;
-          uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-          LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-          LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-      }
-      else if (reverse == 1 && play_adr >= step_position) {
-          play_adr -= step_position;
-          
-          if (step_position == 1) {
-              LR[0][0] = LR[0][1];
-              LR[0][1] = LR[0][2];
-              LR[0][2] = LR[0][3];
-              LR[1][0] = LR[1][1];
-              LR[1][1] = LR[1][2];
-              LR[1][2] = LR[1][3];
-              
-              sdram_adr = play_adr & 0xFFFFF;
-              uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-              LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-              LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-          } else {
-              uint32_t base_adr = play_adr & 0xFFFFF;
-              
-              for (int i = 0; i < 4; i++) {
-                  uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = (((addr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-                  uint32_t idx = addr & 0x1FFF;
-                  LR[0][3 - i] = PCM[bank][idx][0];
-                  LR[1][3 - i] = PCM[bank][idx][1];
-              }
-          }
-      }
-      
-      position %= 10000;
-  }
-
-  float T = (position * 0.0001f) - 0.5f;
-
-  for (int ch = 0; ch < 2; ch++) {
-      int32_t even1 = (int32_t)LR[ch][2] + (int32_t)LR[ch][1];
-      int32_t odd1 = (int32_t)LR[ch][2] - (int32_t)LR[ch][1];
-      int32_t even2 = (int32_t)LR[ch][3] + (int32_t)LR[ch][0];
-      int32_t odd2 = (int32_t)LR[ch][3] - (int32_t)LR[ch][0];
-      
-      float c0 = (float)even1 * COEF[0] + (float)even2 * COEF[1];
-      float c1 = (float)odd1 * COEF[2] + (float)odd2 * COEF[3];
-      float c2 = (float)even1 * COEF[4] + (float)even2 * COEF[5];
-      float c3 = (float)odd1 * COEF[6] + (float)odd2 * COEF[7];
-      
-      float result = c0 + T * (c1 + T * (c2 + T * c3));
-      result *= 0.90f;
-      
-      if (result > 2147483647.0f) result = 2147483647.0f;
-      if (result < -2147483648.0f) result = -2147483648.0f;
-      
-      PCM_2[ch] = (int32_t)result;
-  }
-
-  SAMPLE[3] = (uint8_t)((uint32_t)PCM_2[0] >> 8);
-  SAMPLE[2] = (uint8_t)(PCM_2[0] & 0xFF);
-  SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
-  SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
-
-#if defined(RDI_DEVELOPMENTS_REV3)
-  // Lower volume
-  #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
-  int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
-  int32_t scaled_left_32 = (int32_t)raw_left * VOLUME_FACTOR;
-  int16_t scaled_left = (int16_t)(scaled_left_32 >> 15); 
-  int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);
-  int32_t scaled_right_32 = (int32_t)raw_right * VOLUME_FACTOR;
-  int16_t scaled_right = (int16_t)(scaled_right_32 >> 15);
-  SAMPLE[2] = (uint8_t)(scaled_right & 0xFF);    
-  SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 
-  SAMPLE[0] = (uint8_t)(scaled_left & 0xFF);       
-  SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
-#endif  
-}
-
 // Precompute these as constants (outside ISR, during initialization)
 // Original COEF values converted to Q15.16 fixed point (multiply by 65536)
 // Example values - replace with your actual COEF[] converted to fixed point
@@ -1069,72 +991,72 @@ FASTRUN void advancePosition_claude_optimized()
   
   position += pitch;
 
-    if (position > 9999) {
-        step_position = position / 10000;
-        
-        if (reverse == 0 && end_of_track == 0) {
-            play_adr += step_position;
-            
-            if (step_position == 1) {
-                // Shift samples using 32-bit copies (faster than individual assignments)
-                LR[0][0] = LR[0][1];
-                LR[0][1] = LR[0][2];
-                LR[0][2] = LR[0][3];
-                LR[1][0] = LR[1][1];
-                LR[1][1] = LR[1][2];
-                LR[1][2] = LR[1][3];
-                
-                // Load only the new sample
-                sdram_adr = (play_adr + 3) & 0xFFFFF;
-                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
-                uint32_t idx = sdram_adr & 0x1FFF;
-                LR[0][3] = PCM[bank_index][idx][0];
-                LR[1][3] = PCM[bank_index][idx][1];
-            } else {
-                // Multi-step advance
-                uint32_t base_adr = play_adr & 0xFFFFF;
-                uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);
-                uint32_t base_bank_shift = base_adr >> 13;
-                
-                for (int i = 0; i < 4; i++) {
-                    uint32_t addr = (base_adr + i) & 0xFFFFF;
-                    uint32_t bank = (bank_offset + ((addr >> 13) - base_bank_shift)) & 0x7F;
-                    uint32_t idx = addr & 0x1FFF;
-                    LR[0][i] = PCM[bank][idx][0];
-                    LR[1][i] = PCM[bank][idx][1];
-                }
-            }
-        }
-        else if (reverse == 1 && play_adr >= step_position) {
-            play_adr -= step_position;
-            
-            if (step_position == 1) {
-                // Shift samples
-                LR[0][0] = LR[0][1];
-                LR[0][1] = LR[0][2];
-                LR[0][2] = LR[0][3];
-                LR[1][0] = LR[1][1];
-                LR[1][1] = LR[1][2];
-                LR[1][2] = LR[1][3];
-                
-                sdram_adr = play_adr & 0xFFFFF;
-                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
-                LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-                LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-            } else {
-                uint32_t base_adr = play_adr & 0xFFFFF;
-                
-                for (int i = 0; i < 4; i++) {
-                    uint32_t addr = (base_adr + i) & 0xFFFFF;
-                    uint32_t bank = ((addr >> 13) + offset_adress) & 0x7F;
-                    uint32_t idx = addr & 0x1FFF;
-                    LR[0][3 - i] = PCM[bank][idx][0];
-                    LR[1][3 - i] = PCM[bank][idx][1];
-                }
-            }
-        }
-        
-        position %= 10000;
+  if (position > 9999) {
+      step_position = position / 10000;
+      
+      if (reverse == 0 && end_of_track == 0) {
+          play_adr += step_position;
+           
+          if (step_position == 1) {
+              // Shift samples using 32-bit copies (faster than individual assignments)
+              LR[0][0] = LR[0][1];
+              LR[0][1] = LR[0][2];
+              LR[0][2] = LR[0][3];
+              LR[1][0] = LR[1][1];
+              LR[1][1] = LR[1][2];
+              LR[1][2] = LR[1][3];
+              
+              // Load only the new sample
+              sdram_adr = (play_adr + 3) & 0xFFFFF;
+              uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+              uint32_t idx = sdram_adr & 0x1FFF;
+              LR[0][3] = PCM[bank_index][idx][0];
+              LR[1][3] = PCM[bank_index][idx][1];
+          } else {
+              // Multi-step advance
+              uint32_t base_adr = play_adr & 0xFFFFF;
+              uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);
+              uint32_t base_bank_shift = base_adr >> 13;
+              
+              for (int i = 0; i < 4; i++) {
+                  uint32_t addr = (base_adr + i) & 0xFFFFF;
+                  uint32_t bank = (bank_offset + ((addr >> 13) - base_bank_shift)) & 0x7F;
+                  uint32_t idx = addr & 0x1FFF;
+                  LR[0][i] = PCM[bank][idx][0];
+                  LR[1][i] = PCM[bank][idx][1];
+              }
+          }
+      }
+      else if (reverse == 1 && play_adr >= step_position) {
+          play_adr -= step_position;
+          
+          if (step_position == 1) {
+              // Shift samples
+              LR[0][0] = LR[0][1];
+              LR[0][1] = LR[0][2];
+              LR[0][2] = LR[0][3];
+              LR[1][0] = LR[1][1];
+              LR[1][1] = LR[1][2];
+              LR[1][2] = LR[1][3];
+              
+              sdram_adr = play_adr & 0xFFFFF;
+              uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+              LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
+              LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
+          } else {
+              uint32_t base_adr = play_adr & 0xFFFFF;
+              
+              for (int i = 0; i < 4; i++) {
+                  uint32_t addr = (base_adr + i) & 0xFFFFF;
+                  uint32_t bank = ((addr >> 13) + offset_adress) & 0x7F;
+                  uint32_t idx = addr & 0x1FFF;
+                  LR[0][3 - i] = PCM[bank][idx][0];
+                  LR[1][3 - i] = PCM[bank][idx][1];
+              }
+          }
+      }
+      
+      position %= 10000;
     }
 
     // ===== OPTIMIZED INTERPOLATION USING FIXED-POINT MATH =====
@@ -1189,7 +1111,7 @@ FASTRUN void advancePosition_claude_optimized()
     SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
 #if defined(RDI_DEVELOPMENTS_REV3)
-    #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
+    #define VOLUME_FACTOR 3277 // 98%, 3277 is 90% reduced volume 
     // Optimized volume scaling using int16_t directly
     int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
     int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);

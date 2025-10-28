@@ -6,7 +6,7 @@
 
 extern lv_obj_t * filesScreen;
 
-void createListScreen();
+void createListScreen(Track** tracks, int16_t track_count);
 void load_dj_screen_with_track(Track * track);
 
 #endif

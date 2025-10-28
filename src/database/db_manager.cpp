@@ -58,7 +58,7 @@ FLASHMEM int16_t db_get_track_count()
     sqlite3_stmt *stmt;
     int16_t count = 0;
     
-    if (sqlite3_prepare_v2(mdb, "SELECT COUNT(*) FROM Track;", -1, &stmt, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(mdb, "SELECT COUNT(*) FROM Track WHERE fileType = 'wav';", -1, &stmt, NULL) != SQLITE_OK) {
         log_sqlite_error("db_get_track_count", mdb);
         return -1;
     }
@@ -93,6 +93,7 @@ FLASHMEM int16_t db_get_first_track_id()
     }
     
     sqlite3_finalize(stmt);
+    Serial.printf("first_id: %d\n", first_id);
     
     return first_id;
 }
@@ -170,6 +171,107 @@ FLASHMEM void db_free_track(Track *track)
     free(track->musical_key);
     free(track);
 }
+
+FLASHMEM Track** db_load_all_tracks(int16_t* track_count)
+{
+    if (!mdb) {
+        Serial.println("Error: mdb not initialized");
+        return nullptr;
+    }
+    
+    // Get the total number of tracks
+    *track_count = db_get_track_count();
+    if (*track_count <= 0) {
+        Serial.println("No tracks found in database");
+        return nullptr;
+    }
+    
+    Serial.printf("Loading %d tracks from database...\n", *track_count);
+    
+    // Allocate array of Track pointers
+    Track** tracks = (Track**)calloc(*track_count, sizeof(Track*));
+    if (!tracks) {
+        Serial.println("Failed to allocate tracks array");
+        return nullptr;
+    }
+    
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT id, length, bpmAnalyzed, filename, path, title, artist, key, rating FROM Track WHERE fileType = 'wav' ORDER BY id ASC";
+    
+    if (sqlite3_prepare_v2(mdb, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        log_sqlite_error("db_load_all_tracks", mdb);
+        free(tracks);
+        return nullptr;
+    }
+    
+    int index = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && index < *track_count) {
+
+        Track *track = (Track *)calloc(1, sizeof(Track));
+        if (!track) {
+            Serial.printf("Failed to allocate memory for track %d\n", index);
+            // Clean up previously allocated tracks
+            for (int i = 0; i < index; i++) {
+                db_free_track(tracks[i]);
+            }
+            free(tracks);
+            sqlite3_finalize(stmt);
+            return nullptr;
+        }
+        
+        // Track ID
+        track->track_id = sqlite3_column_int(stmt, 0);
+        
+        // Length
+        int lenVal = sqlite3_column_int(stmt, 1);
+        char buf[164];
+        snprintf(buf, sizeof(buf), "%d", lenVal);
+        track->trackLength = strdup(buf);
+        
+        // BPM
+        track->bpmAnalyzed = (float)sqlite3_column_double(stmt, 2);
+        
+        // Text fields
+        const char *filename = (const char *)sqlite3_column_text(stmt, 3);
+        const char *path     = (const char *)sqlite3_column_text(stmt, 4);
+        const char *title    = (const char *)sqlite3_column_text(stmt, 5);
+        const char *artist   = (const char *)sqlite3_column_text(stmt, 6);
+        const char *key      = (const char *)sqlite3_column_text(stmt, 7);
+        uint8_t rating       = (uint8_t)sqlite3_column_int(stmt, 8);
+        
+        if (filename) track->filename = strdup(filename);
+        if (path)     track->path     = strdup(path);
+        if (title)    track->title    = strdup(title);
+        if (artist)   track->artist   = strdup(artist);
+        if (key)      track->musical_key = strdup(key);
+        if (rating)   track->star_rating = lookupValue(rating);
+        
+        tracks[index] = track;
+        index++;
+    }
+    
+    sqlite3_finalize(stmt);
+    
+    Serial.printf("Successfully loaded %d tracks\n", index);
+    
+    // Update track_count to reflect actual number loaded
+    *track_count = index;
+    
+    return tracks;
+}
+
+FLASHMEM void db_free_all_tracks(Track** tracks, int16_t track_count)
+{
+    if (!tracks) return;
+    
+    for (int16_t i = 0; i < track_count; i++) {
+        db_free_track(tracks[i]);
+    }
+    
+    free(tracks);
+    Serial.println("All tracks freed from memory");
+}
+
 
 FLASHMEM bool db_load_dynamic_waveform_data(uint16_t track_id, uint8_t** dynamicWaveSampleData, uint64_t* dynamicWaveformSampleCount, uint32_t* baseSampPerWavePoint)
 {  
@@ -318,16 +420,17 @@ FLASHMEM bool db_load_overview_waveform_data(uint16_t track_id, uint8_t** overVi
 {
     Serial.printf("Loading overview waveform for track_id %d\n", track_id);
     
-    if (!mdb) {
-        Serial.println("Failed to open database - mdb not initialized");
+    // Open performance database
+    if (sqlite3_open("databases/p.db", &pdb) != SQLITE_OK) {
+        log_sqlite_error("db_load_dynamic_waveform_data (open)", pdb);
         return false;
     }
     
     sqlite3_stmt *stmt = nullptr;
     const char *sqlOverviewData = "SELECT overviewWaveFormData FROM PerformanceData WHERE trackId = ?";
     
-    if (sqlite3_prepare_v2(mdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
-        log_sqlite_error("db_load_overview_waveform_data (prepare)", mdb);
+    if (sqlite3_prepare_v2(pdb, sqlOverviewData, -1, &stmt, NULL) != SQLITE_OK) {
+        log_sqlite_error("db_load_overview_waveform_data (prepare)", pdb);
         return false;
     }
     
@@ -422,9 +525,7 @@ FLASHMEM bool db_load_overview_waveform_data(uint16_t track_id, uint8_t** overVi
     }
     
     // Fill data arrays with interpolation
-    float heightRatio = (float)overviewChartHeight / 255.0;
     float scaleFactor = (float)1024 / 800;
-    const float waveformUserGain[3] = {1.0, 0.66, 0.33};
     
     for (uint32_t i = 0; i < 800; i++) {
         float srcIndex = i * scaleFactor;
@@ -444,8 +545,7 @@ FLASHMEM bool db_load_overview_waveform_data(uint16_t track_id, uint8_t** overVi
             }
             
             float interpolatedValue = v1 + (frac * (v2 - v1));
-            float finalValue = interpolatedValue * heightRatio * waveformUserGain[j];
-            overViewWaveSampleData[j][i] = (uint8_t)(finalValue + 0.5f);
+            overViewWaveSampleData[2-j][i] = (uint8_t)(interpolatedValue + 0.5f); // TODO WeensyPiDJ may have these reversed, so doing 2-j
         }
     }
     
@@ -534,7 +634,7 @@ FLASHMEM bool db_load_beatgrid_data(uint16_t track_id, Beatgrid* beatgrid, uint3
         free(uncompressedBuffer);
         return false;
     }
-    
+
     /* Beat Grid data spec:
     Sample Rate (in Hertz):
     Track length (in samples):

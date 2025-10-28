@@ -7,7 +7,7 @@
 // Add new stats by adding to enum StatType, constexpr statConfigs. 
 // Then use in code with appStat.start(ENUM) and appStats.end(ENUM)
 
-const uint32_t nextReportPeriod = 5; // Number of seconds between reports
+const uint32_t nextReportPeriod = 1; // Number of seconds between reports
 
 enum StatType {
     ISR_I2S,
