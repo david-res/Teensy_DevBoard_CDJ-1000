@@ -11,6 +11,13 @@
     #define IRQ_SAI IRQ_SAI3_TX
     #define FILE_TYPE FsFile
     #define CCM_SAI_CLK_EN CCM_CCGR5_SAI3
+#elif defined(TEENSY41)    
+    #define I2S_TCSR_REG I2S2_TCSR
+    #define I2S_TDR0_REG I2S2_TDR0
+    #define SD_FILE_SYS FS
+    #define IRQ_SAI IRQ_SAI2
+    #define FILE_TYPE File
+    #define CCM_SAI_CLK_EN CCM_CCGR5_SAI2
 #else    
     #define I2S_TCSR_REG I2S1_TCSR
     #define I2S_TDR0_REG I2S1_TDR0

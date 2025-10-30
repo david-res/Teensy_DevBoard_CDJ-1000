@@ -5,18 +5,42 @@
 #include "stats/app_stats.h"
 #include "i2s_sync.h"
 
+///////////////
+// User defines
+///////////////
+
+// Hardware config
 #define LCD_BUFFER_COUNT   2
 #define CPU_SPEED_MHZ    528  // 150, 396, 450, 528, 600, 720, 816
 #define CPU_MILLIVOLTS  1300  // 1150 (Teensy default) - 1575 (overclock max), steps of 25, CAUTION ADVISED HERE
-#define SDRAM_SPEED      198  // 166, 198, 221
+#define EXTMEM_SPEED     198  // SDRAM - 166, 198, 221, PSRAM - 88, 133, 166, 198, 221
 #define SD_CARD_SPEED 99'000  // 20'000, 33'000, 50'000 (default), 66'000, 99'000, 198'000 (usually doesn't work)
 #define USE_EXTMEM_NOCACHE
-#define USE_STATS
 //#define IRQ_FROM_INT_TIMER
-//#define USE_REM_DISP
-#define USE_LCD_DISP
-//#define USE_BEAT_NUMBERS
 
+// Screen config
+#define USE_LCD_DISP
+//#define USE_REM_DISP
+
+// Feature config
+#define USE_STATS
+#define USE_BEAT_NUMBERS
+
+///////////////////
+// End user defines
+///////////////////
+
+#if defined(TEENSY41)
+#undef USE_LCD_DISP
+#undef USE_EXTMEM_NOCACHE
+#define EXTMEM_NOCACHE EXTMEM
+#define EXTMEM_NOCACHE_PCM EXTMEM
+#define USE_REM_DISP
+#undef CPU_SPEED_MHZ
+#define CPU_SPEED_MHZ 600
+#undef EXTMEM_SPEED
+#define EXTMEM_SPEED 166
+#else
 #if defined(USE_EXTMEM_NOCACHE)
 #define EXTMEM_NOCACHE __attribute__((section(".externalram_nocache")))
 #define EXTMEM_NOCACHE_PCM __attribute__((section(".externalram_nocache_pcm")))
@@ -24,8 +48,9 @@
 #define EXTMEM_NOCACHE EXTMEM
 #define EXTMEM_NOCACHE_PCM EXTMEM
 #endif
+#endif
 
-#if defined(USE_REM_DISP)
+#if defined(USE_REM_DISP) || defined(TEENSY41)
 #undef LCD_BUFFER_COUNT
 #define LCD_BUFFER_COUNT 1
 #endif

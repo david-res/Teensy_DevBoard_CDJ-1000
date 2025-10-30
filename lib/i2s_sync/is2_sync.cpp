@@ -25,9 +25,9 @@ FLASHMEM void i2s_sync::set_audioClock(int nfact, int32_t nmult, uint32_t ndiv) 
       CCM_ANALOG_PLL_AUDIO &= ~CCM_ANALOG_PLL_AUDIO_BYPASS;//Disable Bypass
 }
 
-FLASHMEM void i2s_sync::config_sai1()
+FLASHMEM void i2s_sync::config_sai()
 {
-  Serial.println("Entering config_sai1");
+  Serial.println("Entering config_sai");
   Serial.flush();
 
   // From AudioOutputI2S::config_i2s
@@ -81,54 +81,92 @@ FLASHMEM void i2s_sync::config_sai1()
       
       // TX_DATA pin
       IOMUXC_SW_MUX_CTL_PAD_GPIO_SD_B1_01 = 8;  // SAI3_TX_DATA0
+#elif defined(TEENSY41)
+	// clear SAI2_CLK register locations
+	CCM_CSCMR1 = (CCM_CSCMR1 & ~(CCM_CSCMR1_SAI2_CLK_SEL_MASK))
+		   | CCM_CSCMR1_SAI2_CLK_SEL(2); // &0x03 // (0,1,2): PLL3PFD0, PLL5, PLL4,
+	CCM_CS2CDR = (CCM_CS2CDR & ~(CCM_CS2CDR_SAI2_CLK_PRED_MASK | CCM_CS2CDR_SAI2_CLK_PODF_MASK))
+		   | CCM_CS2CDR_SAI2_CLK_PRED(n1-1)
+		   | CCM_CS2CDR_SAI2_CLK_PODF(n2-1);
+	
+      //Select MCLK               
+	IOMUXC_GPR_GPR1 = (IOMUXC_GPR_GPR1 & ~(IOMUXC_GPR_GPR1_SAI2_MCLK3_SEL_MASK))
+			| (IOMUXC_GPR_GPR1_SAI2_MCLK_DIR | IOMUXC_GPR_GPR1_SAI2_MCLK3_SEL(0));
+
+      // Pin configuration
+      CORE_PIN33_CONFIG = 2;  //EMC_07, 2=SAI2_MCLK
+	CORE_PIN4_CONFIG  = 2;  //EMC_06, 2=SAI2_TX_BCLK
+	CORE_PIN3_CONFIG  = 2;  //EMC_05, 2=SAI2_TX_SYNC, page 429
+
+      // TX only - no need to sync to RX
+      int tsync = 0; 
+
+      I2S2_TMR = 0;
+	//I2S2_TCSR = (1<<25); //Reset
+	I2S2_TCR1 = I2S_TCR1_RFW(2);
+	I2S2_TCR2 = I2S_TCR2_SYNC(tsync) | I2S_TCR2_BCP // sync=0; tx is async;
+		| (I2S_TCR2_BCD | I2S_TCR2_DIV((1)) | I2S_TCR2_MSEL(1));
+	I2S2_TCR3 = I2S_TCR3_TCE;
+	I2S2_TCR4 = I2S_TCR4_FRSZ((2-1)) | I2S_TCR4_SYWD((32-1)) | I2S_TCR4_MF
+		| I2S_TCR4_FSD | I2S_TCR4_FSE | I2S_TCR4_FSP;
+	I2S2_TCR5 = I2S_TCR5_WNW((32-1)) | I2S_TCR5_W0W((32-1)) | I2S_TCR5_FBT((32-1));
+
+      // Enable transmitter only
+      I2S2_RCSR = 0;  // RX disabled 
+      
+      I2S2_TCSR = 0;  // Clear first
+      I2S2_TCSR |= I2S_TCSR_FR;
+
+      // TX_DATA pin
+      CORE_PIN2_CONFIG  = 2;  //2:TX_DATA0
 #else
-  // clear SAI1_CLK register locations
-  CCM_CSCMR1 = (CCM_CSCMR1 & ~(CCM_CSCMR1_SAI1_CLK_SEL_MASK))
-       | CCM_CSCMR1_SAI1_CLK_SEL(2); // &0x03 // (0,1,2): PLL3PFD0, PLL5, PLL4
-  CCM_CS1CDR = (CCM_CS1CDR & ~(CCM_CS1CDR_SAI1_CLK_PRED_MASK | CCM_CS1CDR_SAI1_CLK_PODF_MASK))
-       | CCM_CS1CDR_SAI1_CLK_PRED(n1-1) // &0x07
-       | CCM_CS1CDR_SAI1_CLK_PODF(n2-1); // &0x3f
+      // clear SAI1_CLK register locations
+      CCM_CSCMR1 = (CCM_CSCMR1 & ~(CCM_CSCMR1_SAI1_CLK_SEL_MASK))
+            | CCM_CSCMR1_SAI1_CLK_SEL(2); // &0x03 // (0,1,2): PLL3PFD0, PLL5, PLL4
+      CCM_CS1CDR = (CCM_CS1CDR & ~(CCM_CS1CDR_SAI1_CLK_PRED_MASK | CCM_CS1CDR_SAI1_CLK_PODF_MASK))
+            | CCM_CS1CDR_SAI1_CLK_PRED(n1-1) // &0x07
+            | CCM_CS1CDR_SAI1_CLK_PODF(n2-1); // &0x3f
 
-  // Select MCLK
-  IOMUXC_GPR_GPR1 = (IOMUXC_GPR_GPR1 & ~(IOMUXC_GPR_GPR1_SAI1_MCLK1_SEL_MASK))
-    | (IOMUXC_GPR_GPR1_SAI1_MCLK_DIR | IOMUXC_GPR_GPR1_SAI1_MCLK1_SEL(0));
+      // Select MCLK
+      IOMUXC_GPR_GPR1 = (IOMUXC_GPR_GPR1 & ~(IOMUXC_GPR_GPR1_SAI1_MCLK1_SEL_MASK))
+      | (IOMUXC_GPR_GPR1_SAI1_MCLK_DIR | IOMUXC_GPR_GPR1_SAI1_MCLK1_SEL(0));
 
-  CORE_PIN23_CONFIG = 3;  // MCLK
-  CORE_PIN20_CONFIG = 3;  // RX_SYNC   (LRCLK)
-  CORE_PIN21_CONFIG = 3;  // RX_BCLK
+      CORE_PIN23_CONFIG = 3;  // MCLK
+      CORE_PIN20_CONFIG = 3;  // RX_SYNC   (LRCLK)
+      CORE_PIN21_CONFIG = 3;  // RX_BCLK
 
-  int rsync = 0;
-  int tsync = 1;
+      int rsync = 0;
+      int tsync = 1;
 
-  I2S1_TMR = 0;
-  //I2S1_TCSR = (1<<25); //Reset
-  I2S1_TCR1 = I2S_TCR1_RFW(2);  // Changed from 1 to 2 - wait until FIFO has space for 2 words
-  I2S1_TCR2 = I2S_TCR2_SYNC(tsync) | I2S_TCR2_BCP // sync=0; tx is async;
-        | (I2S_TCR2_BCD | I2S_TCR2_DIV((1)) | I2S_TCR2_MSEL(1));
-  I2S1_TCR3 = I2S_TCR3_TCE;
-  I2S1_TCR4 = I2S_TCR4_FRSZ((2-1)) | I2S_TCR4_SYWD((32-1)) | I2S_TCR4_MF
-        | I2S_TCR4_FSD | I2S_TCR4_FSE | I2S_TCR4_FSP;
-  I2S1_TCR5 = I2S_TCR5_WNW((32-1)) | I2S_TCR5_W0W((32-1)) | I2S_TCR5_FBT((32-1));
+      I2S1_TMR = 0;
+      //I2S1_TCSR = (1<<25); //Reset
+      I2S1_TCR1 = I2S_TCR1_RFW(2);  // Changed from 1 to 2 - wait until FIFO has space for 2 words
+      I2S1_TCR2 = I2S_TCR2_SYNC(tsync) | I2S_TCR2_BCP // sync=0; tx is async;
+            | (I2S_TCR2_BCD | I2S_TCR2_DIV((1)) | I2S_TCR2_MSEL(1));
+      I2S1_TCR3 = I2S_TCR3_TCE;
+      I2S1_TCR4 = I2S_TCR4_FRSZ((2-1)) | I2S_TCR4_SYWD((32-1)) | I2S_TCR4_MF
+            | I2S_TCR4_FSD | I2S_TCR4_FSE | I2S_TCR4_FSP;
+      I2S1_TCR5 = I2S_TCR5_WNW((32-1)) | I2S_TCR5_W0W((32-1)) | I2S_TCR5_FBT((32-1));
 
-  I2S1_RMR = 0;
-  //I2S1_RCSR = (1<<25); //Reset
-  I2S1_RCR1 = I2S_RCR1_RFW(1);
-  I2S1_RCR2 = I2S_RCR2_SYNC(rsync) | I2S_RCR2_BCP  // sync=0; rx is async;
-        | (I2S_RCR2_BCD | I2S_RCR2_DIV((1)) | I2S_RCR2_MSEL(1));
-  I2S1_RCR3 = I2S_RCR3_RCE;
-  I2S1_RCR4 = I2S_RCR4_FRSZ((2-1)) | I2S_RCR4_SYWD((32-1)) | I2S_RCR4_MF
-        | I2S_RCR4_FSE | I2S_RCR4_FSP | I2S_RCR4_FSD;
-  I2S1_RCR5 = I2S_RCR5_WNW((32-1)) | I2S_RCR5_W0W((32-1)) | I2S_RCR5_FBT((32-1));
-  // End from AudioOutputI2S::config_i2s
+      I2S1_RMR = 0;
+      //I2S1_RCSR = (1<<25); //Reset
+      I2S1_RCR1 = I2S_RCR1_RFW(1);
+      I2S1_RCR2 = I2S_RCR2_SYNC(rsync) | I2S_RCR2_BCP  // sync=0; rx is async;
+            | (I2S_RCR2_BCD | I2S_RCR2_DIV((1)) | I2S_RCR2_MSEL(1));
+      I2S1_RCR3 = I2S_RCR3_RCE;
+      I2S1_RCR4 = I2S_RCR4_FRSZ((2-1)) | I2S_RCR4_SYWD((32-1)) | I2S_RCR4_MF
+            | I2S_RCR4_FSE | I2S_RCR4_FSP | I2S_RCR4_FSD;
+      I2S1_RCR5 = I2S_RCR5_WNW((32-1)) | I2S_RCR5_W0W((32-1)) | I2S_RCR5_FBT((32-1));
+      // End from AudioOutputI2S::config_i2s
 
-  // From AudioOutputI2Sslave::begin
-  I2S1_RCSR |= I2S_RCSR_RE | I2S_RCSR_BCE;
-  I2S1_TCSR = 0;  // Clear first
-  I2S1_TCSR |= I2S_TCSR_FR;
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 3;   //CORE_PIN7_CONFIG  = 3;  // TX_DATA0
+      // From AudioOutputI2Sslave::begin
+      I2S1_RCSR |= I2S_RCSR_RE | I2S_RCSR_BCE;
+      I2S1_TCSR = 0;  // Clear first
+      I2S1_TCSR |= I2S_TCSR_FR;
+      IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 3;   //CORE_PIN7_CONFIG  = 3;  // TX_DATA0
 #endif
 
-  Serial.println("Leaving config_sai1");
+  Serial.println("Leaving config_sai");
   Serial.flush();
 
 }
@@ -136,7 +174,7 @@ FLASHMEM void i2s_sync::config_sai1()
 FASTRUN void i2s_sync::begin(CBF audio_irq){
       Serial.println("In audio.begin");
       Serial.flush();
-      config_sai1();
+      config_sai();
       attachInterruptVector(IRQ_SAI, audio_irq);
       NVIC_ENABLE_IRQ(IRQ_SAI); 
       NVIC_SET_PRIORITY(IRQ_SAI, 128);

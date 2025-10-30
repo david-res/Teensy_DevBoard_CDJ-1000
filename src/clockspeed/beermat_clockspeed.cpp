@@ -43,7 +43,7 @@ FLASHMEM uint32_t beermat_set_arm_clock(uint32_t frequency, uint32_t voltage_mv)
 		voltage = voltage_mv;
 	} else {
 		// Calculate default voltage based on frequency bands
-		voltage = 1250; // Teensy default = 1.15V
+		voltage = 1150; // Teensy default = 1.15V
 
         if (frequency > 528000000) {
                 voltage = 1350; // Teensy default 1.25V

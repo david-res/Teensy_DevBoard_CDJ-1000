@@ -380,7 +380,8 @@ FLASHMEM bool db_load_dynamic_waveform_data(uint16_t track_id, uint8_t** dynamic
     for (uint8_t i = 16; i < 24; i++) {
         b[23 - i] = uncompressedBuffer[i];
     }
-    *baseSampPerWavePoint = (uint32_t)numSamplesPerWaveformPoint;
+    // TODO WeensyPiDJ creates mono waveform samples, this code plays stereo samples, so total stereo sample count is 2x waveform sample count
+    *baseSampPerWavePoint = (uint32_t)numSamplesPerWaveformPoint * 2;
     Serial.printf("numSamplesPerWaveformPoint: %lf (converted to %u)\n", numSamplesPerWaveformPoint, *baseSampPerWavePoint);
     
     

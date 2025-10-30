@@ -16,6 +16,13 @@
 #include "eLCDIF_t4.h"
 #include <Adafruit_FT6206.h>
 #include "T4_PXP.h"
+#else
+IntervalTimer lcdTimer;
+#endif
+
+#if defined(TEENSY41)
+#include "teensy_display/display_drv.h"
+#include "teensy_display/pin_defines.h"
 #endif
 
 #if defined(USE_REM_DISP)
@@ -43,6 +50,7 @@ void SAI_IRQHandler(void);
 void copyWaveformsToLCD();
 void advancePosition_rezo();
 void advancePosition_claude_optimized();
+void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2);
 
 #if defined(USE_REM_DISP)
 RemoteDisplay remoteDisplay;
@@ -57,11 +65,17 @@ AppStats appStats = AppStats();
 FsFile perfDB;
 FsFile metaDB;
 
-SDRAM_t4 sdram;
-eLCDIF_t4 lcd;
 i2s_sync audio;
 
+#if !defined(TEENSY41)
+SDRAM_t4 sdram;
+#endif
+#if defined(USE_LCD_DISP)
+eLCDIF_t4 lcd;
+#endif
+
 uint32_t play_count = 0;
+uint32_t targetFrequency = CPU_SPEED_MHZ;
 
 
 // Used in the I2S ISR
@@ -123,7 +137,6 @@ float COEF[8] = {            //////optimal 2x
  uint16_t oldStaticBufferX = 0;
  uint16_t newStaticBufferX = 0;
  uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
- uint16_t * staticDestPtr = NULL;
 
 
 
@@ -153,6 +166,7 @@ eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
 
 //const char* dbName = "Engine Library/Database2/p.db";
 
+const uint16_t lvglBufferHeight = 120;
 EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
@@ -166,10 +180,8 @@ EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute_
 
 void startup_middle_hook(void)
 {
-  uint32_t targetFrequency = CPU_SPEED_MHZ;
-
   //Check reasonable range for safety
-  if (targetFrequency < 150 || targetFrequency > 720) {
+  if (targetFrequency < 150 || targetFrequency > 816) {
     targetFrequency = 528;
   }
 
@@ -179,7 +191,7 @@ void startup_middle_hook(void)
   if (cpuMilliVolts < 800 || cpuMilliVolts > 1575) {
     cpuMilliVolts = 1150;
   }
-  beermat_set_arm_clock(targetFrequency * 1'000'000, cpuMilliVolts);
+  beermat_set_arm_clock(targetFrequency * 1'000'000, MACRO_EXISTS(TEENSY41) ? 0 : cpuMilliVolts);
 
 #if defined(USE_EXTMEM_NOCACHE)  
   //Disable caching for first 4M of SDRAM
@@ -189,13 +201,16 @@ void startup_middle_hook(void)
   // Region 12: Next 8MB nocache (0x80400000 - 0x80BFFFFF) for PCM array
   SCB_MPU_RBAR = 0x80400000 | (SCB_MPU_RBAR_REGION(12) | SCB_MPU_RBAR_VALID);
   SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(22) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_8M;
-
 #endif
 
+#if defined(TEENSY41)  
+  setPSRamSpeed(EXTMEM_SPEED); 
+#else
   // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
-  if (!sdram.begin(32, SDRAM_SPEED, 1)){
-    Serial.printf("SDRAM init at %ldMHz failed\n", SDRAM_SPEED);
+  if (!sdram.begin(32, EXTMEM_SPEED, 1)){
+    Serial.printf("SDRAM init at %ldMHz failed\n", EXTMEM_SPEED);
   }
+#endif  
 }
 
 #if defined(USE_REM_DISP)
@@ -205,29 +220,9 @@ void refreshDisplayCallback()
   area.x1 = 0; area.y1 = 0; area.x2 = SCREEN_WIDTH; area.y2 = SCREEN_HEIGHT;
   lv_obj_invalidate_area(lv_scr_act(), &area);
 }
-
-#if (LVGL_VERSION_MAJOR == 8)
-FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
-{
-  if (remoteDisplay.sendRemoteScreen == true ) {
-    //remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
-  }
-  lv_disp_flush_ready(display);
-}
-#endif
-#if (LVGL_VERSION_MAJOR == 9)
-FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
-{
-  if (remoteDisplay.sendRemoteScreen == true ) {
-    remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
-  }
-  lv_disp_flush_ready(display);
-}
-#endif
-
 #endif // USE_REM_DISP
 
-#if defined(USE_LCD_DISP) || defined(USE_REM_DISP)
+#if defined(USE_LCD_DISP) || defined(USE_REM_DISP) || defined(TEENSY41)
 //Display driver
 #if (LVGL_VERSION_MAJOR == 8)
 static lv_disp_draw_buf_t disp_buf;
@@ -267,9 +262,10 @@ FASTRUN void pxpCallback(){
 }
 
 #else
-#if (LVGL_VERSION_MAJOR == 8) && !defined(USE_REM_DISP)
+#if (LVGL_VERSION_MAJOR == 8) 
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
 {
+#if defined(USE_LCD_DISP)
   if (lv_disp_flush_is_last(&disp_drv)){
 #if !defined(USE_EXTMEM_NOCACHE)    
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
@@ -280,11 +276,20 @@ FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_col
   else{
     lv_disp_flush_ready(&disp_drv);
   }
+#endif  
+#if defined(TEENSY41)
+  flushtoScreen(NULL, (uint16_t *)px_map, area->x1, area->y1, area->x2, area->y2);
+  lv_disp_flush_ready(&disp_drv);
+  if (lv_disp_flush_is_last(&disp_drv)) {
+    ps_framePending = true;
+  }
+#endif  
 }
 #endif
-#if (LVGL_VERSION_MAJOR == 9) && !defined(USE_REM_DISP)
+#if (LVGL_VERSION_MAJOR == 9)
 FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
 {
+#if defined(USE_LCD_DISP)  
   if (lv_disp_flush_is_last(disp_drv)){
 #if !defined(USE_EXTMEM_NOCACHE)    
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
@@ -295,17 +300,38 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
   else{
     lv_disp_flush_ready(disp_drv);
   }
+#endif  
+#if defined(TEENSY41)
+  flushtoScreen(NULL, (uint16_t *)px_map, area->x1, area->y1, area->x2, area->y2);
+  lv_disp_flush_ready(disp_drv);
+  if (lv_disp_flush_is_last(disp_drv)) {
+    ps_framePending = true;
+  }
+#endif   
 }
 #endif
 
 FASTRUN void lcdCallback() {
+
+#if defined(SSD1963) && defined(USE_TEAR)
+  uint8_t pinState = digitalReadFast(TFT_TEAR);
+  if (pinState == 0) {
+    //Falling, end of VNDP, start of display period
+    return;
+  } else {
+    //Rising, end of display period, start of VNDP period
+  }
+#endif  
+
   CrashReport.breadcrumb(3, 1);
 
   appStats.start(ISR_LCD);
   
   lvgl_framePending = true;
   if(ps_framePending == true) {
+#if defined(USE_LCD_DISP)    
     lcd.setNextBufferAddress((uint16_t*)next_px_map);
+#endif    
 #if (LVGL_VERSION_MAJOR == 8)    
     lv_disp_flush_ready(&disp_drv);
 #endif
@@ -339,8 +365,10 @@ void my_print(const char * buf)
 
 lv_indev_t * ts_indev;
 
+#if defined(USE_LCD_DISP)   
 // Touch controller instance
 Adafruit_FT6206 ctp = Adafruit_FT6206();
+#endif
 
 #if (LVGL_VERSION_MAJOR == 8)
 void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
@@ -349,6 +377,7 @@ void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
 void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 #endif
 {
+#if defined(USE_LCD_DISP)   
     // Check if there's a new touch event from interrupt
     TS_Point p = ctp.getPoint();
     if (ctp.touched()) {
@@ -360,6 +389,7 @@ void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
         // Touch released
         data->state = LV_INDEV_STATE_RELEASED;
     }
+#endif    
 #if defined(USE_REM_DISP)    
     if (remoteDisplay.sendRemoteScreen == true) {
         //Handle touch from remote (overrides)
@@ -382,7 +412,11 @@ LV_FONT_DECLARE(exo2_18)
 FLASHMEM void reportAppConfig() {
   Serial.println("\n======================== App Settings ==========================");
   Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
-  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), SDRAM_SPEED);  
+#if defined(TEENSY41)
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   PSRAM_SPEED: " SER_CYAN "%0.2f" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), getPSRamSpeed());  
+#else  
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), EXTMEM_SPEED);  
+#endif
   Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
@@ -390,7 +424,7 @@ FLASHMEM void reportAppConfig() {
   Serial.printf("DISPLAY: USE_LCD_DISP: %s%s" SER_RESET "  USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_LCD_DISP) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_LCD_DISP) ? "TRUE" : "FALSE",
       MACRO_EXISTS(USE_REM_DISP) ? SER_RED : SER_CYAN, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
   Serial.printf("USE_STATS: %s%s" SER_RESET "\n",  MACRO_EXISTS(USE_STATS) ? SER_YELLOW : SER_GREEN, MACRO_EXISTS(USE_STATS) ? "TRUE" : "FALSE");
-  Serial.printf("IRQ_GEN: %s%s" SER_RESET "\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S");
+  Serial.printf("IRQ_GEN: %s%s" SER_RESET "   TEENSY41: %s\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S", MACRO_EXISTS(TEENSY41) ? "TRUE": "FALSE");
   // buffer count, LVGL version
   Serial.println("======================== App Settings ==========================\n");
 }
@@ -467,7 +501,6 @@ void setup()
 #endif
 
 #if defined(USE_LCD_DISP)
-
   // Init touch screen
   if (ctp.begin(20)) {
     Serial.println("FT5316 touch controller initialized");
@@ -505,36 +538,39 @@ void setup()
 #endif // USE_LCD_DISP
 
   lv_init();
-  #if (LVGL_VERSION_MAJOR == 8)
+#if (LVGL_VERSION_MAJOR == 8)
+#ifdef USE_PXP
+  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
+#else
+  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], SCREEN_WIDTH * (MACRO_EXISTS(TEENSY41) ? lvglBufferHeight : SCREEN_HEIGHT)); 
+#endif
   lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
   disp_drv.draw_buf = &disp_buf;          /*Set an initialized buffer*/
   disp_drv.flush_cb = my_disp_flush;      /*Set a flush callback to draw to the display*/
   disp_drv.hor_res = SCREEN_WIDTH;        /*Set the horizontal resolution in pixels*/
   disp_drv.ver_res = SCREEN_HEIGHT;       /*Set the vertical resolution in pixels*/
-  disp_drv.direct_mode = 1;
+  disp_drv.direct_mode = MACRO_EXISTS(TEENSY41) ? 0 : 1;
   disp_drv.full_refresh = 0;
+  lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
   
 
-    
-  #ifdef USE_PXP
-  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
-  #else
-  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], SCREEN_WIDTH * SCREEN_HEIGHT);    
-  #endif
-  lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
 
   static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init( &indev_drv );
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    //indev_drv.read_cb = touch_glass_input;
-    indev_drv.read_cb = touch_read_cb;
-    lv_indev_drv_register( &indev_drv );
-#endif    
+  lv_indev_drv_init( &indev_drv );
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  //indev_drv.read_cb = touch_glass_input;
+  indev_drv.read_cb = touch_read_cb;
+  lv_indev_drv_register( &indev_drv );
+#endif  // LVGL_VERSION_MAJOR == 8 
 #if (LVGL_VERSION_MAJOR == 9)
   disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
   lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
+#if defined(TEENSY41)
+  lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * lvglBufferHeight * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#endif
+#if defined(USE_LCD_DISP)
   lv_display_set_buffers(disp_drv, lcdBuffer[0], LCD_BUFFER_COUNT == 2 ? lcdBuffer[1] : NULL, SCREEN_WIDTH * SCREEN_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
-
+#endif  
   //Tick callback
   lv_tick_set_cb(millis);
 
@@ -552,9 +588,11 @@ void setup()
 
 #if defined(USE_BEAT_NUMBERS)
   // Create in memory rendered
-  prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
+  LV_FONT_DECLARE(roboto_regular_14_4bpp)
+  prerender_digit_buffers(&roboto_regular_14_4bpp, lv_color_white(), lv_color_black());
 #endif  
 
+  Serial.println("Initializing Audio");
   audio.begin(&SAI_IRQHandler);
   
   /*
@@ -570,7 +608,7 @@ void setup()
 
   //readWaveFormBlob();
 
-  #if defined(RDI_DEVELOPMENTS_DB5)
+#if defined(RDI_DEVELOPMENTS_DB5)
   //////////////////////////
   // Directly start the song
   //////////////////////////
@@ -612,7 +650,21 @@ void setup()
   // Setup complete, turn on LCD
   analogWrite(BACKLIGHT_PIN, 200);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-#endif  // USE_LCD_DISP
+#endif // USE_LCD_DISP
+#if defined(TEENSY41)
+  if (disp_init() == false) {
+    errorHalt("Failed to initialize display");
+  }
+#endif
+#if !defined(USE_LCD_DISP)
+#if defined(SSD1963) && defined(USE_TEAR)
+  attachInterrupt(digitalPinToInterrupt(TFT_TEAR), lcdCallback, CHANGE);
+#else    
+  lcdTimer.priority(128);
+  lcdTimer.begin(lcdCallback, 17 * 1000); 
+  Serial.printf("Enabled LCD Interval Timer\n"); 
+#endif 
+#endif
 }
 
 uint32_t bytes_read = 0;
@@ -633,12 +685,16 @@ FASTRUN int playFileRead(void *buf, size_t count)
   appStats.start(PLAYFILE_READ);
 
     uint32_t bufAddr = (uint32_t)buf;
+#if defined(TEENSY41)    
+  if (bufAddr < 0x70000000 || bufAddr > 0x71400000) {
+#else
   if (bufAddr < 0x80000000 || bufAddr > 0x81400000) {
+#endif    
     Serial.printf("INVALID BUFFER ADDRESS: 0x%08X\n", bufAddr);
     Serial.flush();
   }
 
-  int32_t bytes_read = 0;
+  size_t bytes_read = 0;
   CrashReport.breadcrumb(1, 2);
   //noInterrupts();
   bytes_read = playFile.read(buf, count);
@@ -653,14 +709,59 @@ FASTRUN int playFileRead(void *buf, size_t count)
   return bytes_read;
 }
 
-FASTRUN void drawVerticalStrip(uint16_t* srcBuffer, uint16_t xPos, uint16_t height, uint16_t* destBuffer, uint16_t srcWidth, uint16_t destWidth)
+FASTRUN void draw2PxVerticalStrip(uint16_t* destPtr, uint16_t* srcPtr, uint16_t x1, uint16_t y1, uint16_t height, uint16_t srcWidth, uint16_t destWidth)
 {
+#if defined(USE_LCD_DISP)
   for (uint16_t y = 0; y < height; y++) {
-    uint16_t destOffset = (y * destWidth) + xPos;
+    uint32_t destOffset = ((y1 + y) * destWidth) + x1;
     uint16_t srcOffset = y * srcWidth;  
-    destBuffer[destOffset] = srcBuffer[srcOffset];
-    destBuffer[destOffset + 1] = srcBuffer[srcOffset + 1];
+    destPtr[destOffset] = srcPtr[srcOffset];
+    destPtr[destOffset + 1] = srcPtr[srcOffset + 1];
   }
+#endif
+#if defined(TEENSY41)
+  disp_setAddrWindow(x1, y1, x1 + 1, y1 + height - 1);
+  for (uint16_t y = 0; y < height; y++) {
+    uint16_t srcOffset = y * srcWidth; 
+    disp_pushPixels16bit(srcPtr + srcOffset, srcPtr + srcOffset + 1);
+  }
+#endif  
+#if defined(USE_REM_DISP)
+  if (remoteDisplay.sendRemoteScreen == true ) {
+    if (srcWidth == 2) {
+        remoteDisplay.sendData(x1, y1, x1 + 1, y1 + height - 1, (uint8_t *)(srcPtr));
+    } else {
+      for (uint16_t y = 0; y < height; y++) {
+        uint16_t srcOffset = y * srcWidth; 
+        remoteDisplay.sendData(x1, y1 + y, x1 + 1, y1 + y + 1, (uint8_t *)(srcPtr + srcOffset));
+      }
+    }
+  }
+#endif
+}
+
+FASTRUN void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
+{
+#if defined(USE_LCD_DISP)
+  //memcpy((uint8_t *)(destPtr + SCREEN_WIDTH * y1 * 2), srcPtr, (x2 * y2 * 2));
+  uint16_t width = x2 - x1 + 1;
+  uint16_t height = y2 - y1 + 1;
+  memcpy((uint8_t *)(destPtr + SCREEN_WIDTH * y1 * 2), srcPtr, (width * height * 2));
+
+#endif  
+#if defined(USE_REM_DISP)
+  if (remoteDisplay.sendRemoteScreen == true ) {
+    remoteDisplay.sendData(x1, y1, x2, y2, (uint8_t *)srcPtr);
+  }
+#endif
+#if defined(TEENSY41)
+  // Note that x2, y2 are width and height, not co-ords
+  uint16_t *pBuf = srcPtr;
+  uint16_t *pBufEnd = srcPtr + ((x2 - x1 + 1) * (y2 - y1 + 1)) - 1;
+
+  disp_setAddrWindow(x1, y1, x2, y2);
+  disp_pushPixels16bit(pBuf, pBufEnd);
+#endif  
 }
 
 FASTRUN void copyWaveformsToLCD()
@@ -670,15 +771,15 @@ FASTRUN void copyWaveformsToLCD()
     // Start time for stats
     appStats.start(DYNAMIC_MEMCPY);
 
-    uint8_t *destPtr = (uint8_t *)(LCDIF_NEXT_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
-    memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+    uint8_t * destPtr = MACRO_EXISTS(TEENSY41) ? NULL : (uint8_t *)LCDIF_NEXT_BUF;
+    flushtoScreen(destPtr, dynamicCanvasBuffer, 0, middleContainerPos, chartWidth - 1, middleContainerPos + chartHeight - 1);
 
+#if defined(USE_LCD_DISP)    
     // As this isn't updated per frame, it needs to be done in all LCD buffers in use
     if (LCD_BUFFER_COUNT == 2) {
-      destPtr = (uint8_t *)(LCDIF_CUR_BUF + (SCREEN_WIDTH * middleContainerPos * 2));
-      memcpy(destPtr, dynamicCanvasBuffer, (chartWidth * chartHeight * 2));
+      flushtoScreen((uint8_t *)LCDIF_CUR_BUF, dynamicCanvasBuffer, 0, middleContainerPos, chartWidth - 1, middleContainerPos + chartHeight - 1);
     }
-    
+#endif // USE_LCD_DISP
     dynamicBufferReady = false;
 
     // Finish stats
@@ -693,17 +794,16 @@ FASTRUN void copyWaveformsToLCD()
 
     // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
     // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+    draw2PxVerticalStrip(lcdBuffer[0], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
+    draw2PxVerticalStrip(lcdBuffer[0], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
 
-    staticDestPtr = (uint16_t *)(lcdBuffer[0] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
-    drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-    drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
-    
+#if defined(USE_LCD_DISP) 
     // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
     if (LCD_BUFFER_COUNT == 2) {
-      staticDestPtr = (uint16_t *)(lcdBuffer[1] + (SCREEN_WIDTH * (bottomContainerPos + 1)));
-      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
+      draw2PxVerticalStrip(lcdBuffer[1], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
+      draw2PxVerticalStrip(lcdBuffer[1], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
     }
+#endif // USE_LCD_DISP
 
     staticBufferReady = false;
   
@@ -725,6 +825,12 @@ FASTRUN void loop()
   appStats.start(MAIN_LOOP);
 
   if (lvgl_framePending == true) {
+
+      if (is_playing == true) {
+        copyWaveformsToLCD();
+      }
+      
+
       appStats.start(LV_TIMER_HANDLER);
       lv_timer_handler(); 
       appStats.end(LV_TIMER_HANDLER);
@@ -733,10 +839,6 @@ FASTRUN void loop()
       remoteDisplay.pollRemoteCommand();
 #endif
 
-      if (is_playing == true) {
-        copyWaveformsToLCD();
-      }
-      
       lvgl_framePending = false;
   }
 
@@ -746,8 +848,7 @@ FASTRUN void loop()
 
       if ((play_adr_temp / baseSampPerWavePoint) != (snapshot_play_adr / baseSampPerWavePoint)) {
         //Serial.printf("Play adr: %lu\n", snapshot_play_adr);
-        // TODO WeensyPiDJ creates mono waveform samples, this code plays stereo samples, so total stereo sample count is 2x waveform sample count
-        updateDynamicWaveform(snapshot_play_adr / 2);
+        updateDynamicWaveform(snapshot_play_adr);
         updatePlaybackPosition_new((snapshot_play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
         play_adr_temp = snapshot_play_adr; 
       }
@@ -813,10 +914,6 @@ FASTRUN void loop()
 
 FASTRUN void SAI_IRQHandler(void)
 {
-  if (play_adr > (baseSampPerWavePoint * all_long)) {
-    Serial.printf("ERROR: play_adr %lu exceeds track length %lu\n", 
-                  play_adr, baseSampPerWavePoint * all_long);
-}
   CrashReport.breadcrumb(2, 1);
   appStats.start(ISR_I2S);
 
@@ -1110,8 +1207,8 @@ FASTRUN void advancePosition_claude_optimized()
     SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
     SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
-#if defined(RDI_DEVELOPMENTS_REV3)
-    #define VOLUME_FACTOR 3277 // 98%, 3277 is 90% reduced volume 
+#if defined(RDI_DEVELOPMENTS_REV3) || defined(TEENSY41)
+    #define VOLUME_FACTOR 600 // 98%, 3277 is 90% reduced volume 
     // Optimized volume scaling using int16_t directly
     int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
     int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);

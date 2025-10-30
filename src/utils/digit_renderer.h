@@ -12,8 +12,8 @@
 
 // Requires 2 * 10 * 14 * 10 bytes, 2800 bytes  
 #define BYTES_PER_PIXEL 2   // 16-bit color (RGB565)
-#define DIGIT_WIDTH 10      // Width of each digit in pixels
-#define DIGIT_HEIGHT 14     // Height of each digit in pixels
+#define DIGIT_WIDTH 8      // Width of each digit in pixels
+#define DIGIT_HEIGHT 11     // Height of each digit in pixels
 #define NUM_DIGITS 10       // 0-9
 
 /**

@@ -110,7 +110,7 @@ FLASHMEM bool prerender_digit_buffers(const lv_font_t *font, lv_color_t text_col
         
         lv_draw_label(&layer, &label_dsc, &coords);
         lv_canvas_finish_layer(temp_canvas, &layer);
-        Serial.printf("LVGL draw label to canvas: %lduS\n", micros()-start);
+        Serial.printf("LVGL draw label to canvas: %d - x: %d, y: %d, %lduS\n", i, text_size.x, text_size.y, micros()-start);
 #endif
         
         // Copy the rendered digit to permanent storage

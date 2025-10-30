@@ -86,7 +86,7 @@ static lv_obj_t *cue_buttons[8];
 void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride);
 void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride);
 void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
-void updateDynamicWaveform(uint32_t waveformOffset);
+void drawBeatMarkers(uint32_t waveformOffset);
 void updateOverviewWaveform(uint32_t waveformOffset);
 bool useOpa = false;
 
@@ -491,7 +491,6 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
   }
 }
 
-
 int DynamicWaveformZOOM = 1;
 uint32_t nextLabelMs = 0;
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
@@ -499,33 +498,35 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   if (dynamicBufferReady == true) {
     return;
   }
-
+  
   // Start time for stats
   appStats.start(DYNAMIC_RENDER);
-
+  
   //Clear canvas
-  memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
+  //memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
   
   uint32_t pos = (waveformOffset / baseSampPerWavePoint) / DynamicWaveformZOOM; 
   /*If zoom is bigger than 1, need to find the highest value in between each jump*/
   //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
 
-  
   //Draw waveforms - expanded, interpolated
   const uint16_t chartHeightHalf = chartHeight / 2;
 
   for (uint16_t x = 0; x < chartWidth; x++) {
+    // Clear single line here, rather than memset whole canvas - no performance hit and later, this becomes loop color, etc
+    drawFastVLine16Bit(x, 0, chartHeight - 1, 0x00, dynamicCanvasBuffer, chartWidth);
+
     int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
     if (index < 0 || index >= all_long) continue;
     for (uint8_t i = 0; i < 3; i++) {
         uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
         drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
-        //if (dynamicWaveSampleData[i][index] > chartHeight) Serial.printf("Sample value too high: %d at index %d\n", dynamicWaveSampleData[i][index], i);
     }
   }
+  // Draw horizontal mid-canvas line
   int midOffset = chartWidth * chartHeightHalf; 
   memset((dynamicCanvasBuffer + midOffset), 0xFFFF, chartWidth * 2);
-  //Draw mid-canvas line
+  // Draw vertical mid-canvas play head line
   drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, dynamicCanvasBuffer, chartWidth);
   //lv_obj_invalidate(daynamic_waveform_canvas);
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
@@ -534,7 +535,23 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 
   // Draw beat grid
   if (beatgrid && beatgrid->markerCount > 0) {
-    appStats.start(BEAT_GRID_RENDER);
+    drawBeatMarkers(waveformOffset);
+  }
+
+  if (millis() > nextLabelMs) {
+    lv_label_set_text_fmt(time_label, "%ld", play_adr);
+    nextLabelMs = millis() + 90;
+  }
+
+  dynamicBufferReady = true;
+ 
+  // Finish stats
+  appStats.end(DYNAMIC_RENDER);
+}
+
+// TODO these 'wobble' as they scroll, due to float math being rounded. Apply fix
+FASTRUN void drawBeatMarkers(uint32_t waveformOffset) {
+  appStats.start(BEAT_GRID_RENDER);
     // TODO check if these are correct values to use
     uint16_t beatCount = beatgrid->markers[0].beatsUntilNext;
     float firstSample = beatgrid->markers[0].sampleOffset;
@@ -590,7 +607,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
           int16_t beatDigitOffset = beatX - (beatVal < 10 ? DIGIT_WIDTH : DIGIT_WIDTH * 2);
           if (beatDigitOffset > 0) {
             appStats.start(BEAT_DIGIT_RENDER);
-            blit_number_to_canvas(dynamicCanvasBuffer, chartWidth, beatDigitOffset, chartHeight - DIGIT_HEIGHT, beatVal);
+            blit_number_to_canvas(dynamicCanvasBuffer, chartWidth, beatDigitOffset, chartHeight - 1 - DIGIT_HEIGHT, beatVal);
             appStats.end(BEAT_DIGIT_RENDER);
           }
         }
@@ -598,26 +615,16 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
       }
     }
     appStats.end(BEAT_GRID_RENDER);
-  }
-
-  if (millis() > nextLabelMs) {
-    lv_label_set_text_fmt(time_label, "%ld", play_adr);
-    nextLabelMs = millis() + 90;
-  }
-
-  dynamicBufferReady = true;
- 
-  // Finish stats
-  appStats.end(DYNAMIC_RENDER);
 }
 
 // Add these as global/static variables
-static uint16_t oldX = 0xFFFF; // Initialize to invalid position
+static uint16_t oldX = 0; // Initialize to invalid position
 // New function to update position efficiently
 
 FASTRUN void updatePlaybackPosition_new(uint16_t newX)
 {
-  if((oldX != newX) && (newX < (chartWidth - 1) && (end_of_track == 0) && (staticBufferReady == false))) {
+  // If position changed, if past first pixel (border), if inside last pixel (border), still playing and not already waiting to send
+  if((oldX != newX) && (newX > 0) && (newX < (chartWidth - 1) && (end_of_track == 0) && (staticBufferReady == false))) {
     staticBufferReady = true;
     oldStaticBufferX = oldX;
     newStaticBufferX = newX;

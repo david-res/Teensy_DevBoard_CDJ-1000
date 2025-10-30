@@ -298,12 +298,12 @@
 
 
     /*Enable/disable LV_LOG_TRACE in modules that produces a huge number of logs*/
-    #define LV_LOG_TRACE_MEM        0
+    #define LV_LOG_TRACE_MEM        1
     #define LV_LOG_TRACE_TIMER      0
     #define LV_LOG_TRACE_INDEV      0
-    #define LV_LOG_TRACE_DISP_REFR  0
-    #define LV_LOG_TRACE_EVENT      0
-    #define LV_LOG_TRACE_OBJ_CREATE 0
+    #define LV_LOG_TRACE_DISP_REFR  1
+    #define LV_LOG_TRACE_EVENT      1
+    #define LV_LOG_TRACE_OBJ_CREATE 1
     #define LV_LOG_TRACE_LAYOUT     0
     #define LV_LOG_TRACE_ANIM       0
     #define LV_LOG_TRACE_CACHE      0
@@ -858,7 +858,7 @@
 #define LV_USE_SNAPSHOT 0
 
 /*1: Enable system monitor component*/
-#define LV_USE_SYSMON   1
+#define LV_USE_SYSMON   0
 #if LV_USE_SYSMON
     /*Get the idle percentage. E.g. uint32_t my_get_idle(void);*/
     #define LV_SYSMON_GET_IDLE lv_timer_get_idle
