@@ -742,10 +742,11 @@ FASTRUN void draw2PxVerticalStrip(uint16_t* destPtr, uint16_t* srcPtr, uint16_t 
 
 FASTRUN void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
 {
-#if defined(USE_LCD_DISP)
-  //memcpy((uint8_t *)(destPtr + SCREEN_WIDTH * y1 * 2), srcPtr, (x2 * y2 * 2));
   uint16_t width = x2 - x1 + 1;
   uint16_t height = y2 - y1 + 1;
+  
+  //Serial.printf("flush: x1: %ld, x2: %ld, y1: %ld, y2: %ld, width: %ld, height: %ld\n", x1, x2, y1, y2, width, height);
+  #if defined(USE_LCD_DISP)
   memcpy((uint8_t *)(destPtr + SCREEN_WIDTH * y1 * 2), srcPtr, (width * height * 2));
 
 #endif  
@@ -757,7 +758,7 @@ FASTRUN void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, ui
 #if defined(TEENSY41)
   // Note that x2, y2 are width and height, not co-ords
   uint16_t *pBuf = srcPtr;
-  uint16_t *pBufEnd = srcPtr + ((x2 - x1 + 1) * (y2 - y1 + 1)) - 1;
+  uint16_t *pBufEnd = srcPtr + (width * height) - 1;
 
   disp_setAddrWindow(x1, y1, x2, y2);
   disp_pushPixels16bit(pBuf, pBufEnd);

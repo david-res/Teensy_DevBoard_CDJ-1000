@@ -442,8 +442,6 @@ void update_progress_bars(int active_bar) {
 
 FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
 {
-  if (h <= 0) return;
-  if(y+h >= chartHeight ) return;
     uint16_t *p = buffer + y * stride + x;
     for (int i = 0; i < h; ++i)
     {
@@ -454,8 +452,6 @@ FASTRUN void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 
 FASTRUN void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride)
 {
-  if (h <= 0) return;
-  //if(y+h >= overviewChartHeight ) return;
     uint16_t *p = buffer + y * stride + x;
     for (int i = 0; i < h; ++i)
     {
@@ -514,7 +510,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 
   for (uint16_t x = 0; x < chartWidth; x++) {
     // Clear single line here, rather than memset whole canvas - no performance hit and later, this becomes loop color, etc
-    drawFastVLine16Bit(x, 0, chartHeight - 1, 0x00, dynamicCanvasBuffer, chartWidth);
+    drawFastVLine16Bit(x, 0, chartHeight, 0x00, dynamicCanvasBuffer, chartWidth);
 
     int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
     if (index < 0 || index >= all_long) continue;
@@ -527,7 +523,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   int midOffset = chartWidth * chartHeightHalf; 
   memset((dynamicCanvasBuffer + midOffset), 0xFFFF, chartWidth * 2);
   // Draw vertical mid-canvas play head line
-  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight - 1, col_white, dynamicCanvasBuffer, chartWidth);
+  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
   //lv_obj_invalidate(daynamic_waveform_canvas);
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
