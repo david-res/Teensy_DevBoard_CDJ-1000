@@ -519,20 +519,22 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
         drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
     }
   }
+
+  // Draw beat grid
+  if (beatgrid && beatgrid->markerCount > 0) {
+    drawBeatMarkers(waveformOffset);
+  }
+
   // Draw horizontal mid-canvas line
   int midOffset = chartWidth * chartHeightHalf; 
   memset((dynamicCanvasBuffer + midOffset), 0xFFFF, chartWidth * 2);
+
   // Draw vertical mid-canvas play head line
   drawFastVLine16Bit(chartWidth / 2, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
   //lv_obj_invalidate(daynamic_waveform_canvas);
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
-
-  // Draw beat grid
-  if (beatgrid && beatgrid->markerCount > 0) {
-    drawBeatMarkers(waveformOffset);
-  }
 
   if (millis() > nextLabelMs) {
     lv_label_set_text_fmt(time_label, "%ld", play_adr);
@@ -545,72 +547,76 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   appStats.end(DYNAMIC_RENDER);
 }
 
-// TODO these 'wobble' as they scroll, due to float math being rounded. Apply fix
 FASTRUN void drawBeatMarkers(uint32_t waveformOffset) {
   appStats.start(BEAT_GRID_RENDER);
-    // TODO check if these are correct values to use
-    uint16_t beatCount = beatgrid->markers[0].beatsUntilNext;
-    float firstSample = beatgrid->markers[0].sampleOffset;
-    float samplesPerBeat = (beatgrid->markers[beatgrid->markerCount - 1].sampleOffset - firstSample) / beatCount;
-    
-    // waveformOffset is in the center sample on screen, so calculate left most sample index
-    int64_t centerSample = waveformOffset;
-    int64_t leftmostSample = centerSample - ((chartWidth / 2) * baseSampPerWavePoint * DynamicWaveformZOOM);
-    
-    // Beat grid starts 4 beats before the first sample (I think?)
-    float beatZeroSample = firstSample - (4 * samplesPerBeat);
-    
-    // Calculate which beat number would be at the left edge of the screen
-    int16_t firstVisibleBeat = (int16_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
-    if (firstVisibleBeat < -4) firstVisibleBeat = -4;
-    
-    const uint16_t white_190 = 0xBDF7;
-    const uint16_t tickHeight = 10;
-    const uint16_t tickBottomStart = chartHeight - tickHeight - 1;
-    const float sampleToPixel = 1.0 / (float)(baseSampPerWavePoint * DynamicWaveformZOOM);
-    const int16_t halfWidth = chartWidth / 2;
-    
-    // Draw beats starting from the first visible one
-    for (int16_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
-      // Calculate beat position in pixels from center
-      int16_t beatX = (int16_t)(((beatZeroSample + (beat * samplesPerBeat) - centerSample) * sampleToPixel) + halfWidth);
-      
-      // Stop early, if we've gone past the right edge
-      if (beatX >= chartWidth - 1) break;
 
-      // Draw beat line with bounds checking (need room for ±1 pixel)
-      if (beatX >= 1) {
-        uint16_t tickColor = (beat % 4 == 0) ? 0xF800 : white_190;
-        
-        // Draw top tick (3 pixels wide)
-        drawFastVLine16Bit(beatX - 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(beatX, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(beatX + 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-        
-        // Draw middle section (1 pixel wide, dim white)
-        drawFastVLine16Bit(beatX, tickHeight, chartHeight - (2 * tickHeight), white_190, dynamicCanvasBuffer, chartWidth);
-        
-        // Draw bottom tick (3 pixels wide)
-        drawFastVLine16Bit(beatX - 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(beatX, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(beatX + 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+  const uint16_t white_190 = 0xBDF7;
+  const uint16_t tickHeight = 10;
+  const uint16_t tickBottomStart = chartHeight - tickHeight - 1;
+  const int16_t halfWidth = chartWidth / 2;
+  
+  uint16_t beatCount = beatgrid->markers[0].beatsUntilNext;
+  float firstSample = beatgrid->markers[0].sampleOffset;
+  float samplesPerBeat = (beatgrid->markers[beatgrid->markerCount - 1].sampleOffset - firstSample) / beatCount;
+  
+  int64_t leftmostSample = waveformOffset - ((chartWidth / 2) * baseSampPerWavePoint * DynamicWaveformZOOM);
+  
+  float beatZeroSample = firstSample - (4 * samplesPerBeat);
+  
+  int16_t firstVisibleBeat = (int16_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
+  if (firstVisibleBeat < -4) firstVisibleBeat = -4;
+  
+  // Samples per pixel
+  int32_t samplesPerPixel = baseSampPerWavePoint * DynamicWaveformZOOM;
+  
+  // Calculate center sample's absolute pixel position (from sample 0)
+  int64_t centerPixelPos = waveformOffset / samplesPerPixel;
+  
+  for (int16_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
+    // Calculate absolute sample position of this beat
+    float beatSamplePos = beatZeroSample + (beat * samplesPerBeat);
+    
+    // Calculate beat's absolute pixel position (from sample 0)
+    int64_t beatPixelPos = (int64_t)(beatSamplePos + 0.5f) / samplesPerPixel;
+    
+    // Screen position is the difference from center
+    int16_t beatX = halfWidth + (int16_t)(beatPixelPos - centerPixelPos);
+    
+    // Stop if we've gone past the right edge
+    if (beatX >= chartWidth - 1) break;
+    
+    // Draw beat line with bounds checking
+    if (beatX >= 1) {
+      uint16_t tickColor = (beat % 4 == 0) ? 0xF800 : white_190;
+      
+      // Draw top tick (3 pixels wide)
+      drawFastVLine16Bit(beatX - 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      drawFastVLine16Bit(beatX, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      drawFastVLine16Bit(beatX + 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      
+      // Draw middle section
+      drawFastVLine16Bit(beatX, tickHeight, chartHeight - (2 * tickHeight), white_190, dynamicCanvasBuffer, chartWidth);
+      
+      // Draw bottom tick
+      drawFastVLine16Bit(beatX - 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      drawFastVLine16Bit(beatX, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
+      drawFastVLine16Bit(beatX + 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
 
 #if defined(USE_BEAT_NUMBERS)
-        // Draw beat numbers
-        if (beat % 4 == 0) {
-          
-          uint16_t beatVal = beat / 4;
-          int16_t beatDigitOffset = beatX - (beatVal < 10 ? DIGIT_WIDTH : DIGIT_WIDTH * 2);
-          if (beatDigitOffset > 0) {
-            appStats.start(BEAT_DIGIT_RENDER);
-            blit_number_to_canvas(dynamicCanvasBuffer, chartWidth, beatDigitOffset, chartHeight - 1 - DIGIT_HEIGHT, beatVal);
-            appStats.end(BEAT_DIGIT_RENDER);
-          }
+      if (beat % 4 == 0) {
+        uint16_t beatVal = beat / 4;
+        int16_t beatDigitOffset = beatX - (beatVal < 10 ? DIGIT_WIDTH : DIGIT_WIDTH * 2);
+        if (beatDigitOffset > 0) {
+          appStats.start(BEAT_DIGIT_RENDER);
+          blit_number_to_canvas(dynamicCanvasBuffer, chartWidth, beatDigitOffset, chartHeight - 1 - DIGIT_HEIGHT, beatVal);
+          appStats.end(BEAT_DIGIT_RENDER);
         }
-#endif        
       }
+#endif        
     }
-    appStats.end(BEAT_GRID_RENDER);
+  }
+  
+  appStats.end(BEAT_GRID_RENDER);
 }
 
 // Add these as global/static variables
