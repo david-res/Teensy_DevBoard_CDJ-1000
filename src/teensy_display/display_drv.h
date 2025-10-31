@@ -1,9 +1,9 @@
 #ifndef DISPLAY_DRV_H
 #define DISPLAY_DRV_H
 
-#define NT35510
-//#define SSD1963
-//#define USE_TEAR
+//#define NT35510
+#define SSD1963
+#define USE_TEAR
 
 #if defined(NT35510)
 #include <NT35510_t4p_conf.h>
