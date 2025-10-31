@@ -12,7 +12,7 @@ NT35510_t4p tft = NT35510_t4p(TFT_D0, TFT_WR, TFT_DC, TFT_CS, TFT_RST, TFT_RD);
 SSD1963_t4p tft = SSD1963_t4p(TFT_D0, TFT_WR, TFT_DC, TFT_CS, TFT_RST, TFT_RD);
 #endif
 
-FLASHMEM bool disp_init()
+FLASHMEM bool disp_init(uint8_t displayRefreshRate)
 {
     // Slow CPU down for init. SSD1963 is particularly sensitive to this until configured
     beermat_set_arm_clock(250'000'000, 0);
@@ -39,7 +39,7 @@ FLASHMEM bool disp_init()
 #if defined(NT35510)    
     tft.setBitDepth(16);
 #endif    
-    tft.setRefreshRate(60);
+    disp_setRefreshRate(displayRefreshRate);
     disp_setBrightness(80);
 
 #if defined(SSD1963) && defined(USE_TEAR)
@@ -47,6 +47,11 @@ FLASHMEM bool disp_init()
     disp_setTearingScanLine(479);
 #endif
     return true;
+}
+
+FLASHMEM void disp_setRefreshRate(uint8_t refreshHz)
+{
+    tft.setRefreshRate(refreshHz);
 }
 
 FLASHMEM void disp_setBrightness(uint8_t brightness)

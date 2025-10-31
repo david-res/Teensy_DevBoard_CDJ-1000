@@ -362,6 +362,30 @@ void create_bottom_container(void) {
         */
 }
 
+uint8_t findBestRefreshRate(uint16_t samplesPerWavepoint, uint8_t minHz = 30, uint8_t maxHz = 68) {
+  const float sampleRate = 44100.0;
+  float pixelsPerSecond = sampleRate / samplesPerWavepoint;
+  
+  uint8_t bestHz = 60;
+  float bestError = 999.0;
+  
+  // Check each integer Hz value
+  for (uint8_t hz = minHz; hz <= maxHz; hz++) {
+    float pixelsPerFrame = pixelsPerSecond / hz;
+    float error = fabs(pixelsPerFrame - round(pixelsPerFrame));
+    
+    if (error <= bestError) {
+      bestError = error;
+      bestHz = hz;
+    }
+  }
+  
+  float pixelsPerFrame = pixelsPerSecond / bestHz;
+  Serial.printf("Best match: %d Hz -> %.2f pixels/frame (error: %.4f)\n", bestHz, pixelsPerFrame, bestError);
+  
+  return bestHz;
+}
+
 void dj_ui_init(Track * track) {
     // Create main screen
     main_screen = lv_obj_create(NULL);
@@ -377,6 +401,11 @@ void dj_ui_init(Track * track) {
     
     db_load_dynamic_waveform_data(track->track_id, dynamicWaveSampleData, &dynamicWaveformSampleCount, (uint32_t*)&baseSampPerWavePoint);
     
+    // Can conceivably use any baseSampPerWavePoint in WeensyPiDJ and get the best refresh rate, then add a call to display to set :)
+    displayRefreshRate = findBestRefreshRate(baseSampPerWavePoint / 2);
+    //disp_setRefreshRate(displayRefreshRate);
+    
+
     double tempSamplesPerOverviewPoint = 0;
     db_load_overview_waveform_data(track->track_id, overViewWaveSampleData, &overviewSampleCount, &tempSamplesPerOverviewPoint, overviewChartHeight);
     

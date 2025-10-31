@@ -106,6 +106,8 @@ extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
 extern volatile bool dynamicBufferReady;
 
+extern uint8_t displayRefreshRate;
+
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush

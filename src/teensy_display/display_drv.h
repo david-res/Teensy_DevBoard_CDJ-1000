@@ -17,7 +17,8 @@ extern NT35510_t4p tft;
 extern SSD1963_t4p tft;
 #endif
 
-bool disp_init();
+bool disp_init(uint8_t refreshHz);
+void disp_setRefreshRate(uint8_t refreshHz);
 void disp_setBrightness(uint8_t brightness);
 void disp_setAddrWindow(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2);
 void disp_pushPixels16bit(uint16_t * pBuf, uint16_t * pBufEnd);

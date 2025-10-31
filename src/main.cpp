@@ -164,6 +164,8 @@ eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
 #endif // RDI_DEVELOPMENTS_REV3
 #endif // USE_LCD_DISP
 
+uint8_t displayRefreshRate = 60;
+
 //const char* dbName = "Engine Library/Database2/p.db";
 
 const uint16_t lvglBufferHeight = 120;
@@ -652,7 +654,7 @@ void setup()
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
 #endif // USE_LCD_DISP
 #if defined(TEENSY41)
-  if (disp_init() == false) {
+  if (disp_init(displayRefreshRate) == false) {
     errorHalt("Failed to initialize display");
   }
 #endif
