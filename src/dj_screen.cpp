@@ -588,11 +588,11 @@ FASTRUN void drawBeatMarkers(uint32_t waveformOffset) {
   float firstSample = beatgrid->markers[0].sampleOffset;
   float samplesPerBeat = (beatgrid->markers[beatgrid->markerCount - 1].sampleOffset - firstSample) / beatCount;
   
-  int64_t leftmostSample = waveformOffset - ((chartWidth / 2) * baseSampPerWavePoint * DynamicWaveformZOOM);
-  
+  int64_t halfChartSamples = (int64_t)(chartWidth / 2) * (int64_t)baseSampPerWavePoint * (int64_t)DynamicWaveformZOOM;
+  int64_t leftmostSample = waveformOffset - halfChartSamples;
   float beatZeroSample = firstSample - (4 * samplesPerBeat);
   
-  int16_t firstVisibleBeat = (int16_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
+  int32_t firstVisibleBeat = (int32_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
   if (firstVisibleBeat < -4) firstVisibleBeat = -4;
   
   // Samples per pixel
@@ -601,7 +601,7 @@ FASTRUN void drawBeatMarkers(uint32_t waveformOffset) {
   // Calculate center sample's absolute pixel position (from sample 0)
   int64_t centerPixelPos = waveformOffset / samplesPerPixel;
   
-  for (int16_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
+  for (int32_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
     // Calculate absolute sample position of this beat
     float beatSamplePos = beatZeroSample + (beat * samplesPerBeat);
     
