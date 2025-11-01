@@ -4,6 +4,7 @@
 #include "../include/device_defines.h"
 #include "lvgl.h"
 #include "globals.h"
+#include "database/db_manager.h"
 #include "SD.h"
 
 extern lv_obj_t * main_screen;

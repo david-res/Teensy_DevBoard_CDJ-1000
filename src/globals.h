@@ -5,16 +5,42 @@
 #include "stats/app_stats.h"
 #include "i2s_sync.h"
 
-#define LCD_BUFFER_COUNT 2
-#define SDRAM_SPEED 198      // 166, 198, 221
-#define SD_CARD_SPEED 99'000 // 20'000, 33'000, 50'000 (default), 66'000, 99'000, 198'000 (usually doesn't work)
-#define USE_EXTMEM_NOCACHE
-#define USE_STATS
-//#define IRQ_FROM_INT_TIMER
-#define USE_REM_DISP
-#define USE_LCD_DISP
-//#define USE_BEAT_NUMBERS
+///////////////
+// User defines
+///////////////
 
+// Hardware config
+#define LCD_BUFFER_COUNT   2
+#define CPU_SPEED_MHZ    528  // 150, 396, 450, 528, 600, 720, 816
+#define CPU_MILLIVOLTS  1300  // 1150 (Teensy default) - 1575 (overclock max), steps of 25, CAUTION ADVISED HERE
+#define EXTMEM_SPEED     198  // SDRAM - 166, 198, 221, PSRAM - 88, 133, 166, 198, 221
+#define SD_CARD_SPEED 99'000  // 20'000, 33'000, 50'000 (default), 66'000, 99'000, 198'000 (usually doesn't work)
+#define USE_EXTMEM_NOCACHE
+//#define IRQ_FROM_INT_TIMER
+
+// Screen config
+#define USE_LCD_DISP
+//#define USE_REM_DISP
+
+// Feature config
+#define USE_STATS
+#define USE_BEAT_NUMBERS
+
+///////////////////
+// End user defines
+///////////////////
+
+#if defined(TEENSY41)
+#undef USE_LCD_DISP
+#undef USE_EXTMEM_NOCACHE
+#define EXTMEM_NOCACHE EXTMEM
+#define EXTMEM_NOCACHE_PCM EXTMEM
+#define USE_REM_DISP
+#undef CPU_SPEED_MHZ
+#define CPU_SPEED_MHZ 600
+#undef EXTMEM_SPEED
+#define EXTMEM_SPEED 166
+#else
 #if defined(USE_EXTMEM_NOCACHE)
 #define EXTMEM_NOCACHE __attribute__((section(".externalram_nocache")))
 #define EXTMEM_NOCACHE_PCM __attribute__((section(".externalram_nocache_pcm")))
@@ -22,8 +48,9 @@
 #define EXTMEM_NOCACHE EXTMEM
 #define EXTMEM_NOCACHE_PCM EXTMEM
 #endif
+#endif
 
-#if defined(USE_REM_DISP)
+#if defined(USE_REM_DISP) || defined(TEENSY41)
 #undef LCD_BUFFER_COUNT
 #define LCD_BUFFER_COUNT 1
 #endif
@@ -79,6 +106,8 @@ extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
 extern volatile bool dynamicBufferReady;
 
+extern uint8_t displayRefreshRate;
+
 #define SCREEN_WIDTH 800 //1024
 #define SCREEN_HEIGHT 480 //600
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
@@ -110,23 +139,6 @@ extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 /////////////////////////
 
 
-
-
-
-typedef struct {
-    char *trackLength;
-    float bpmAnalyzed;
-    char *filename;
-    char *path;
-    char *title;
-    char *artist;
-    char *fileType;
-    uint16_t track_id;
-    uint8_t star_rating;
-    char *musical_key;
-    double numberOfSamples;
-    double sampleRate;
-} Track;
 
 struct KeyInfo {
     uint8_t numericValue;
@@ -201,23 +213,6 @@ typedef struct {
     uint16_t beatCount;          // Total number of beats
     uint32_t samplesPerPoint;    // Cached for quick conversion
 } GlobalBeatLUT;
-
-
-typedef struct {
-    double sampleOffset;
-    int64_t beatIndex;
-    uint32_t beatsUntilNext;
-    uint32_t unknown;
-} BeatMarker;
-
-typedef struct {
-    double sampleRate;
-    double numSamples;
-    uint8_t hasGrid;
-    BeatMarker *markers;
-    int markerCount;
-    double samplesPerWaveformPoint; // e.g., 420 for 44.1kHz
-} Beatgrid;
 
 
 //////////////////

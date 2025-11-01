@@ -10,11 +10,19 @@
 #include "inflate.h"
 #include "utils/changeSDSpeed.h"
 #include "lv_utils.h"
+#include "clockspeed/beermat_clockspeed.h"
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
 #include <Adafruit_FT6206.h>
 #include "T4_PXP.h"
+#else
+IntervalTimer lcdTimer;
+#endif
+
+#if defined(TEENSY41)
+#include "teensy_display/display_drv.h"
+#include "teensy_display/pin_defines.h"
 #endif
 
 #if defined(USE_REM_DISP)
@@ -41,8 +49,8 @@ extern "C" void startup_middle_hook(void);
 void SAI_IRQHandler(void);
 void copyWaveformsToLCD();
 void advancePosition_rezo();
-void advancePosition_claude();
 void advancePosition_claude_optimized();
+void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2);
 
 #if defined(USE_REM_DISP)
 RemoteDisplay remoteDisplay;
@@ -57,11 +65,17 @@ AppStats appStats = AppStats();
 FsFile perfDB;
 FsFile metaDB;
 
-SDRAM_t4 sdram;
-eLCDIF_t4 lcd;
 i2s_sync audio;
 
+#if !defined(TEENSY41)
+SDRAM_t4 sdram;
+#endif
+#if defined(USE_LCD_DISP)
+eLCDIF_t4 lcd;
+#endif
+
 uint32_t play_count = 0;
+uint32_t targetFrequency = CPU_SPEED_MHZ;
 
 
 // Used in the I2S ISR
@@ -123,7 +137,6 @@ float COEF[8] = {            //////optimal 2x
  uint16_t oldStaticBufferX = 0;
  uint16_t newStaticBufferX = 0;
  uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
- uint16_t * staticDestPtr = NULL;
 
 
 
@@ -151,8 +164,11 @@ eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
 #endif // RDI_DEVELOPMENTS_REV3
 #endif // USE_LCD_DISP
 
+uint8_t displayRefreshRate = 60;
+
 //const char* dbName = "Engine Library/Database2/p.db";
 
+const uint16_t lvglBufferHeight = 120;
 EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
@@ -166,6 +182,19 @@ EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute_
 
 void startup_middle_hook(void)
 {
+  //Check reasonable range for safety
+  if (targetFrequency < 150 || targetFrequency > 816) {
+    targetFrequency = 528;
+  }
+
+  uint32_t cpuMilliVolts = CPU_MILLIVOLTS;
+
+  //Check reasonable range for safety
+  if (cpuMilliVolts < 800 || cpuMilliVolts > 1575) {
+    cpuMilliVolts = 1150;
+  }
+  beermat_set_arm_clock(targetFrequency * 1'000'000, MACRO_EXISTS(TEENSY41) ? 0 : cpuMilliVolts);
+
 #if defined(USE_EXTMEM_NOCACHE)  
   //Disable caching for first 4M of SDRAM
 	SCB_MPU_RBAR = 0x80000000 | (SCB_MPU_RBAR_REGION(11) | SCB_MPU_RBAR_VALID); // 0x80000000 | REGION(11);
@@ -174,13 +203,16 @@ void startup_middle_hook(void)
   // Region 12: Next 8MB nocache (0x80400000 - 0x80BFFFFF) for PCM array
   SCB_MPU_RBAR = 0x80400000 | (SCB_MPU_RBAR_REGION(12) | SCB_MPU_RBAR_VALID);
   SCB_MPU_RASR = SCB_MPU_RASR_TEX(1) | SCB_MPU_RASR_AP(3) | SCB_MPU_RASR_XN | (SCB_MPU_RASR_SIZE(22) | SCB_MPU_RASR_ENABLE); //MEM_NOCACHE | READWRITE | NOEXEC | SIZE_8M;
-
 #endif
 
+#if defined(TEENSY41)  
+  setPSRamSpeed(EXTMEM_SPEED); 
+#else
   // Start SDRAM, 166/198 MHz for pussies, 221 Mhz for real men
-  if (!sdram.begin(32, SDRAM_SPEED, 1)){
-    Serial.printf("SDRAM init at %ldMHz failed\n", SDRAM_SPEED);
+  if (!sdram.begin(32, EXTMEM_SPEED, 1)){
+    Serial.printf("SDRAM init at %ldMHz failed\n", EXTMEM_SPEED);
   }
+#endif  
 }
 
 #if defined(USE_REM_DISP)
@@ -190,29 +222,9 @@ void refreshDisplayCallback()
   area.x1 = 0; area.y1 = 0; area.x2 = SCREEN_WIDTH; area.y2 = SCREEN_HEIGHT;
   lv_obj_invalidate_area(lv_scr_act(), &area);
 }
-
-#if (LVGL_VERSION_MAJOR == 8)
-FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
-{
-  if (remoteDisplay.sendRemoteScreen == true ) {
-    //remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
-  }
-  lv_disp_flush_ready(display);
-}
-#endif
-#if (LVGL_VERSION_MAJOR == 9)
-FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
-{
-  if (remoteDisplay.sendRemoteScreen == true ) {
-    remoteDisplay.sendData(area->x1, area->y1, area->x2, area->y2, (uint8_t *)px_map);
-  }
-  lv_disp_flush_ready(display);
-}
-#endif
-
 #endif // USE_REM_DISP
 
-#if defined(USE_LCD_DISP) || defined(USE_REM_DISP)
+#if defined(USE_LCD_DISP) || defined(USE_REM_DISP) || defined(TEENSY41)
 //Display driver
 #if (LVGL_VERSION_MAJOR == 8)
 static lv_disp_draw_buf_t disp_buf;
@@ -252,9 +264,10 @@ FASTRUN void pxpCallback(){
 }
 
 #else
-#if (LVGL_VERSION_MAJOR == 8) && !defined(USE_REM_DISP)
+#if (LVGL_VERSION_MAJOR == 8) 
 FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t * px_map)
 {
+#if defined(USE_LCD_DISP)
   if (lv_disp_flush_is_last(&disp_drv)){
 #if !defined(USE_EXTMEM_NOCACHE)    
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
@@ -265,11 +278,20 @@ FASTRUN void my_disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_col
   else{
     lv_disp_flush_ready(&disp_drv);
   }
+#endif  
+#if defined(TEENSY41)
+  flushtoScreen(NULL, (uint16_t *)px_map, area->x1, area->y1, area->x2, area->y2);
+  lv_disp_flush_ready(&disp_drv);
+  if (lv_disp_flush_is_last(&disp_drv)) {
+    ps_framePending = true;
+  }
+#endif  
 }
 #endif
-#if (LVGL_VERSION_MAJOR == 9) && !defined(USE_REM_DISP)
+#if (LVGL_VERSION_MAJOR == 9)
 FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t * px_map)
 {
+#if defined(USE_LCD_DISP)  
   if (lv_disp_flush_is_last(disp_drv)){
 #if !defined(USE_EXTMEM_NOCACHE)    
     arm_dcache_flush_delete((uint16_t*)px_map, 800*480*2);
@@ -280,17 +302,38 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
   else{
     lv_disp_flush_ready(disp_drv);
   }
+#endif  
+#if defined(TEENSY41)
+  flushtoScreen(NULL, (uint16_t *)px_map, area->x1, area->y1, area->x2, area->y2);
+  lv_disp_flush_ready(disp_drv);
+  if (lv_disp_flush_is_last(disp_drv)) {
+    ps_framePending = true;
+  }
+#endif   
 }
 #endif
 
 FASTRUN void lcdCallback() {
+
+#if defined(SSD1963) && defined(USE_TEAR)
+  uint8_t pinState = digitalReadFast(TFT_TEAR);
+  if (pinState == 0) {
+    //Falling, end of VNDP, start of display period
+    return;
+  } else {
+    //Rising, end of display period, start of VNDP period
+  }
+#endif  
+
   CrashReport.breadcrumb(3, 1);
 
   appStats.start(ISR_LCD);
   
   lvgl_framePending = true;
   if(ps_framePending == true) {
+#if defined(USE_LCD_DISP)    
     lcd.setNextBufferAddress((uint16_t*)next_px_map);
+#endif    
 #if (LVGL_VERSION_MAJOR == 8)    
     lv_disp_flush_ready(&disp_drv);
 #endif
@@ -324,8 +367,10 @@ void my_print(const char * buf)
 
 lv_indev_t * ts_indev;
 
+#if defined(USE_LCD_DISP)   
 // Touch controller instance
 Adafruit_FT6206 ctp = Adafruit_FT6206();
+#endif
 
 #if (LVGL_VERSION_MAJOR == 8)
 void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
@@ -334,6 +379,7 @@ void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
 void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 #endif
 {
+#if defined(USE_LCD_DISP)   
     // Check if there's a new touch event from interrupt
     TS_Point p = ctp.getPoint();
     if (ctp.touched()) {
@@ -345,6 +391,7 @@ void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
         // Touch released
         data->state = LV_INDEV_STATE_RELEASED;
     }
+#endif    
 #if defined(USE_REM_DISP)    
     if (remoteDisplay.sendRemoteScreen == true) {
         //Handle touch from remote (overrides)
@@ -361,28 +408,17 @@ void errorLogCallback(void *pArg, int iErrCode, const char *zMsg)
   Serial.printf("(%d) %s\n", iErrCode, zMsg);
 }
 
-void checkSQLiteError(sqlite3* in_db, int in_rc)
-{
-  if (in_rc == SQLITE_OK)
-  {
-    Serial.println(">>>> testSQLite - operation - success <<<<");
-  }
-  else
-  {
-    int ext_rc = sqlite3_extended_errcode(in_db);
-    Serial.print(ext_rc);
-    Serial.print(": ");
-    Serial.println(sqlite3_errstr(ext_rc));
-  }
-}
-
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
 
 FLASHMEM void reportAppConfig() {
   Serial.println("\n======================== App Settings ==========================");
   Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
-  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), SDRAM_SPEED);  
+#if defined(TEENSY41)
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   PSRAM_SPEED: " SER_CYAN "%0.2f" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), getPSRamSpeed());  
+#else  
+  Serial.printf("F_BUS_ACTUAL: %s%ld" SER_RESET "MHz   VOLTAGE: " SER_CYAN "%ld" SER_RESET "mV   SDRAM_SPEED: " SER_CYAN "%d" SER_RESET "MHz\n", F_CPU_ACTUAL == 528'000'000 ? SER_CYAN : SER_RED,F_CPU_ACTUAL / 1000000, get_voltage_mv(), EXTMEM_SPEED);  
+#endif
   Serial.printf("SD_CARD_SPEED: " SER_CYAN "%ld" SER_RESET "KHz\n", SD_CARD_SPEED);
   Serial.printf("USE_EXTMEM_NOCACHE: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_EXTMEM_NOCACHE) ? "TRUE" : "FALSE");
   Serial.printf("LCD_BUFFER_COUNT: " SER_CYAN "%d" SER_RESET "\n", LCD_BUFFER_COUNT);
@@ -390,7 +426,7 @@ FLASHMEM void reportAppConfig() {
   Serial.printf("DISPLAY: USE_LCD_DISP: %s%s" SER_RESET "  USE_REM_DISP: %s%s" SER_RESET "\n", MACRO_EXISTS(USE_LCD_DISP) ? SER_CYAN : SER_RED, MACRO_EXISTS(USE_LCD_DISP) ? "TRUE" : "FALSE",
       MACRO_EXISTS(USE_REM_DISP) ? SER_RED : SER_CYAN, MACRO_EXISTS(USE_REM_DISP) ? "TRUE" : "FALSE");
   Serial.printf("USE_STATS: %s%s" SER_RESET "\n",  MACRO_EXISTS(USE_STATS) ? SER_YELLOW : SER_GREEN, MACRO_EXISTS(USE_STATS) ? "TRUE" : "FALSE");
-  Serial.printf("IRQ_GEN: %s%s" SER_RESET "\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S");
+  Serial.printf("IRQ_GEN: %s%s" SER_RESET "   TEENSY41: %s\n", MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? SER_RED : SER_CYAN, MACRO_EXISTS(IRQ_FROM_INT_TIMER) ? "IntervalTimer" : "I2S", MACRO_EXISTS(TEENSY41) ? "TRUE": "FALSE");
   // buffer count, LVGL version
   Serial.println("======================== App Settings ==========================\n");
 }
@@ -420,10 +456,11 @@ void setup()
   Serial.begin (115200);
   while (!Serial) {};
   delay(1000);
-  if(CrashReport){
+
+  if (CrashReport) {
     Serial.print(CrashReport);
   }
-
+ 
   // Report on configuration
   reportAppConfig();
 
@@ -466,7 +503,6 @@ void setup()
 #endif
 
 #if defined(USE_LCD_DISP)
-
   // Init touch screen
   if (ctp.begin(20)) {
     Serial.println("FT5316 touch controller initialized");
@@ -504,36 +540,39 @@ void setup()
 #endif // USE_LCD_DISP
 
   lv_init();
-  #if (LVGL_VERSION_MAJOR == 8)
+#if (LVGL_VERSION_MAJOR == 8)
+#ifdef USE_PXP
+  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
+#else
+  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], SCREEN_WIDTH * (MACRO_EXISTS(TEENSY41) ? lvglBufferHeight : SCREEN_HEIGHT)); 
+#endif
   lv_disp_drv_init(&disp_drv);            /*Basic initialization*/
   disp_drv.draw_buf = &disp_buf;          /*Set an initialized buffer*/
   disp_drv.flush_cb = my_disp_flush;      /*Set a flush callback to draw to the display*/
   disp_drv.hor_res = SCREEN_WIDTH;        /*Set the horizontal resolution in pixels*/
   disp_drv.ver_res = SCREEN_HEIGHT;       /*Set the vertical resolution in pixels*/
-  disp_drv.direct_mode = 1;
+  disp_drv.direct_mode = MACRO_EXISTS(TEENSY41) ? 0 : 1;
   disp_drv.full_refresh = 0;
+  lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
   
 
-    
-  #ifdef USE_PXP
-  lv_disp_draw_buf_init(&disp_buf, lvglBuffer1, lvglBuffer2, 800*480);  
-  #else
-  lv_disp_draw_buf_init(&disp_buf, (void *)lcdBuffer[0], LCD_BUFFER_COUNT == 1 ? NULL : (void *)lcdBuffer[1], SCREEN_WIDTH * SCREEN_HEIGHT);    
-  #endif
-  lv_disp_drv_register(&disp_drv); /*Register the driver and save the created display objects*/
 
   static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init( &indev_drv );
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    //indev_drv.read_cb = touch_glass_input;
-    indev_drv.read_cb = touch_read_cb;
-    lv_indev_drv_register( &indev_drv );
-#endif    
+  lv_indev_drv_init( &indev_drv );
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  //indev_drv.read_cb = touch_glass_input;
+  indev_drv.read_cb = touch_read_cb;
+  lv_indev_drv_register( &indev_drv );
+#endif  // LVGL_VERSION_MAJOR == 8 
 #if (LVGL_VERSION_MAJOR == 9)
   disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
   lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
+#if defined(TEENSY41)
+  lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * lvglBufferHeight * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#endif
+#if defined(USE_LCD_DISP)
   lv_display_set_buffers(disp_drv, lcdBuffer[0], LCD_BUFFER_COUNT == 2 ? lcdBuffer[1] : NULL, SCREEN_WIDTH * SCREEN_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
-
+#endif  
   //Tick callback
   lv_tick_set_cb(millis);
 
@@ -551,9 +590,13 @@ void setup()
 
 #if defined(USE_BEAT_NUMBERS)
   // Create in memory rendered
-  prerender_digit_buffers(&exo2_16, lv_color_white(), lv_color_black());
+  LV_FONT_DECLARE(roboto_regular_14_4bpp)
+  prerender_digit_buffers(&roboto_regular_14_4bpp, lv_color_white(), lv_color_black());
 #endif  
 
+  Serial.println("Initializing Audio");
+  audio.begin(&SAI_IRQHandler);
+  
   /*
   lv_obj_t * btn = lv_btn_create(lv_scr_act());
   lv_obj_set_size(btn, 120, 50);
@@ -566,31 +609,64 @@ void setup()
   */
 
   //readWaveFormBlob();
-  createListScreen();
-  lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
-  //dj_ui_init();
-    
-  /*
-  int resultEnd = T41SQLite::getInstance().end();
 
-  if (resultEnd == SQLITE_OK)
-  {
-    Serial.println("T41SQLite::getInstance().end() succeded!");
+#if defined(RDI_DEVELOPMENTS_DB5)
+  //////////////////////////
+  // Directly start the song
+  //////////////////////////
+  if (db_open() == false) {
+    errorHalt("Failed to initialize database");
   }
-  else
-  {
-    Serial.print("T41SQLite::getInstance().end() failed! result code: ");
-    Serial.println(resultEnd);
-  }
-    */
+
+  int16_t first_id = db_get_first_track_id();
+  Track * track = db_get_track_by_id(first_id);
+  load_dj_screen_with_track(track);
   
-  audio.begin(&SAI_IRQHandler);
+  // Free after use
+  db_free_track(track);
+  //////////////////////////////
+  // End directly start the song
+  //////////////////////////////
+#else  
+  if (db_open() == false) {
+    errorHalt("Failed to initialize database");
+  }
+  
+  int16_t track_count;
+  Track** all_tracks = db_load_all_tracks(&track_count);
+
+  if (all_tracks) {
+      // Use the tracks
+      for (int16_t i = 0; i < track_count; i++) {
+          Serial.printf("Track %d: %s - %s\n", 
+                        all_tracks[i]->track_id,
+                        all_tracks[i]->title,
+                        all_tracks[i]->artist);
+      }
+    createListScreen(all_tracks, track_count);
+  }
+  lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+#endif
 
 #if defined(USE_LCD_DISP)
   // Setup complete, turn on LCD
   analogWrite(BACKLIGHT_PIN, 200);
   lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-#endif  // USE_LCD_DISP
+#endif // USE_LCD_DISP
+#if defined(TEENSY41)
+  if (disp_init(displayRefreshRate) == false) {
+    errorHalt("Failed to initialize display");
+  }
+#endif
+#if !defined(USE_LCD_DISP)
+#if defined(SSD1963) && defined(USE_TEAR)
+  attachInterrupt(digitalPinToInterrupt(TFT_TEAR), lcdCallback, CHANGE);
+#else    
+  lcdTimer.priority(128);
+  lcdTimer.begin(lcdCallback, 17 * 1000); 
+  Serial.printf("Enabled LCD Interval Timer\n"); 
+#endif 
+#endif
 }
 
 uint32_t bytes_read = 0;
@@ -611,17 +687,21 @@ FASTRUN int playFileRead(void *buf, size_t count)
   appStats.start(PLAYFILE_READ);
 
     uint32_t bufAddr = (uint32_t)buf;
+#if defined(TEENSY41)    
+  if (bufAddr < 0x70000000 || bufAddr > 0x71400000) {
+#else
   if (bufAddr < 0x80000000 || bufAddr > 0x81400000) {
+#endif    
     Serial.printf("INVALID BUFFER ADDRESS: 0x%08X\n", bufAddr);
     Serial.flush();
   }
 
-  int32_t bytes_read = 0;
+  size_t bytes_read = 0;
   CrashReport.breadcrumb(1, 2);
   //noInterrupts();
   bytes_read = playFile.read(buf, count);
   if (bytes_read != count) {
-    Serial.printf(SER_RED "File read mismatch: count: %ld, bytes_read: %ld" SER_RESET "\n", count, bytes_read);
+    Serial.printf(SER_YELLOW "File read mismatch: count: %ld, bytes_read: %ld, %s" SER_RESET "\n", count, bytes_read, bytes_read < 0 ? "error" : bytes_read == 0 ? "EOF" : "Last bytes or error?");
   }
   //interrupts();
   CrashReport.breadcrumb(1, 0);  
@@ -631,172 +711,108 @@ FASTRUN int playFileRead(void *buf, size_t count)
   return bytes_read;
 }
 
-FASTRUN void drawVerticalStrip(uint16_t* srcBuffer, uint16_t xPos, uint16_t height, uint16_t* destBuffer, uint16_t srcWidth, uint16_t destWidth)
+FASTRUN void draw2PxVerticalStrip(uint16_t* destPtr, uint16_t* srcPtr, uint16_t x1, uint16_t y1, uint16_t height, uint16_t srcWidth, uint16_t destWidth)
 {
+#if defined(USE_LCD_DISP)
   for (uint16_t y = 0; y < height; y++) {
-    uint16_t destOffset = (y * destWidth) + xPos;
+    uint32_t destOffset = ((y1 + y) * destWidth) + x1;
     uint16_t srcOffset = y * srcWidth;  
-    destBuffer[destOffset] = srcBuffer[srcOffset];
-    destBuffer[destOffset + 1] = srcBuffer[srcOffset + 1];
+    destPtr[destOffset] = srcPtr[srcOffset];
+    destPtr[destOffset + 1] = srcPtr[srcOffset + 1];
   }
+#endif
+#if defined(TEENSY41)
+  disp_setAddrWindow(x1, y1, x1 + 1, y1 + height - 1);
+  for (uint16_t y = 0; y < height; y++) {
+    uint16_t srcOffset = y * srcWidth; 
+    disp_pushPixels16bit(srcPtr + srcOffset, srcPtr + srcOffset + 1);
+  }
+#endif  
+#if defined(USE_REM_DISP)
+  if (remoteDisplay.sendRemoteScreen == true ) {
+    if (srcWidth == 2) {
+        remoteDisplay.sendData(x1, y1, x1 + 1, y1 + height - 1, (uint8_t *)(srcPtr));
+    } else {
+      for (uint16_t y = 0; y < height; y++) {
+        uint16_t srcOffset = y * srcWidth; 
+        remoteDisplay.sendData(x1, y1 + y, x1 + 1, y1 + y + 1, (uint8_t *)(srcPtr + srcOffset));
+      }
+    }
+  }
+#endif
+}
+
+FASTRUN void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
+{
+  uint16_t width = x2 - x1 + 1;
+  uint16_t height = y2 - y1 + 1;
+  
+  //Serial.printf("flush: x1: %ld, x2: %ld, y1: %ld, y2: %ld, width: %ld, height: %ld\n", x1, x2, y1, y2, width, height);
+  #if defined(USE_LCD_DISP)
+  memcpy((uint8_t *)(destPtr + SCREEN_WIDTH * y1 * 2), srcPtr, (width * height * 2));
+
+#endif  
+#if defined(USE_REM_DISP)
+  if (remoteDisplay.sendRemoteScreen == true ) {
+    remoteDisplay.sendData(x1, y1, x2, y2, (uint8_t *)srcPtr);
+  }
+#endif
+#if defined(TEENSY41)
+  // Note that x2, y2 are width and height, not co-ords
+  uint16_t *pBuf = srcPtr;
+  uint16_t *pBufEnd = srcPtr + (width * height) - 1;
+
+  disp_setAddrWindow(x1, y1, x2, y2);
+  disp_pushPixels16bit(pBuf, pBufEnd);
+#endif  
 }
 
 FASTRUN void copyWaveformsToLCD()
 {
-  CrashReport.breadcrumb(4, 1);
-  
   if (dynamicBufferReady == true) {
 
-    CrashReport.breadcrumb(4, 2);
-    
+    // Start time for stats
     appStats.start(DYNAMIC_MEMCPY);
-        
-    // Calculate destination pointer
-    uint32_t offset = (SCREEN_WIDTH * middleContainerPos * 2);
-    uint32_t baseAddr = LCDIF_NEXT_BUF;
-    uint32_t destAddr = baseAddr + offset;
-    uint8_t *destPtr = (uint8_t *)destAddr;
-    
-    // Validate the destination address before using it
-    bool isValid = true;
-    
-    // Check if address is in valid EXTMEM range (your lcdBuffer array)
-    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr=0x%08X, base=0x%08X, offset=%lu, middlePos=%d" SER_RESET "\n", 
-                    destAddr, baseAddr, offset, middleContainerPos);
-      isValid = false;
-    }
-    
-    // Check if it would overflow the LCD buffer
-    uint32_t copySize = (chartWidth * chartHeight * 2);
-    if (destAddr + copySize > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Dynamic copy would overflow: dest=0x%08X, size=%lu" SER_RESET "\n", 
-                    destAddr, copySize);
-      isValid = false;
-    }
-    
-    // Check for the specific crash address
-    if (destAddr == 0x20300000) {
-      Serial.printf(SER_RED "CRITICAL: Calculated exact crash address 0x20300000!" SER_RESET "\n");
-      Serial.printf("  LCDIF_NEXT_BUF=0x%08X, middleContainerPos=%d, SCREEN_WIDTH=%d\n", 
-                    baseAddr, middleContainerPos, SCREEN_WIDTH);
-      isValid = false;
-    }
-    
-    // Only perform copy if address is valid
-    if (isValid) {
-      CrashReport.breadcrumb(4, 4); // Mark actual memcpy
-      memcpy(destPtr, dynamicCanvasBuffer, copySize);
-      CrashReport.breadcrumb(4, 2); // Back to dynamic section
-      
-      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
-      if (LCD_BUFFER_COUNT == 2) {
-        destPtr = (uint8_t *)(LCDIF_CUR_BUF + offset);
-        destAddr = (uint32_t)destPtr;
-        
-        // Validate second buffer too
-        if (destAddr >= 0x80000000 && destAddr <= 0x81400000 && 
-            destAddr + copySize <= 0x81400000) {
-          memcpy(destPtr, dynamicCanvasBuffer, copySize);
-        } else {
-          Serial.printf(SER_RED "ERROR: Invalid dynamic destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
-        }
-      }
-      
-      dynamicBufferReady = false;
 
-    } else {
-      // Skip copy, clear flag to prevent repeated errors
-      dynamicBufferReady = false;
-      Serial.println(SER_RED "Skipped dynamic waveform copy due to invalid address" SER_RESET);
+    uint8_t * destPtr = MACRO_EXISTS(TEENSY41) ? NULL : (uint8_t *)LCDIF_NEXT_BUF;
+    flushtoScreen(destPtr, dynamicCanvasBuffer, 0, middleContainerPos, chartWidth - 1, middleContainerPos + chartHeight - 1);
+
+#if defined(USE_LCD_DISP)    
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use
+    if (LCD_BUFFER_COUNT == 2) {
+      flushtoScreen((uint8_t *)LCDIF_CUR_BUF, dynamicCanvasBuffer, 0, middleContainerPos, chartWidth - 1, middleContainerPos + chartHeight - 1);
     }
+#endif // USE_LCD_DISP
+    dynamicBufferReady = false;
 
     // Finish stats
     appStats.end(DYNAMIC_MEMCPY);
-    appStats.addByteCount(DYNAMIC_MEMCPY, copySize); 
-    
-    CrashReport.breadcrumb(4, 1); // Back to main function
+    appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
   }
 
   if (staticBufferReady == true) {
-    CrashReport.breadcrumb(4, 3);
-    
+
     // Start time for stats
     appStats.start(OVERVIEW_COPY);
-    
-    // Calculate destination pointer for static waveform
-    uint32_t offset = (SCREEN_WIDTH * (bottomContainerPos + 1));
-    uint32_t destAddr = (uint32_t)(lcdBuffer[0] + offset);
-    uint16_t *staticDestPtr = (uint16_t *)destAddr;
-    
-    // Validate the destination address
-    bool isValid = true;
-    
-    // Check if address is in valid EXTMEM range
-    if (destAddr < 0x80000000 || destAddr > 0x81400000) {
-      Serial.printf(SER_RED "ERROR: Invalid static destPtr=0x%08X, offset=%lu, bottomPos=%d" SER_RESET "\n", 
-                    destAddr, offset, bottomContainerPos);
-      isValid = false;
-    }
-    
-    // Check for the specific crash address
-    if (destAddr == 0x20300000 || (destAddr >= 0x20200000 && destAddr <= 0x20400000)) {
-      Serial.printf(SER_RED "CRITICAL: Static pointer in crash range 0x%08X!" SER_RESET "\n", destAddr);
-      Serial.printf("  lcdBuffer[0]=0x%08X, bottomContainerPos=%d, SCREEN_WIDTH=%d\n", 
-                    (uint32_t)lcdBuffer[0], bottomContainerPos, SCREEN_WIDTH);
-      isValid = false;
-    }
-    
-    // Validate array indices
-    if (oldStaticBufferX >= chartWidth || newStaticBufferX >= chartWidth) {
-      Serial.printf(SER_RED "ERROR: Invalid static buffer X positions: old=%d, new=%d, chartWidth=%d" SER_RESET "\n",
-                    oldStaticBufferX, newStaticBufferX, chartWidth);
-      isValid = false;
-    }
-    
-    if (isValid) {
-      CrashReport.breadcrumb(4, 5); // Mark actual drawing
-      
-      // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer
-      drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
-                       overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-      
-      // Draw new marker
-      drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
-                       overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
-      
-      CrashReport.breadcrumb(4, 3); // Back to static section
-      
-      // As this isn't updated per frame, it needs to be done in all LCD buffers in use
-      if (LCD_BUFFER_COUNT == 2) {
-        staticDestPtr = (uint16_t *)(lcdBuffer[1] + offset);
-        destAddr = (uint32_t)staticDestPtr;
-        
-        // Validate second buffer too
-        if (destAddr >= 0x80000000 && destAddr <= 0x81400000) {
-          drawVerticalStrip(overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, 
-                           overviewChartHeight - 1, staticDestPtr, chartWidth, chartWidth);
-          drawVerticalStrip(staticIndicatorBuffer, newStaticBufferX, 
-                           overviewChartHeight - 1, staticDestPtr, 2, chartWidth);
-        } else {
-          Serial.printf(SER_RED "ERROR: Invalid static destPtr (buf2)=0x%08X" SER_RESET "\n", destAddr);
-        }
-      }
 
-      staticBufferReady = false;
-    
-      // Finish stats
-      appStats.end(OVERVIEW_COPY);
-    } else {
-      // Skip copy, clear flag
-      staticBufferReady = false;
-      Serial.println(SER_RED "Skipped static waveform copy due to invalid address" SER_RESET);
+    // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+    // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
+    draw2PxVerticalStrip(lcdBuffer[0], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
+    draw2PxVerticalStrip(lcdBuffer[0], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
+
+#if defined(USE_LCD_DISP) 
+    // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
+    if (LCD_BUFFER_COUNT == 2) {
+      draw2PxVerticalStrip(lcdBuffer[1], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
+      draw2PxVerticalStrip(lcdBuffer[1], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
     }
-    
-    CrashReport.breadcrumb(4, 1); // Back to main function
-  }
+#endif // USE_LCD_DISP
+
+    staticBufferReady = false;
   
-  CrashReport.breadcrumb(4, 0); // Clear breadcrumb
+    // Finish stats
+    appStats.end(OVERVIEW_COPY);
+  }
 }
 
 FASTRUN void loop()
@@ -812,6 +828,12 @@ FASTRUN void loop()
   appStats.start(MAIN_LOOP);
 
   if (lvgl_framePending == true) {
+
+      if (is_playing == true) {
+        copyWaveformsToLCD();
+      }
+      
+
       appStats.start(LV_TIMER_HANDLER);
       lv_timer_handler(); 
       appStats.end(LV_TIMER_HANDLER);
@@ -820,10 +842,6 @@ FASTRUN void loop()
       remoteDisplay.pollRemoteCommand();
 #endif
 
-      if (is_playing == true) {
-        copyWaveformsToLCD();
-      }
-      
       lvgl_framePending = false;
   }
 
@@ -899,10 +917,6 @@ FASTRUN void loop()
 
 FASTRUN void SAI_IRQHandler(void)
 {
-  if (play_adr > (baseSampPerWavePoint * all_long)) {
-    Serial.printf("ERROR: play_adr %lu exceeds track length %lu\n", 
-                  play_adr, baseSampPerWavePoint * all_long);
-}
   CrashReport.breadcrumb(2, 1);
   appStats.start(ISR_I2S);
 
@@ -935,7 +949,7 @@ FASTRUN void advancePosition_rezo() {
 	
 	if (position>9999) {
     step_position = position/10000;				
-    if (reverse==0 && end_of_track==0) {			
+    if (reverse==0 && end_of_track==0) {	
       play_adr+= step_position;	
       if (step_position==1) {
         LR[0][0] = LR[0][1];
@@ -1049,117 +1063,6 @@ FASTRUN void advancePosition_rezo() {
 	//HAL_GPIO_WritePin(GPIOB, LED_TAG_LIST_Pin, GPIO_PIN_RESET);
 }
 
-FASTRUN void advancePosition_claude()
-{
-  position += pitch;
-
-  if (position > 9999) {
-      step_position = position / 10000;
-      
-      if (reverse == 0 && end_of_track == 0) {
-          play_adr += step_position;
-          
-          if (step_position == 1) {
-              LR[0][0] = LR[0][1];
-              LR[0][1] = LR[0][2];
-              LR[0][2] = LR[0][3];
-              LR[1][0] = LR[1][1];
-              LR[1][1] = LR[1][2];
-              LR[1][2] = LR[1][3];
-          } else {
-              uint32_t base_adr = play_adr & 0xFFFFF;
-              uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);  // MASK HERE
-              
-              for (int i = 0; i < 3; i++) {
-                  uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = (bank_offset + ((addr >> 13) - (base_adr >> 13))) & 0x7F;
-                  uint32_t idx = addr & 0x1FFF;
-                  LR[0][i] = PCM[bank][idx][0];
-                  LR[1][i] = PCM[bank][idx][1];
-              }
-          }
-          
-          // Always load last sample
-          sdram_adr = (play_adr + 3) & 0xFFFFF;
-          uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-          LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-          LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-      }
-      else if (reverse == 1 && play_adr >= step_position) {
-          play_adr -= step_position;
-          
-          if (step_position == 1) {
-              LR[0][0] = LR[0][1];
-              LR[0][1] = LR[0][2];
-              LR[0][2] = LR[0][3];
-              LR[1][0] = LR[1][1];
-              LR[1][1] = LR[1][2];
-              LR[1][2] = LR[1][3];
-              
-              sdram_adr = play_adr & 0xFFFFF;
-              uint32_t bank_index = (((sdram_adr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-              LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-              LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-          } else {
-              uint32_t base_adr = play_adr & 0xFFFFF;
-              
-              for (int i = 0; i < 4; i++) {
-                  uint32_t addr = (base_adr + i) & 0xFFFFF;
-                  uint32_t bank = (((addr >> 13) + offset_adress) & 0x7F);  // MASK HERE
-                  uint32_t idx = addr & 0x1FFF;
-                  LR[0][3 - i] = PCM[bank][idx][0];
-                  LR[1][3 - i] = PCM[bank][idx][1];
-              }
-          }
-      }
-      
-      position %= 10000;
-  }
-
-  // Rest of interpolation code unchanged...
-  float T = (position * 0.0001f) - 0.5f;
-
-  for (int ch = 0; ch < 2; ch++) {
-      int32_t even1 = (int32_t)LR[ch][2] + (int32_t)LR[ch][1];
-      int32_t odd1 = (int32_t)LR[ch][2] - (int32_t)LR[ch][1];
-      int32_t even2 = (int32_t)LR[ch][3] + (int32_t)LR[ch][0];
-      int32_t odd2 = (int32_t)LR[ch][3] - (int32_t)LR[ch][0];
-      
-      float c0 = (float)even1 * COEF[0] + (float)even2 * COEF[1];
-      float c1 = (float)odd1 * COEF[2] + (float)odd2 * COEF[3];
-      float c2 = (float)even1 * COEF[4] + (float)even2 * COEF[5];
-      float c3 = (float)odd1 * COEF[6] + (float)odd2 * COEF[7];
-      
-      float result = c0 + T * (c1 + T * (c2 + T * c3));
-      result *= 0.90f;
-      
-      if (result > 2147483647.0f) result = 2147483647.0f;
-      if (result < -2147483648.0f) result = -2147483648.0f;
-      
-      PCM_2[ch] = (int32_t)result;
-  }
-
-  SAMPLE[3] = (uint8_t)((uint32_t)PCM_2[0] >> 8);
-  SAMPLE[2] = (uint8_t)(PCM_2[0] & 0xFF);
-  SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
-  SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
-
-#if defined(RDI_DEVELOPMENTS_REV3)
-  // Lower volume
-  #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
-  int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
-  int32_t scaled_left_32 = (int32_t)raw_left * VOLUME_FACTOR;
-  int16_t scaled_left = (int16_t)(scaled_left_32 >> 15); 
-  int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);
-  int32_t scaled_right_32 = (int32_t)raw_right * VOLUME_FACTOR;
-  int16_t scaled_right = (int16_t)(scaled_right_32 >> 15);
-  SAMPLE[2] = (uint8_t)(scaled_right & 0xFF);    
-  SAMPLE[3] = (uint8_t)((scaled_right >> 8) & 0xFF); 
-  SAMPLE[0] = (uint8_t)(scaled_left & 0xFF);       
-  SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
-#endif  
-}
-
 // Precompute these as constants (outside ISR, during initialization)
 // Original COEF values converted to Q15.16 fixed point (multiply by 65536)
 // Example values - replace with your actual COEF[] converted to fixed point
@@ -1188,72 +1091,72 @@ FASTRUN void advancePosition_claude_optimized()
   
   position += pitch;
 
-    if (position > 9999) {
-        step_position = position / 10000;
-        
-        if (reverse == 0 && end_of_track == 0) {
-            play_adr += step_position;
-            
-            if (step_position == 1) {
-                // Shift samples using 32-bit copies (faster than individual assignments)
-                LR[0][0] = LR[0][1];
-                LR[0][1] = LR[0][2];
-                LR[0][2] = LR[0][3];
-                LR[1][0] = LR[1][1];
-                LR[1][1] = LR[1][2];
-                LR[1][2] = LR[1][3];
-                
-                // Load only the new sample
-                sdram_adr = (play_adr + 3) & 0xFFFFF;
-                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
-                uint32_t idx = sdram_adr & 0x1FFF;
-                LR[0][3] = PCM[bank_index][idx][0];
-                LR[1][3] = PCM[bank_index][idx][1];
-            } else {
-                // Multi-step advance
-                uint32_t base_adr = play_adr & 0xFFFFF;
-                uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);
-                uint32_t base_bank_shift = base_adr >> 13;
-                
-                for (int i = 0; i < 4; i++) {
-                    uint32_t addr = (base_adr + i) & 0xFFFFF;
-                    uint32_t bank = (bank_offset + ((addr >> 13) - base_bank_shift)) & 0x7F;
-                    uint32_t idx = addr & 0x1FFF;
-                    LR[0][i] = PCM[bank][idx][0];
-                    LR[1][i] = PCM[bank][idx][1];
-                }
-            }
-        }
-        else if (reverse == 1 && play_adr >= step_position) {
-            play_adr -= step_position;
-            
-            if (step_position == 1) {
-                // Shift samples
-                LR[0][0] = LR[0][1];
-                LR[0][1] = LR[0][2];
-                LR[0][2] = LR[0][3];
-                LR[1][0] = LR[1][1];
-                LR[1][1] = LR[1][2];
-                LR[1][2] = LR[1][3];
-                
-                sdram_adr = play_adr & 0xFFFFF;
-                uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
-                LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
-                LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
-            } else {
-                uint32_t base_adr = play_adr & 0xFFFFF;
-                
-                for (int i = 0; i < 4; i++) {
-                    uint32_t addr = (base_adr + i) & 0xFFFFF;
-                    uint32_t bank = ((addr >> 13) + offset_adress) & 0x7F;
-                    uint32_t idx = addr & 0x1FFF;
-                    LR[0][3 - i] = PCM[bank][idx][0];
-                    LR[1][3 - i] = PCM[bank][idx][1];
-                }
-            }
-        }
-        
-        position %= 10000;
+  if (position > 9999) {
+      step_position = position / 10000;
+      
+      if (reverse == 0 && end_of_track == 0) {
+          play_adr += step_position;
+           
+          if (step_position == 1) {
+              // Shift samples using 32-bit copies (faster than individual assignments)
+              LR[0][0] = LR[0][1];
+              LR[0][1] = LR[0][2];
+              LR[0][2] = LR[0][3];
+              LR[1][0] = LR[1][1];
+              LR[1][1] = LR[1][2];
+              LR[1][2] = LR[1][3];
+              
+              // Load only the new sample
+              sdram_adr = (play_adr + 3) & 0xFFFFF;
+              uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+              uint32_t idx = sdram_adr & 0x1FFF;
+              LR[0][3] = PCM[bank_index][idx][0];
+              LR[1][3] = PCM[bank_index][idx][1];
+          } else {
+              // Multi-step advance
+              uint32_t base_adr = play_adr & 0xFFFFF;
+              uint32_t bank_offset = (offset_adress & 0x7F) + (base_adr >> 13);
+              uint32_t base_bank_shift = base_adr >> 13;
+              
+              for (int i = 0; i < 4; i++) {
+                  uint32_t addr = (base_adr + i) & 0xFFFFF;
+                  uint32_t bank = (bank_offset + ((addr >> 13) - base_bank_shift)) & 0x7F;
+                  uint32_t idx = addr & 0x1FFF;
+                  LR[0][i] = PCM[bank][idx][0];
+                  LR[1][i] = PCM[bank][idx][1];
+              }
+          }
+      }
+      else if (reverse == 1 && play_adr >= step_position) {
+          play_adr -= step_position;
+          
+          if (step_position == 1) {
+              // Shift samples
+              LR[0][0] = LR[0][1];
+              LR[0][1] = LR[0][2];
+              LR[0][2] = LR[0][3];
+              LR[1][0] = LR[1][1];
+              LR[1][1] = LR[1][2];
+              LR[1][2] = LR[1][3];
+              
+              sdram_adr = play_adr & 0xFFFFF;
+              uint32_t bank_index = ((sdram_adr >> 13) + offset_adress) & 0x7F;
+              LR[0][3] = PCM[bank_index][sdram_adr & 0x1FFF][0];
+              LR[1][3] = PCM[bank_index][sdram_adr & 0x1FFF][1];
+          } else {
+              uint32_t base_adr = play_adr & 0xFFFFF;
+              
+              for (int i = 0; i < 4; i++) {
+                  uint32_t addr = (base_adr + i) & 0xFFFFF;
+                  uint32_t bank = ((addr >> 13) + offset_adress) & 0x7F;
+                  uint32_t idx = addr & 0x1FFF;
+                  LR[0][3 - i] = PCM[bank][idx][0];
+                  LR[1][3 - i] = PCM[bank][idx][1];
+              }
+          }
+      }
+      
+      position %= 10000;
     }
 
     // ===== OPTIMIZED INTERPOLATION USING FIXED-POINT MATH =====
@@ -1307,8 +1210,8 @@ FASTRUN void advancePosition_claude_optimized()
     SAMPLE[1] = (uint8_t)((uint32_t)PCM_2[1] >> 8);
     SAMPLE[0] = (uint8_t)(PCM_2[1] & 0xFF);
 
-#if defined(RDI_DEVELOPMENTS_REV3)
-    #define VOLUME_FACTOR 655 // 98%, 3277 is 90% reduced volume 
+#if defined(RDI_DEVELOPMENTS_REV3) || defined(TEENSY41)
+    #define VOLUME_FACTOR 600 // 98%, 3277 is 90% reduced volume 
     // Optimized volume scaling using int16_t directly
     int16_t raw_left = (int16_t)((SAMPLE[1] << 8) | SAMPLE[0]);
     int16_t raw_right = (int16_t)((SAMPLE[3] << 8) | SAMPLE[2]);

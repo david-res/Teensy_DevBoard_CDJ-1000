@@ -1,14 +1,12 @@
 #ifndef FILE_VIEWER_H
 #define FILE_VIEWER_H
 #include "lvgl.h"
-#include "sqlite3.h"
+#include "database/db_manager.h"
 
 
 extern lv_obj_t * filesScreen;
 
-void createListScreen();
-
-extern sqlite3 * mdb;
-extern sqlite3 * pdb;
+void createListScreen(Track** tracks, int16_t track_count);
+void load_dj_screen_with_track(Track * track);
 
 #endif

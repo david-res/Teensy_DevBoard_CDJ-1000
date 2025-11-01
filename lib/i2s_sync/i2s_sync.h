@@ -19,7 +19,7 @@ class i2s_sync{
 
     private:
     void set_audioClock(int nfact, int32_t nmult, uint32_t ndiv);
-    void config_sai1();
+    void config_sai();
     
 
 };
