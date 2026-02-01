@@ -8,18 +8,19 @@
 #define TFT_BL            0     // 0 - Backlight pin for TFT
 #endif
 
-#define TSR_CS            1     // 1 - XPT2046 SPI touchscreen chip select
-#define TFT_WR            8     // 8 - Write-strobe pin
+#define TFT_BL            0     // 0 - Backlight pin for TFT
+#define TSR_CS           1     // 1 - XPT2046 SPI touchscreen chip select
+#define TFT_WR            36     // 8 - Write-strobe pin
 #define TFT_RD           37     //37 - Read-strobe pin  (-1 to disable, tie to 3.3v)
 #define TFT_CS           -1     //-1 - Chip select pin for TFT display. -1 to disable, tie to ground
-#define TFT_RST           9     // 9 - Hardware reset pin for TFT. Set to -1 for software reset only
-#define TFT_DC           10     //10 - Data/command pin for TFT
+#define TFT_RST           34     // 9 - Hardware reset pin for TFT. Set to -1 for software reset only
+#define TFT_DC           35     //10 - Data/command pin for TFT
 #define SPI_MOSI         11     //11 - Documentation purposes, hardwired SPI MOSI
 #define SPI_MISO         12     //12 - Documentation purposes, hardwired SPI MISO
 #define SPI_SCLK         13     //13 - Documentation purposes, hardwired SPI CLK
 
 #if defined(SSD1963) 
-#define TFT_TEAR         30     //30 - Tearing pin for SSD1963 (BuyDisplay)
+#define TFT_TEAR         33     //30 - Tearing pin for SSD1963 (BuyDisplay)
 #endif
 
 //GPIO6 - bit 2 - pin 01, bit 3 - pin 00, bit 12 - pin 24, bit 13 - pin 25

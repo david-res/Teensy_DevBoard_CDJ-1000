@@ -32,7 +32,7 @@
 #if defined(__SAM3X8E__)
 #define Wire Wire1
 #endif
-//#define Wire Wire1
+#define Wire Wire2
 //#define FT6206_DEBUG
 //#define I2C_DEBUG
 

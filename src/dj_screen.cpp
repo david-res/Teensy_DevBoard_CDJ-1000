@@ -442,6 +442,13 @@ void dj_ui_init(Track * track) {
       playFile.seek(44);
       audio.startI2SInterrupt();
       updateDynamicWaveform(0); 
+      track_play_now = track->track_id;
+      pitch = 0;	
+	    play_enable = 0;
+      play_adr = 0;	
+      slip_play_adr = 0;
+      loop_active = 0;
+      LOOP_OUT = 0;
     }
 }
 

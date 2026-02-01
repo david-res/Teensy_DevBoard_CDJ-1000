@@ -11,6 +11,7 @@
 #include "utils/changeSDSpeed.h"
 #include "lv_utils.h"
 #include "clockspeed/beermat_clockspeed.h"
+#include "PacketsSerial.h"
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
@@ -23,6 +24,7 @@ IntervalTimer lcdTimer;
 #if defined(TEENSY41)
 #include "teensy_display/display_drv.h"
 #include "teensy_display/pin_defines.h"
+#include <Adafruit_FT6206.h>
 #endif
 
 #if defined(USE_REM_DISP)
@@ -56,6 +58,10 @@ void flushtoScreen(uint8_t * destPtr, uint16_t * srcPtr, uint16_t x1, uint16_t y
 RemoteDisplay remoteDisplay;
 #endif  
 
+PacketsSerial OurSerial1WireT4toT4dataExch;
+uint8_t MasterAddress = 0;
+uint8_t SlaveAddress = 1;
+void g_process_serial_rx (uint16_t x);
 //#define USE_PXP
 
 //For stats
@@ -78,6 +84,8 @@ uint32_t play_count = 0;
 uint32_t targetFrequency = CPU_SPEED_MHZ;
 
 
+void DMA2_Stream5_IRQHandler(void);
+
 // Used in the I2S ISR
 volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
 volatile uint32_t position = 0;
@@ -94,6 +102,8 @@ volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
 volatile uint32_t play_adr = 0;                           //Playing adress in samples (44100 per second)
 volatile uint32_t baseSampPerWavePoint = 420;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
 volatile uint32_t all_long = 0;                           //all long of Track in 0.5*frames   150 on 1 sec
+uint16_t track_play_now = 0;                     //Track ID of the track currently playing
+uint8_t	ftp = 0;										/////temp!
 
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
@@ -103,6 +113,18 @@ EXTMEM_NOCACHE_PCM uint16_t PCM[205][8192][2] __attribute__((aligned(32)));
 volatile uint16_t start_adr_valid_data = 0;               //filling adress in memory
 volatile uint16_t end_adr_valid_data = 0;                 //filling adress in memory ()
 volatile uint8_t filling_step = 0;
+
+uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE 
+#define NO_CHANGE	0
+#define NEED_UP		1
+#define NEED_DOWN	2
+uint32_t CUE_ADR = 0;					//REAL CUE adr in frames 150
+
+void CALL_CUE(void);
+
+uint16_t acceleration_UP = 0xFFFF;				//acceleration_UP for vinyl RELEASE/START
+uint16_t acceleration_DOWN = 0xFFFF;			//acceleration_DOWN for vinyl TOUCH/BREAKE
+uint16_t LOG_TABLE[8] = {1200, 128, 72, 40, 18, 15, 9, 3};		
 
 // Others
 bool is_playing = false;
@@ -129,7 +151,7 @@ float COEF[8] = {            //////optimal 2x
  uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
  uint8_t loop_active = 0;                 //loop flag
  uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
- uint8_t lock_control = 1;            
+ uint8_t lock_control = 0;            
 
 
  // For static buffer indicator
@@ -137,6 +159,83 @@ float COEF[8] = {            //////optimal 2x
  uint16_t oldStaticBufferX = 0;
  uint16_t newStaticBufferX = 0;
  uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
+
+
+ /* SPI transfer variables ---------------------------------------------------------*/
+EventResponder spiEventResponder; // EventResponder for async transfer
+#define SPI_CS_PIN 10
+bool SPI_xferInProgress = false;
+uint8_t Tbuffer[32] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
+uint8_t load_animation_enable = 0;
+uint8_t Rbuffer[32]={0};
+uint16_t zi = 0;
+uint8_t a = 0;
+uint8_t dma_cnt = 0;
+uint32_t DD;
+uint16_t potenciometer_tempo;
+uint32_t pitch_center;
+uint32_t previous_adc_pitch;
+uint32_t previous_adc_DD;
+uint16_t previous_potenciometer_tempo = 0;
+uint8_t tempo_need_update = 0;
+uint8_t tempo_range = 1;					//10% default
+uint8_t tempo_range_need_update = 0;
+uint8_t time_mode_need_update = 0;
+uint8_t quantize_mode_need_update = 0;
+uint8_t track_need_load = 0;
+uint8_t inertial_rotation = 0;							//inertial rotation for jog
+uint8_t keep_to_play = 0;
+uint8_t PLAY_BUTTON_pressed = 0;
+uint8_t CUE_BUTTON_pressed = 0;
+uint8_t JOG_MODE_BUTTON_pressed = 0;
+uint8_t TEMPO_RESET_BUTTON_pressed = 0;
+uint8_t TEMPO_RANGE_BUTTON_pressed = 0;
+uint8_t TRACK_NEXT_BUTTON_pressed = 0;
+uint8_t TRACK_PREVIOUS_BUTTON_pressed = 0;
+uint8_t CALL_NEXT_BUTTON_pressed = 0;
+uint8_t CALL_PREVIOUS_BUTTON_pressed = 0;
+uint8_t SEARCH_FF_BUTTON_pressed = 0;
+uint8_t SEARCH_REW_BUTTON_pressed = 0;
+uint8_t TIME_MODE_BUTTON_pressed = 0;
+uint8_t QUANTIZE_BUTTON_pressed = 0;							//TEXT MODE real button
+uint8_t SLIP_MODE_BUTTON_pressed = 0;
+uint8_t REVERSE_SWITCH_pressed = 0;
+uint8_t REALTIME_CUE_BUTTON_pressed = 0;
+uint8_t LOOP_OUT_BUTTON_pressed = 0;	
+uint8_t RELOOP_BUTTON_pressed = 0;
+uint8_t TIM_PLAY_LED = 0;
+uint8_t TIM_CUE_LED = 0;
+uint8_t RED_CIRCLE_CUE_ADR = 1;
+uint8_t TMPSLP = 0;
+uint8_t REALTIME_CUE_LED_BLINK = 16;
+uint8_t TIM_REALTIME_CUE_LED = 1;
+uint8_t LOOP_LEDS_BLINK = 0;
+uint8_t LED_SD_timer = 0;
+uint8_t timer_time = 0;
+uint8_t JOG_PRESSED = 0;
+uint8_t need_call_to_cue = 0;
+uint8_t keep_slip = 0;
+uint8_t slip_mode = 0;
+
+uint8_t CUE_OPERATION = 0;
+#define CUE_NEED_SET 1
+#define CUE_NEED_CALL 2
+#define MEMORY_NEED_NEXT_SET 3
+#define MEMORY_NEED_PREVIOUS_SET 4
+#define MEMORY_NEED_SET_PART2 5
+
+
+#define TRACK_LIST 0
+#define WAVEFORM 1
+uint8_t dSHOW = TRACK_LIST;
+
+uint8_t REMAIN_ENABLE = 0;
+
+void ledTIMER();
+IntervalTimer ledTimer;
+IntervalTimer serialTimer;
+
+void serialTimerISR();
 
 
 
@@ -367,7 +466,7 @@ void my_print(const char * buf)
 
 lv_indev_t * ts_indev;
 
-#if defined(USE_LCD_DISP)   
+#if defined(USE_LCD_DISP)   || defined(TEENSY41) 
 // Touch controller instance
 Adafruit_FT6206 ctp = Adafruit_FT6206();
 #endif
@@ -379,7 +478,7 @@ void touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t*data)
 void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 #endif
 {
-#if defined(USE_LCD_DISP)   
+#if defined(USE_LCD_DISP) || defined(TEENSY41)   
     // Check if there's a new touch event from interrupt
     TS_Point p = ctp.getPoint();
     if (ctp.touched()) {
@@ -502,6 +601,18 @@ void setup()
   remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
 #endif
 
+#if defined(TEENSY41)
+  // Init touch screen
+  if (ctp.begin(20)) {
+    Serial.println("FT5316 touch controller initialized");
+  }
+
+ OurSerial1WireT4toT4dataExch.begin(MasterAddress, &DMA_Serial7, 2000000UL);
+ OurSerial1WireT4toT4dataExch.PacketSerialRole = MASTER;
+ OurSerial1WireT4toT4dataExch.OurSerial->set_process_serial_rx_call(g_process_serial_rx);
+ //ledTimer.begin(ledTIMER, 1000); //1ms
+#endif
+
 #if defined(USE_LCD_DISP)
   // Init touch screen
   if (ctp.begin(20)) {
@@ -602,7 +713,7 @@ void setup()
   lv_obj_set_size(btn, 120, 50);
   lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
 
-  lv_obj_t * label = lv_label_create(btn);
+  lv_obj_t * label = lv_label_create(btn);z=
   lv_label_set_text(label, "Play");
   lv_obj_set_style_text_font(label, &exo2_18, 0);
   lv_obj_center(label);
@@ -667,6 +778,8 @@ void setup()
   Serial.printf("Enabled LCD Interval Timer\n"); 
 #endif 
 #endif
+serialTimer.begin(serialTimerISR, 1000); //1ms
+ledTimer.begin(ledTIMER, 1000); //1ms
 }
 
 uint32_t bytes_read = 0;
@@ -819,10 +932,21 @@ FASTRUN void loop()
 {
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
   uint32_t snapshot_play_adr = play_adr;
+
+
+  if (OurSerial1WireT4toT4dataExch.flag_new_packet_received){
+    OurSerial1WireT4toT4dataExch.mmemcpydw ((uint32_t*)Rbuffer, OurSerial1WireT4toT4dataExch.PZDreceive);
+	//Serial.printf("Received packet: Rbuffer[0]: 0x%08lX Rbuffer[1]: 0x%08lX Rbuffer[2]: 0x%08lX Rbuffer[3]: 0x%08lX\n", Rbuffer[0], Rbuffer[1], Rbuffer[2], Rbuffer[3]);
+    DMA2_Stream5_IRQHandler();
+    OurSerial1WireT4toT4dataExch.flag_new_packet_received = 0;
+    OurSerial1WireT4toT4dataExch.mmemcpydw (OurSerial1WireT4toT4dataExch.PZDsend, (uint32_t*)Tbuffer);
+	
+ }
   
   // Stats
   if (appStats.readyToReport() == true) {
     appStats.report();
+	Serial.printf("potenciometer_tempo: %d\n", potenciometer_tempo);
   }
 
   appStats.start(MAIN_LOOP);
@@ -912,6 +1036,22 @@ FASTRUN void loop()
       audio.startI2SInterrupt();
     } 
   }
+
+  if(loop_active && CUE_ADR<LOOP_OUT && (play_adr/294)>=LOOP_OUT)					//return to cue for loop mode
+		{	
+		CALL_CUE();
+		//offset_adress = 128-mem_offset_adress;	
+		ftp = 1;	
+		}
+	else if(ftp!=0 && ftp<15)
+		{
+		ftp++;	
+		}
+	else if(ftp==15)	
+		{
+		offset_adress = 0;
+		ftp = 0;		
+		}
   appStats.end(MAIN_LOOP);
 }
 
@@ -932,7 +1072,8 @@ FASTRUN void SAI_IRQHandler(void)
   I2S_TDR0_REG = (uint32_t)right << 16;
 #endif
   
-  advancePosition_claude_optimized();
+  //advancePosition_claude_optimized();
+  advancePosition_rezo();
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
@@ -941,66 +1082,93 @@ FASTRUN void SAI_IRQHandler(void)
 }
 
 FASTRUN void advancePosition_rezo() {
-  float c0, c1, c2, c3, r0, r1, r2, r3;
-  uint8_t step_position;
-  uint32_t sdram_adr;
+  static float c0, c1, c2, c3, r0, r1, r2, r3;
+  static uint8_t step_position;
+  static uint32_t sdram_adr =0;
   
-  position+= pitch;
+  if(((play_adr+step_position+3)<=(294*all_long)))						//change all_long extract!
+			{
+			end_of_track = 0;	
+			}
+		else
+			{
+			end_of_track = 1;		
+			}			
+		
+		
+	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+		{
+		slip_position+= pitch_for_slip;
+		slip_play_adr+=slip_position/10000;	
+		slip_position = slip_position%10000;	
+		}
+		
+	position+= pitch;
 	
-	if (position>9999) {
-    step_position = position/10000;				
-    if (reverse==0 && end_of_track==0) {	
-      play_adr+= step_position;	
-      if (step_position==1) {
-        LR[0][0] = LR[0][1];
-        LR[1][0] = LR[1][1];
-        LR[0][1] = LR[0][2];
-        LR[1][1] = LR[1][2];
-        LR[0][2] = LR[0][3];
-        LR[1][2] = LR[1][3];					
-      }	else {
-        sdram_adr = play_adr&0xFFFFF;						
-        LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-        LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-        sdram_adr = (play_adr+1)&0xFFFFF;
-        LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
-        LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-        sdram_adr = (play_adr+2)&0xFFFFF;
-        LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
-        LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-      }
-      sdram_adr = (play_adr+3)&0xFFFFF;	
-      LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-      LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-		}	else if (reverse==1 && play_adr>=step_position)	{
-		  play_adr-= step_position;
-      if (step_position==1) {
-        LR[0][0] = LR[0][1];
-        LR[1][0] = LR[1][1];
-        LR[0][1] = LR[0][2];
-        LR[1][1] = LR[1][2];
-        LR[0][2] = LR[0][3];
-        LR[1][2] = LR[1][3];
-        sdram_adr = (play_adr)&0xFFFFF;	
-        LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-        LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-      } else {
-        sdram_adr = play_adr&0xFFFFF;						
-        LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-        LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-        sdram_adr = (play_adr+1)&0xFFFFF;
-        LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
-        LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
-        sdram_adr = (play_adr+2)&0xFFFFF;
-        LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
-        LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
-        sdram_adr = (play_adr+3)&0xFFFFF;	
-        LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
-        LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];			
-      }	
+	if(position>9999)	
+		{
+		step_position = position/10000;				
+		if(reverse==0 && end_of_track==0)					
+			{			
+			play_adr+= step_position;	
+			if(step_position==1)
+				{
+				LR[0][0] = LR[0][1];
+				LR[1][0] = LR[1][1];
+				LR[0][1] = LR[0][2];
+				LR[1][1] = LR[1][2];
+				LR[0][2] = LR[0][3];
+				LR[1][2] = LR[1][3];					
+				}
+			else
+				{
+				sdram_adr = play_adr&0xFFFFF;						
+				LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+				LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+				sdram_adr = (play_adr+1)&0xFFFFF;
+				LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
+				LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+				sdram_adr = (play_adr+2)&0xFFFFF;
+				LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
+				LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+				}
+			sdram_adr = (play_adr+3)&0xFFFFF;	
+			LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+			LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+			}
+		else if(reverse==1 && play_adr>=step_position)
+			{
+			play_adr-= step_position;
+			if(step_position==1)
+				{
+				LR[0][0] = LR[0][1];
+				LR[1][0] = LR[1][1];
+				LR[0][1] = LR[0][2];
+				LR[1][1] = LR[1][2];
+				LR[0][2] = LR[0][3];
+				LR[1][2] = LR[1][3];
+				sdram_adr = (play_adr)&0xFFFFF;	
+				LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+				LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+				}
+			else
+				{
+				sdram_adr = play_adr&0xFFFFF;						
+				LR[0][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+				LR[1][3] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+				sdram_adr = (play_adr+1)&0xFFFFF;
+				LR[0][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];								
+				LR[1][2] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];		
+				sdram_adr = (play_adr+2)&0xFFFFF;
+				LR[0][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];									
+				LR[1][1] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];
+				sdram_adr = (play_adr+3)&0xFFFFF;	
+				LR[0][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][0];							
+				LR[1][0] = PCM[(sdram_adr>>13)+offset_adress][sdram_adr&0x1FFF][1];			
+				}	
+			}	
+		position = position%10000;	
 		}	
-	  position = position%10000;	
-	}	
 
 	T = position;
 	T = T/10000;
@@ -1088,6 +1256,15 @@ FASTRUN void advancePosition_claude_optimized()
 		end_of_track = 1;	
     return;
 	}
+
+#if defined (TEENSY41)
+if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+		{
+		slip_position+= pitch_for_slip;
+		slip_play_adr+=slip_position/10000;	
+		slip_position = slip_position%10000;	
+		}	
+#endif
   
   position += pitch;
 
@@ -1226,3 +1403,1112 @@ FASTRUN void advancePosition_claude_optimized()
     SAMPLE[1] = (uint8_t)((scaled_left >> 8) & 0xFF); 
 #endif  
 }
+
+
+#if defined (TEENSY41)
+uint8_t calculateCRC(uint8_t* data, size_t length) {
+  uint16_t crc = 0;
+  for (size_t i = 0; i < length; i++) {
+    crc += data[i];
+  }
+  return crc%256;
+}
+
+
+void DMA2_Stream5_IRQHandler(void){	
+
+		uint32_t ptch;
+		uint8_t acc_t;
+		
+		if((Rbuffer[14]&0x1) && PLAY_BUTTON_pressed==0)										///////////PLAY button
+			{
+			if(lock_control==0)	
+				{
+				if(CUE_BUTTON_pressed==0)
+					{
+					if(play_enable)
+						{
+						play_enable = 0;		
+						change_speed = NEED_DOWN;
+						}
+					else
+						{
+						if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+							{	
+							play_adr = slip_play_adr;	
+							change_speed = NO_CHANGE;
+							slip_play_enable = 1;	
+							}
+						else if(CUE_ADR!=(play_adr/294) && (Rbuffer[12]&0x20)==0)			//when playback starts from any adress and touch disable
+							{
+							change_speed = NEED_UP;
+							}
+						else																//when playback starts from CUE adress
+							{
+							change_speed = NO_CHANGE;	
+							}
+						play_enable = 1;	
+						}
+					}
+				else
+					{
+					keep_to_play = 1;	
+					}
+				}
+			PLAY_BUTTON_pressed = 1;	
+			}
+		else if((Rbuffer[14]&0x1)==0 && PLAY_BUTTON_pressed==1)
+			{
+			PLAY_BUTTON_pressed = 0;	
+			}
+		else if((Rbuffer[14]&0x2) && CUE_BUTTON_pressed==0)										///////////CUE button
+			{
+			if(lock_control==0)	
+				{	
+				if(play_enable && ((Rbuffer[12]&0x20)==0))								//return to CUE, when track playing				play && touch disable
+					{
+					pitch = 0;	
+					play_enable = 0;		
+					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+						{	
+						slip_play_enable = 0;		
+						slip_play_adr = 294*CUE_ADR;	
+						}	
+					CUE_OPERATION = CUE_NEED_CALL;			
+					}	
+				else if((play_enable==0) && (CUE_ADR!=(play_adr/294)))			//Set new CUE, when track stopped		
+					{
+					LOOP_OUT = 0;	
+					CUE_OPERATION = CUE_NEED_SET;		
+					}
+				else if((play_enable==0) && (CUE_ADR==(play_adr/294)))				//return to CUE adress, when track stopped
+					{
+					change_speed = NO_CHANGE;	
+					//play_adr = 294*CUE_ADR;		
+					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+						{			
+						slip_play_adr = play_adr;
+						slip_play_enable = 1;	
+						}	
+					play_enable = 1;	
+					}
+				else if(play_enable && ((Rbuffer[12]&0x20)!=0) && (Tbuffer[19]&0x20))				//Set new CUE, when track played and press jog and JOG in Vinyl MODE
+					{
+					LOOP_OUT = 0;	
+					CUE_OPERATION = CUE_NEED_SET;	
+					play_enable = 0;		
+					}
+				}
+			CUE_BUTTON_pressed = 1;	
+			}
+		else if((Rbuffer[14]&0x2)==0 && CUE_BUTTON_pressed==1)
+			{
+			if(lock_control==0)	
+				{	
+				if(keep_to_play==0)		//button play not pressed	
+					{
+					play_enable = 0;
+					pitch = 0;		
+					slip_play_enable = 0;	
+					play_adr = 294*CUE_ADR;	
+					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+						{	
+						slip_play_adr = play_adr;	
+						}
+		//			if((Tbuffer[19]&0x20)==0)   //CDJ mode
+		//				{
+		//				pitch = 0;	
+		//				}
+					}
+				else
+					{
+					keep_to_play = 0;	
+					}
+				offset_adress = 0;																///	   temporary operation		
+				}
+			CUE_BUTTON_pressed = 0;	
+			}
+		else if((Rbuffer[14]&0x4) && REALTIME_CUE_BUTTON_pressed==0)										///////////REALTIME CUE button
+			{
+			if(lock_control==0)	
+				{	
+				if((play_enable==1) && (CUE_ADR!=(play_adr/294)) && loop_active==0)			//Set new CUE, when track play		
+					{
+					LOOP_OUT = 0;	
+					CUE_OPERATION = CUE_NEED_SET;	
+					}
+				}
+			REALTIME_CUE_BUTTON_pressed = 1;	
+			}
+		else if((Rbuffer[14]&0x4)==0 && REALTIME_CUE_BUTTON_pressed==1)
+			{
+			REALTIME_CUE_BUTTON_pressed = 0;	
+			}		
+			
+			
+
+
+		else if((Rbuffer[14]&0x08) && LOOP_OUT_BUTTON_pressed==0)										///////////LOOP OUT button
+			{
+			if(lock_control==0)	
+				{	
+				if(loop_active==0 && CUE_ADR<play_adr/294)
+						{
+						LOOP_OUT = play_adr/294;
+						CUE_OPERATION = CUE_NEED_CALL;	
+						}	
+						loop_active = 1;	
+				}
+			LOOP_OUT_BUTTON_pressed = 1;	
+			}
+		else if((Rbuffer[14]&0x08)==0 && LOOP_OUT_BUTTON_pressed==1)
+			{
+			LOOP_OUT_BUTTON_pressed = 0;	
+			}			
+		else if((Rbuffer[14]&0x10) && RELOOP_BUTTON_pressed==0)										///////////RELOOP button
+			{
+			if(lock_control==0)	
+				{		
+				if(loop_active)
+					{
+					loop_active = 0;			
+					}
+				else if(loop_active==0 && CUE_ADR<LOOP_OUT)
+					{
+					loop_active = 1;	
+					}
+				if(dSHOW==WAVEFORM)							//Redraw cue on dynamic waveform
+					{
+					//forcibly_redraw = 1;
+					}		
+				}	
+			RELOOP_BUTTON_pressed = 1;	
+			}
+		else if((Rbuffer[14]&0x10)==0 && RELOOP_BUTTON_pressed==1)
+			{
+			RELOOP_BUTTON_pressed = 0;	 
+			}		
+			
+			
+		if((Rbuffer[12]&0x2)==0 && REVERSE_SWITCH_pressed==0)					///////////reverse switch position
+			{
+			Tbuffer[17] |= 0x20;					//enable red led reverse
+			if(slip_mode==1)						//SLIP+REVERSE MODE
+				{
+				if(Tbuffer[19]&0x8)			//SLIP MODE ENABLE
+					{
+					keep_slip = 1;	
+					}
+				else
+					{
+					Tbuffer[19] |= 0x8;	
+					if(play_enable)
+						{
+						slip_play_enable = 1;	
+						}
+					slip_play_adr = play_adr; 	
+					}					
+				}
+			REVERSE_SWITCH_pressed = 1;	
+			}
+		else if((Rbuffer[12]&0x2)!=0 && REVERSE_SWITCH_pressed==1)
+			{				
+			if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+				{	
+				play_adr = slip_play_adr;	
+				}		
+			if(keep_slip)
+				{
+				keep_slip = 0;	
+				}
+			else if(slip_mode==1)					//SLIP MODE OFF
+				{
+				slip_play_enable = 0;	
+				Tbuffer[19] &= 0xF7;	
+				}
+			Tbuffer[17] &= 0xDF;					//disable red led reverse
+			REVERSE_SWITCH_pressed = 0;		
+			}	
+			
+			
+			///////////////////////////////////////////////////JOG MECHANICAL PROCESS///////////////////////////////////////////////
+			
+		if(inertial_rotation)
+			{
+			if(((Tbuffer[17]&0x20)==0 && (((Rbuffer[12]&0xC0)==0) || ((Rbuffer[12]&0x40) && pitch<potenciometer_tempo))) || 
+				((Tbuffer[17]&0x20) && (((Rbuffer[12]&0xC0)==0x40) || ((Rbuffer[12]&0x40)==0 && pitch<potenciometer_tempo))))		//if rotation foward and stopped
+				{
+				inertial_rotation = 0;	
+				}
+			}	
+
+			
+		if(play_enable || (need_call_to_cue==3 && ((Rbuffer[12]&0x80)==0 || (Rbuffer[12]&0x20)!=0)))			//touch disable && rotation disable or play enable
+			{
+			need_call_to_cue = 0;	
+			}	
+		else if((Rbuffer[12]&0x20)==0 && need_call_to_cue==2)
+			{
+			pitch = 0;	
+			play_adr = 294*CUE_ADR;	
+			need_call_to_cue = 3;	
+			}
+		
+		
+		if(((Rbuffer[12]&0x20)!=0 || (play_enable==0 && (CUE_ADR!=(play_adr/294))) || inertial_rotation) && (Tbuffer[19]&0x20))				/////////////(touch enable	|| play_enable==0) && Vinyl mode enable
+			{
+			pitch_for_slip = potenciometer_tempo;	
+			
+			if(JOG_PRESSED==0)
+				{
+				if((Rbuffer[12]&0x20)!=0) 			//touch enable
+					{
+					change_speed = NEED_DOWN;	
+					JOG_PRESSED = 2;	
+					}
+				else
+					{
+			
+					JOG_PRESSED = 1;
+					}				
+				}	
+				
+			if(play_enable==0)	
+				{
+				if((Rbuffer[12]&0x20)!=0 && (CUE_ADR==(play_adr/294)) && need_call_to_cue==0)				//touch enable + play_enable==0 + CUE_ADR==(play_adr/294)
+					{
+					need_call_to_cue = 1;	
+					}		
+				//if(need_call_to_cue==1 && (Rbuffer[12]&0x20)==0 && play_enable==0 && (Rbuffer[12]&0x80)==0)			//touch disable		//problem on XDJ-RX2
+				else if(need_call_to_cue==1 && (Rbuffer[12]&0x20)==0)			//touch disable	_/
+					{
+					need_call_to_cue = 2;	
+					}					
+				}
+				
+			if(Rbuffer[12]&0x80)					//rotation detect
+				{
+				if(need_call_to_cue<2)
+					{					
+					change_speed = NO_CHANGE;	
+					
+					if((Rbuffer[12]&0x40) && end_of_track)				//foward rotation + end_of_track
+						{
+						pitch = 0;
+						change_speed = NO_CHANGE;	
+						}
+					else
+						{
+						ptch = (256*Rbuffer[10]+Rbuffer[11]);
+						if(ptch<86)
+							{
+							ptch = 86;	
+							}
+						ptch = 5574324/ptch;
+						pitch = ptch;						
+						}
+					pitch_for_slip = potenciometer_tempo; 	
+					inertial_rotation = 1;						
+					}
+				}		
+			else if(change_speed==NO_CHANGE) 
+				{			
+				pitch = 0;	
+				}
+
+			if(change_speed==NO_CHANGE)
+				{	
+				if(Rbuffer[12]&0x40)				//foward/reverse rotation
+					{
+					reverse = 0;
+					}
+				else
+					{
+					reverse = 1;	
+					}		
+				}
+			else
+				{
+				if(Tbuffer[17]&0x20)					//reverse diode enable
+					{
+					reverse = 1;
+					}
+				else
+					{
+					reverse = 0;	
+					}	
+				}
+			Tbuffer[23] |= 0x20;				//touch enable circle on display		
+			}
+		else if((Rbuffer[12]&0xA0)==0)				///////////////////////touch disable and rotation disable
+			{			
+			pitch_for_slip = potenciometer_tempo;
+			if(JOG_PRESSED>0) //jog PRESSED -> UNPRESSED
+				{
+				if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+					{	
+					change_speed = NO_CHANGE;	
+					}
+				else if(JOG_PRESSED==2 && play_enable)
+					{
+					change_speed = NEED_UP;	
+					}					
+				JOG_PRESSED = 0;	
+				}
+			if(play_enable)
+				{	
+				if(end_of_track && (Tbuffer[17]&0x20)==0)					//stop on end (to remove noise at the end of the track)
+					{
+					change_speed = NO_CHANGE;	
+					pitch = 0;	
+					}	
+				else if(change_speed==NO_CHANGE)
+					{
+					pitch = potenciometer_tempo;	
+					}
+			
+				if(Tbuffer[17]&0x20)					//reverse diode enable
+					{
+					reverse = 1;
+					}
+				else
+					{
+					reverse = 0;	
+					}		
+				}
+			if(Tbuffer[23]&0x20)					//jog UNPRESSED
+				{
+				if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+					{	
+					play_adr = slip_play_adr;	
+					}	
+				Tbuffer[23] &= 0xDF;				//disable touch circle on display
+				}	
+			}
+		else if((Rbuffer[12]&0x80) && play_enable)						//rotation detected			(pitch bend)	
+			{
+			if(end_of_track==0)
+				{
+				ptch = (256*Rbuffer[10]+Rbuffer[11]);
+				if(ptch>139)
+					{
+					ptch = ptch-139;	
+					}
+				else
+					{
+					ptch = 1;	
+					}
+				ptch = 150000/ptch;
+					
+				if(ptch>4225)
+					{
+					ptch = 4225;	
+					}	
+				if((Rbuffer[12]&0x40 && (Tbuffer[17]&0x20)==0) || ((Rbuffer[12]&0x40)==0 && Tbuffer[17]&0x20))		//foward rotation and reverse off OR reverse rotation and reverse on (pitch bend)			
+					{
+					ptch+= potenciometer_tempo;
+					if(ptch>20000)
+						{
+						ptch = 20000;	
+						}
+					pitch = ptch;	
+					}
+				else if(((Rbuffer[12]&0x40)==0 && (Tbuffer[17]&0x20)==0) || (Rbuffer[12]&0x40 && Tbuffer[17]&0x20))	 //reverse rotation and reverse off OR foward rotation and reverse on(pitch bend)	
+					{
+					if(ptch<potenciometer_tempo)
+						{
+						pitch = potenciometer_tempo - ptch;
+						}
+					else
+						{
+						pitch = 0;	
+						}
+					}		
+				}
+			else
+				{
+				pitch = 0;		
+				}			
+				
+			if(Tbuffer[17]&0x20)					//reverse diode enable
+				{
+				reverse = 1;
+				}
+			else
+				{
+				reverse = 0;	
+				}	
+			if(Tbuffer[23]&0x20)					//jog UNPRESSED
+				{
+				if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+					{	
+					play_adr = slip_play_adr;	
+					}	
+				Tbuffer[23] &= 0xDF;				//disable touch circle on display	
+				}	
+			else
+				{
+				pitch_for_slip = pitch;		
+				}
+			}
+			
+
+		if(dma_cnt<5)									////////////////////////////////////////cicle divider////////////////////////////
+			{
+			dma_cnt++;		
+			previous_adc_pitch+= (Rbuffer[7]+256*Rbuffer[6]);	
+			previous_adc_DD+= (Rbuffer[5]+256*Rbuffer[4]);
+			if(dma_cnt==1)
+				{
+				if(lock_control==0)	
+					{	
+					acc_t = Rbuffer[2]>>1;
+					if(acc_t<4)
+						{
+						acceleration_DOWN = LOG_TABLE[0];	
+						}
+					else if(acc_t<12)
+						{
+						acceleration_DOWN = ((LOG_TABLE[1]*(acc_t-3)+LOG_TABLE[0]*(11-acc_t))>>3);	
+						}
+					else if(acc_t<28)
+						{
+						acceleration_DOWN = ((LOG_TABLE[2]*(acc_t-11)+LOG_TABLE[1]*(27-acc_t))>>4);	
+						}
+					else if(acc_t<44)
+						{
+						acceleration_DOWN = ((LOG_TABLE[3]*(acc_t-27)+LOG_TABLE[2]*(43-acc_t))>>4);	
+						}
+					else if(acc_t<76)
+						{
+						acceleration_DOWN = ((LOG_TABLE[4]*(acc_t-43)+LOG_TABLE[3]*(75-acc_t))>>5);	
+						}
+					else if(acc_t<92)
+						{
+						acceleration_DOWN = ((LOG_TABLE[5]*(acc_t-75)+LOG_TABLE[4]*(91-acc_t))>>4);	
+						}
+					else if(acc_t<108)
+						{
+						acceleration_DOWN = ((LOG_TABLE[6]*(acc_t-91)+LOG_TABLE[5]*(107-acc_t))>>4);	
+						}	
+					else if(acc_t<124)
+						{
+						acceleration_DOWN = ((LOG_TABLE[7]*(acc_t-107)+LOG_TABLE[6]*(123-acc_t))>>4);	
+						}			
+					else
+						{
+						acceleration_DOWN = 2;	
+						}
+					}
+				}
+			else if(dma_cnt==2)
+				{
+				if((Rbuffer[16]&0x4) && TRACK_NEXT_BUTTON_pressed==0) 							///////////TRACK NEXT Button
+					{
+					if(lock_control==0)	
+						{	
+						track_need_load = 1;
+						}
+					TRACK_NEXT_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[16]&0x4)==0 && TRACK_NEXT_BUTTON_pressed==1)	
+					{
+					TRACK_NEXT_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[16]&0x2) && TRACK_PREVIOUS_BUTTON_pressed==0) 			///////////TRACK PREVIOUS Button
+					{
+					if(lock_control==0)	
+						{	
+						track_need_load = 2;
+						}
+					TRACK_PREVIOUS_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[16]&0x2)==0 && TRACK_PREVIOUS_BUTTON_pressed==1)	
+					{
+					TRACK_PREVIOUS_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[18]&0x20) && TIME_MODE_BUTTON_pressed==0) 					///////////TIME MODE Button
+					{	
+					TIME_MODE_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[18]&0x20)==0 && TIME_MODE_BUTTON_pressed==1)	
+					{
+					if(REMAIN_ENABLE)
+						{
+						REMAIN_ENABLE = 0;	
+						}
+					else
+						{
+						REMAIN_ENABLE = 1;	
+						}
+					time_mode_need_update = 1;		
+					TIME_MODE_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[18]&0x40) && QUANTIZE_BUTTON_pressed==0) 					///////////QUANTIZE Button
+					{
+					if(QUANTIZE)
+						{
+						QUANTIZE = 0;	
+						}
+					else
+						{
+						QUANTIZE = 1;	
+						}	
+					quantize_mode_need_update = 1;	
+					QUANTIZE_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[18]&0x40)==0 && QUANTIZE_BUTTON_pressed==1)	
+					{		
+					QUANTIZE_BUTTON_pressed = 0;	
+					}
+				}
+			else if(dma_cnt==3)
+				{
+				if(lock_control==0)	
+					{	
+					acc_t = Rbuffer[3]>>1;
+					if(acc_t<4)
+						{
+						acceleration_UP = LOG_TABLE[0];	
+						}
+					else if(acc_t<12)
+						{
+						acceleration_UP = ((LOG_TABLE[1]*(acc_t-3)+LOG_TABLE[0]*(11-acc_t))>>3);	
+						}
+					else if(acc_t<28)
+						{
+						acceleration_UP = ((LOG_TABLE[2]*(acc_t-11)+LOG_TABLE[1]*(27-acc_t))>>4);	
+						}
+					else if(acc_t<44)
+						{
+						acceleration_UP = ((LOG_TABLE[3]*(acc_t-27)+LOG_TABLE[2]*(43-acc_t))>>4);	
+						}
+					else if(acc_t<76)
+						{
+						acceleration_UP = ((LOG_TABLE[4]*(acc_t-43)+LOG_TABLE[3]*(75-acc_t))>>5);	
+						}
+					else if(acc_t<92)
+						{
+						acceleration_UP = ((LOG_TABLE[5]*(acc_t-75)+LOG_TABLE[4]*(91-acc_t))>>4);	
+						}
+					else if(acc_t<108)
+						{
+						acceleration_UP = ((LOG_TABLE[6]*(acc_t-91)+LOG_TABLE[5]*(107-acc_t))>>4);	
+						}	
+					else if(acc_t<124)
+						{
+						acceleration_UP = ((LOG_TABLE[7]*(acc_t-107)+LOG_TABLE[6]*(123-acc_t))>>4);	
+						}			
+					else
+						{
+						acceleration_UP = 2;	
+						}
+					}
+				}	
+			else if(dma_cnt==4)
+				{
+				if((Rbuffer[16]&0x10) && SEARCH_FF_BUTTON_pressed==0) 							///////////SEARCH FF>> Button
+					{
+					if(lock_control==0)	
+						{	
+						if(play_enable & play_adr<(all_long+100000))	
+							{
+							//SEEK_AUDIOFRAME(play_adr+100000);	
+							}
+						else if(play_enable==0 & play_adr/294<(all_long+1))
+							{	
+							play_adr+=294;
+							}
+						}
+					SEARCH_FF_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[16]&0x10)==0 && SEARCH_FF_BUTTON_pressed==1)	
+					{
+					SEARCH_FF_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[16]&0x8) && SEARCH_REW_BUTTON_pressed==0) 							///////////SEARCH <<REW Button
+					{
+					if(lock_control==0)	
+						{		
+						if(play_enable & play_adr>100000)	
+							{
+							//SEEK_AUDIOFRAME(play_adr-100000);
+							}
+						else if(play_enable==0 & play_adr>294)
+							{	
+							play_adr-=294;
+							}
+						}	
+					SEARCH_REW_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[16]&0x8)==0 && SEARCH_REW_BUTTON_pressed==1)	
+					{
+					SEARCH_REW_BUTTON_pressed = 0;	
+					}		
+
+				if(track_play_now!=0)						//////////////////////////////LEDS/////////////////////////
+					{
+					Tbuffer[17] |= 0x2;				//CUE led on
+						
+					if(play_enable)
+						{
+						Tbuffer[17] |= 0x3;				//PLAY and CUE led on	
+						}
+					else											//Play led blink
+						{	
+						if(TIM_PLAY_LED)	
+							{
+							Tbuffer[17] |= 0x1;	
+							}
+						else
+							{
+							Tbuffer[17] &= ~0x01;// &= 0xFE;	
+							}
+						if(TIM_CUE_LED)	
+							{
+							Tbuffer[17] |= 0x2;	
+							}
+						else if(CUE_ADR!=play_adr/294)  
+							{
+							Tbuffer[17] &= 0xFD;	
+							}	
+						}
+						
+					if(loop_active)
+						{
+						if(LOOP_LEDS_BLINK%4==0)	
+							{
+							Tbuffer[17] |= 0x0C;	
+							}
+						else if(LOOP_LEDS_BLINK%4==2)
+							{
+							Tbuffer[17] &= 0xF3;	
+							}
+						}	
+					else
+						{
+						if(TIM_REALTIME_CUE_LED)	
+							{
+							Tbuffer[17] |= 0x0C;		
+							}
+						else
+							{
+							Tbuffer[17] &= 0xFB;	
+							}				
+						}				
+					if(loop_active || CUE_ADR<LOOP_OUT)
+						{
+						Tbuffer[17] |= 0x10;							//RELOOP EXIT LED ON
+						}
+					else
+						{
+						Tbuffer[17] &= 0xEF;							//RELOOP EXIT LED OFF	
+						}
+					}
+				}		
+			else if(dma_cnt==5)
+				{				
+				if((Rbuffer[17]&0x4) && JOG_MODE_BUTTON_pressed==0) 							///////////Jog Mode button
+					{
+					if(Tbuffer[19]&0x20)			//VINYL => CDJ
+						{
+						Tbuffer[19] &= 0xDF;	
+						Tbuffer[19] |= 0x40;
+						Tbuffer[23] &= 0xE7;
+						}	
+					else												//CDJ => VINYL
+						{
+						Tbuffer[19] &= 0xBF;	
+						Tbuffer[19] |= 0x20;
+						Tbuffer[23] |= 0x18;	
+						}
+					JOG_MODE_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[17]&0x4)==0 && JOG_MODE_BUTTON_pressed==1)	
+					{
+					JOG_MODE_BUTTON_pressed = 0;	
+					}
+				else if((Rbuffer[17]&0x20) && TEMPO_RESET_BUTTON_pressed==0) 							///////////TEMPO RESET Button
+					{
+					if(Tbuffer[19]&0x10)				//ON_RESET => OFF_RESET
+						{
+						Tbuffer[19] &= 0xEF;
+						}	
+					else												//OFF_RESET => ON_RESET
+						{
+						Tbuffer[19] |= 0x10;
+						}
+					TEMPO_RESET_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[17]&0x20)==0 && TEMPO_RESET_BUTTON_pressed==1)	
+					{
+					TEMPO_RESET_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[17]&0x8) && TEMPO_RANGE_BUTTON_pressed==0) 							///////////TEMPO RANGE Button
+					{
+					if(tempo_range<3)
+						{
+							Serial.printf("Tempo Range Increase: %d -> ", tempo_range);
+						tempo_range++;
+						}
+					else
+						{
+						tempo_range = 0;	
+						}
+					tempo_range_need_update = 1;	
+					TEMPO_RANGE_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[17]&0x8)==0 && TEMPO_RANGE_BUTTON_pressed==1)	
+					{
+					TEMPO_RANGE_BUTTON_pressed = 0;	
+					}	
+				else if((Rbuffer[18]&0x1) && CALL_NEXT_BUTTON_pressed==0) 							///////////CALL NEXT Button	>
+					{
+					if(lock_control==0)	
+						{		
+						CUE_OPERATION = MEMORY_NEED_NEXT_SET;
+						}
+					CALL_NEXT_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[18]&0x1)==0 && CALL_NEXT_BUTTON_pressed==1)	
+					{
+					CALL_NEXT_BUTTON_pressed = 0;	
+					}
+				else if((Rbuffer[18]&0x2) && CALL_PREVIOUS_BUTTON_pressed==0) 							///////////CALL PREVIOUS Button <
+					{
+					if(lock_control==0)	
+						{		
+						CUE_OPERATION = MEMORY_NEED_PREVIOUS_SET;
+						}
+					CALL_PREVIOUS_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[18]&0x2)==0 && CALL_PREVIOUS_BUTTON_pressed==1)	
+					{
+					CALL_PREVIOUS_BUTTON_pressed = 0;	
+					}
+					
+				if((Rbuffer[17]&0x10) && SLIP_MODE_BUTTON_pressed==0) 							///////////SLIP MODE Button
+					{
+					if(Tbuffer[19]&0x8)					//ON_SLIP_MODE => OFF_SLIP_MODE
+						{
+						if(slip_mode==1 && keep_slip==0 && (Tbuffer[17]&0x20))
+							{
+							keep_slip = 1;				
+							}
+						else
+							{	
+							if(keep_slip)
+								{
+								keep_slip = 0;	
+								}
+							else
+								{
+								slip_play_enable = 0;	
+								Tbuffer[19] &= 0xF7;
+								}									
+							}							
+						}	
+					else												//OFF_SLIP_MODE => ON_SLIP_MODE
+						{	
+						Tbuffer[19] |= 0x8;	
+						if(play_enable)
+							{
+							slip_play_enable = 1;	
+							}
+						slip_play_adr = play_adr; 	
+						}
+					SLIP_MODE_BUTTON_pressed = 1;	
+					}
+				else if((Rbuffer[17]&0x10)==0 && SLIP_MODE_BUTTON_pressed==1)	
+					{
+					SLIP_MODE_BUTTON_pressed = 0;	
+					}		
+				}			
+			}
+		else
+			{
+			dma_cnt = 0;	
+			if(Tbuffer[19]&0x10)				//TEMPRO RESET ON
+				{
+				potenciometer_tempo = 10000;	
+				}
+			else				//////////////////////////////////////////TEMPO CALCULATION
+				{	
+				// Average the 5 samples
+				previous_adc_pitch = previous_adc_pitch/5;  // Now 0-1023 range
+				previous_adc_DD = previous_adc_DD/5;        // Now 0-1023 range
+				
+				// Update center with hysteresis (±16 ADC units = ~1.6% of full scale)
+				if(previous_adc_pitch>(pitch_center+16) || (16+previous_adc_pitch)<pitch_center)
+				{
+					pitch_center = previous_adc_pitch;
+				}
+				
+				// Update DD with hysteresis
+				if(previous_adc_DD>DD+16 || 16+previous_adc_DD<DD)
+				{
+					DD = previous_adc_DD;
+				}
+				
+				// Deadband: ±32 units (~3% of full scale)
+				if(((pitch_center+32)>DD) && ((pitch_center-32)<DD))	
+				{
+					potenciometer_tempo = 10000;	
+				}
+				else if((pitch_center+32)<=DD)  // Fader above center (pitch increase)
+				{
+					int deviation = DD - pitch_center - 32;  // Max ~480 if center is 512
+					
+					if(tempo_range==0)  // 6% range (±600)
+					{
+						potenciometer_tempo = (600 * deviation) / 480;
+						if(potenciometer_tempo>600)
+						{
+							potenciometer_tempo = 600;	
+						}	
+					}	
+					else if(tempo_range==1)  // 10% range (±1000)
+					{
+						potenciometer_tempo = (1000 * deviation) / 480;
+						if(potenciometer_tempo>1000)
+						{
+							potenciometer_tempo = 1000;	
+						}
+					}	
+					else if(tempo_range==2)  // 16% range (±1600)
+					{
+						potenciometer_tempo = (1600 * deviation) / 480;
+						if(potenciometer_tempo>1600)
+						{
+							potenciometer_tempo = 1600;	
+						}
+					}	
+					else  // WIDE range (±10000)
+					{
+						potenciometer_tempo = (10000 * deviation) / 480;
+						if(potenciometer_tempo>10000)
+						{
+							potenciometer_tempo = 10000;	
+						}
+					}	
+					potenciometer_tempo = 10000 + potenciometer_tempo;	
+				}
+				else if((pitch_center-32)>=DD)  // Fader below center (pitch decrease)
+				{
+					int deviation = pitch_center - 32 - DD;  // Max ~480 if center is 512
+					
+					if(tempo_range==0)  // 6%
+					{	
+						potenciometer_tempo = (600 * deviation) / 480;
+						if(potenciometer_tempo>600)
+						{
+							potenciometer_tempo = 600;	
+						}
+					}	
+					else if(tempo_range==1)  // 10%
+					{	
+						potenciometer_tempo = (1000 * deviation) / 480;
+						if(potenciometer_tempo>1000)
+						{
+							potenciometer_tempo = 1000;	
+						}
+					}
+					else if(tempo_range==2)  // 16%
+					{	
+						potenciometer_tempo = (1600 * deviation) / 480;
+						if(potenciometer_tempo>1600)
+						{
+							potenciometer_tempo = 1600;	
+						}
+					}	
+					else  // WIDE
+					{	
+						potenciometer_tempo = (10000 * deviation) / 480;
+						if(potenciometer_tempo>10000)
+						{
+							potenciometer_tempo = 10000;	
+						}
+					}
+					potenciometer_tempo = 10000 - potenciometer_tempo;	
+				}				
+			}
+			if(previous_potenciometer_tempo != potenciometer_tempo)
+				{
+				previous_potenciometer_tempo = potenciometer_tempo;	
+				tempo_need_update = 1;
+				}
+			previous_adc_DD = 0;
+			previous_adc_pitch = 0;	
+			
+		}
+					
+		if(load_animation_enable)
+			{
+			//Tbuffer[21] = 0;					//disable red cue marker
+			//Tbuffer[23] &= 0xDF;			//disable touch circle on display		
+			//Tbuffer[25] = 137;				//command load animation
+			}
+		else if(track_play_now==0)
+			{
+			//Tbuffer[25] = 0;
+			//Tbuffer[21] = 0;	
+			//Tbuffer[17] &= 0xFC;			//PLAY & CUE leds off
+			//Tbuffer[23] &= 0xDF;				//disable touch circle on display		
+			}
+		else
+			{
+			if(TMPSLP)
+				{
+				Tbuffer[21] = RED_CIRCLE_CUE_ADR;		
+				TMPSLP = 0;	
+				}
+			else
+				{
+				if(Tbuffer[19]&0x08)					//SLIP MODE ENABLE
+					{	
+					zi = ((slip_play_adr/588)%135)+1;	
+					Tbuffer[21] = (1000*zi/1589)+1;	
+					}
+				TMPSLP = 1;	
+				}	
+			zi = ((play_adr/588)%135)+1;		
+			Tbuffer[25] = zi;
+			}
+}	
+
+	
+
+
+void ledTIMER()
+	{	
+	if(change_speed==NEED_UP)
+		{
+		if(end_of_track)
+			{
+			change_speed = NO_CHANGE;
+			pitch = 0;			
+			}
+		else
+			{
+			if(pitch<potenciometer_tempo-acceleration_UP)
+				{
+				pitch+=acceleration_UP;	
+				}
+			else
+				{
+				change_speed = NO_CHANGE;
+				pitch = potenciometer_tempo;	
+				}		
+			}
+		}
+	else if(change_speed==NEED_DOWN)
+		{
+		if(end_of_track)
+			{
+			change_speed = NO_CHANGE;
+			pitch = 0;			
+			}
+		else	
+			{
+			if(pitch>acceleration_DOWN)
+				{
+				pitch-=acceleration_DOWN;	
+				}
+			else
+				{
+				change_speed = NO_CHANGE;
+				pitch = 0;	
+				}		
+			}
+		}
+				
+	if(timer_time<124)
+		{
+		timer_time++;	
+		}
+	else
+		{
+		timer_time = 0;
+				
+		if(REALTIME_CUE_LED_BLINK<16)
+			{
+			if(REALTIME_CUE_LED_BLINK%4==0)
+				{
+				TIM_REALTIME_CUE_LED = 0;
+				}
+			else if(REALTIME_CUE_LED_BLINK%4==2)
+				{
+				TIM_REALTIME_CUE_LED = 1;
+				}
+			REALTIME_CUE_LED_BLINK++;	
+			}
+			
+		LOOP_LEDS_BLINK++;					//loop leds	
+		
+	
+ if(LED_SD_timer<7)
+			{
+			LED_SD_timer++;		
+			if(LED_SD_timer==4)
+				{
+				TIM_PLAY_LED = 1;
+				TIM_CUE_LED = 0;		
+				}
+			else if(LED_SD_timer==2 || LED_SD_timer==6)
+				{
+				TIM_CUE_LED = 1;					
+				}	
+			}
+		else
+			{
+			if(track_play_now==0)
+				{
+				TIM_PLAY_LED = 0;	
+				}
+			else
+				{
+				TIM_PLAY_LED = 0;	
+				TIM_CUE_LED = 0;	
+				}
+			LED_SD_timer = 0;	
+			}
+		}
+}
+////////////////////////////////
+
+
+/////////////////////////////////////////////	
+//CAL CUE,seek audio frame
+//
+//
+//	
+void CALL_CUE(void)
+	{
+	uint32_t seek_adr = 294*CUE_ADR;
+	seek_adr &= 0xFFFFE000;	
+	if(playFile.seek(((seek_adr<<2)+44)))
+		{
+		end_adr_valid_data = (seek_adr>>13);
+		start_adr_valid_data = end_adr_valid_data; 	
+		play_adr = 294*CUE_ADR;		
+		if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+			{	
+			slip_play_adr = play_adr;	
+			}			
+		}
+	offset_adress = 128-mem_offset_adress;	
+	}
+	
+	
+
+void g_process_serial_rx (uint16_t x)
+{
+    OurSerial1WireT4toT4dataExch.process_serial_rx(x);
+}
+
+void serialTimerISR()
+{
+	OurSerial1WireT4toT4dataExch.go_send_PZDsendBuffer (MasterAddress, SlaveAddress);
+}
+
+#endif

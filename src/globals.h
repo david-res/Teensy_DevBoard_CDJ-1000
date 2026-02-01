@@ -19,7 +19,7 @@
 //#define IRQ_FROM_INT_TIMER
 
 // Screen config
-#define USE_LCD_DISP
+#define USE_LCD_DISP 1
 //#define USE_REM_DISP
 
 // Feature config
@@ -31,11 +31,11 @@
 ///////////////////
 
 #if defined(TEENSY41)
-#undef USE_LCD_DISP
+#undef USE_LCD_DISP 
 #undef USE_EXTMEM_NOCACHE
 #define EXTMEM_NOCACHE EXTMEM
 #define EXTMEM_NOCACHE_PCM EXTMEM
-#define USE_REM_DISP
+//#define USE_REM_DISP
 #undef CPU_SPEED_MHZ
 #define CPU_SPEED_MHZ 600
 #undef EXTMEM_SPEED
@@ -63,10 +63,11 @@ extern AppStats appStats;
 extern i2s_sync audio;
 
 // Used in the I2S ISR
-//extern volatile uint16_t pitch;
-//extern volatile uint32_t position;
-//extern volatile uint8_t reverse;
+extern volatile uint16_t pitch;
+extern volatile uint32_t position;
+extern volatile uint8_t reverse;
 extern volatile uint8_t end_of_track;
+extern uint16_t track_play_now;
 //extern volatile uint32_t step_position
 //extern volatile uint32_t sdram_adr
 //extern volatile uint8_t offset_adress;
@@ -134,6 +135,8 @@ extern uint16_t oldStaticBufferX;
 extern uint16_t newStaticBufferX;
 extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 
+
+		
 /////////////////////////
 //End user defined params
 /////////////////////////
