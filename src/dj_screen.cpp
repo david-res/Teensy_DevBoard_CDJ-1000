@@ -4,12 +4,12 @@
 #include "globals.h"
 #include "Arduino.h"
 #include "lv_utils.h"
-#include "database/db_manager.h"
 #include "SD.h"
 #include "file_viewer.h"
 #include "T4_PXP.h"
 #include <SDRAM_t4.h>
 #include "DMAChannel.h"
+#include "rekordbox_anlz_api.h"
 #if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
 #endif
@@ -94,11 +94,10 @@ bool useOpa = false;
 uint64_t overviewSampleCount = 0;
 uint64_t highResSampleCount = 0;
 
-Beatgrid * beatgrid;
 
 
 const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
-const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0;
+const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0; //Amber 
 const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
@@ -110,7 +109,7 @@ uint64_t dynamicWaveformSampleCount = 0;
 double samplesPerDaynamicPoint = 0;
 
 //To store repeating group data of samples for the overview waveform
-uint8_t * overViewWaveSampleData[3];
+uint8_t overViewWaveSampleData[3][800];
 DMAMEM uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 uint64_t overviewWaveformSampleCount = 0;
 double samplesPerOverviewPoint = 0;
@@ -133,14 +132,32 @@ FLASHMEM void drawOverviewCanvas()
   memset(overviewCanvasBuffer, 0, chartWidth * overviewChartHeight * 2);
 
   for (uint16_t x = 0; x < chartWidth; x++) {
-    for (uint8_t i = 0; i < 3; i++) {
-      drawFastVLine16BitOverview(x, overviewChartHeight - (overViewWaveSampleData[i][x]), (overViewWaveSampleData[i][x]), waveformColors[i], overviewCanvasBuffer, chartWidth);
-      //Serial.printf("drawing x=%d, height=%d\n", x, (overViewWaveSampleData[i][x]));
-    }
+    // Stack from bottom to top: MID (white) → HIGH (orange) → LOW (blue)
+    // overViewWaveSampleData[0] = MID
+    // overViewWaveSampleData[1] = HIGH  
+    // overViewWaveSampleData[2] = LOW
+    
+    uint8_t mid_height = overViewWaveSampleData[0][x];
+    uint8_t high_height = overViewWaveSampleData[1][x];
+    uint8_t low_height = overViewWaveSampleData[2][x];
+    
+    // Calculate cumulative heights for stacking
+    uint8_t base = 0;  // Start from bottom
+    
+    // Draw MID (white) at bottom
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_height), mid_height, waveformColors[0], overviewCanvasBuffer, chartWidth);
+    base += mid_height;
+    
+    // Draw HIGH (orange) on top of MID
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_height), high_height, waveformColors[1], overviewCanvasBuffer, chartWidth);
+    base += high_height;
+    
+    // Draw LOW (blue) on top of HIGH
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_height), low_height, waveformColors[2], overviewCanvasBuffer, chartWidth);
   }
+  
   //Invalidate canvas, as this is updated done rarely
   lv_obj_invalidate(static_waveform_canvas);
- 
 }
 
 void create_top_container(Track * track) {
@@ -177,7 +194,7 @@ void create_top_container(Track * track) {
 
     // BPM label (right side)
     bpm_label = lv_label_create(title_bpm_container);
-    lv_label_set_text_fmt(bpm_label,"%.1f", track->bpmAnalyzed);
+    lv_label_set_text_fmt(bpm_label,"%.1f", track->bpm);
     lv_obj_set_style_text_color(bpm_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bpm_label, &exo2_32, 0);
     lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
@@ -186,10 +203,10 @@ void create_top_container(Track * track) {
 
     // Key label (below BPM)
     key_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(key_label, (char*)getKey(atoi(track->musical_key)));
+    lv_label_set_text(key_label, (char*)getKey(atoi(rbParser.getKeyName(track->key_id))));
     lv_obj_set_style_text_font(key_label, &exo2_20, 0);
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
-    int key_numeric = atoi(track->musical_key); 
+    int key_numeric = atoi(rbParser.getKeyName(track->key_id)); 
     lv_obj_set_style_text_color(key_label, getKeyColor(key_numeric), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -265,7 +282,7 @@ void create_top_container(Track * track) {
     // Additional tempo info labels can be added here
 }
 
-void create_middle_container(void) {
+void create_middle_container(Track * track) {
     middle_container = lv_obj_create(main_screen);
     lv_obj_set_size(middle_container, chartWidth, middleContainerPos);
     lv_obj_set_pos(middle_container, 0, middleContainerPos);
@@ -291,7 +308,7 @@ void create_middle_container(void) {
     lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, chartWidth, chartHeight, LV_IMG_CF_TRUE_COLOR);
 }
 
-void create_bottom_container(void) {
+void create_bottom_container(Track * track) {
     bottom_container = lv_obj_create(main_screen);
     lv_obj_set_size(bottom_container, chartWidth, 158);
     lv_obj_set_pos(bottom_container, 0, bottomContainerPos);
@@ -322,7 +339,21 @@ void create_bottom_container(void) {
     lv_obj_center(static_waveform_canvas);
     lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
-    
+
+  Serial.printf("path to anlz: %s\n", track->anlz_ex2_path);
+  String correctedPath = String(track->anlz_ex2_path);
+if (correctedPath.startsWith("Y/")) {
+    correctedPath = correctedPath.substring(2);  // Remove "Y/"
+}
+
+uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleData);
+    //uint16_t err = extractPreviewWaveform(track->anlz_ex2_path, overViewWaveSampleData);
+    if (err == ANLZ_OK) {
+        Serial.println("Preview loaded!");
+    }
+    else {
+        Serial.printf("Error loading preview waveform: %d\n", err);
+    }
     
     //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
     drawOverviewCanvas();
@@ -399,24 +430,20 @@ void dj_ui_init(Track * track) {
     lv_obj_set_style_radius(main_screen, 0, LV_PART_MAIN);
     lv_obj_clear_flag(main_screen, LV_OBJ_FLAG_SCROLLABLE);
     
-    db_load_dynamic_waveform_data(track->track_id, dynamicWaveSampleData, &dynamicWaveformSampleCount, (uint32_t*)&baseSampPerWavePoint);
+    //(track->track_id, dynamicWaveSampleData, &dynamicWaveformSampleCount, (uint32_t*)&baseSampPerWavePoint);
     
     // Can conceivably use any baseSampPerWavePoint in WeensyPiDJ and get the best refresh rate, then add a call to display to set :)
-    displayRefreshRate = findBestRefreshRate(baseSampPerWavePoint / 2);
+    //displayRefreshRate = findBestRefreshRate(baseSampPerWavePoint / 2);
     //disp_setRefreshRate(displayRefreshRate);
+
     
 
-    double tempSamplesPerOverviewPoint = 0;
-    db_load_overview_waveform_data(track->track_id, overViewWaveSampleData, &overviewSampleCount, &tempSamplesPerOverviewPoint, overviewChartHeight);
-    
-    beatgrid = (Beatgrid*)malloc(sizeof(Beatgrid));
-    
-    db_load_beatgrid_data(track->track_id, beatgrid, baseSampPerWavePoint, (uint32_t*)&all_long);
   
     // Create all containers
-    create_top_container(track);
-    create_middle_container();
-    create_bottom_container();
+    //create_top_container(track);
+    //create_middle_container(track);
+    Serial.println("Creating bottom container...");
+    create_bottom_container(track);  
 
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
@@ -424,25 +451,25 @@ void dj_ui_init(Track * track) {
     char full_path[256];  // Adjust size as needed
 
     // Combine folder + filename
-    snprintf(full_path, sizeof(full_path), "mixxx-export/%s", track->filename);
+
 
 
      //const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
 #if defined(RDI_DEVELOPMENTS_REV3)
     playFile.open(full_path, FILE_READ);
 #else
-    playFile = SD.open(full_path, FILE_READ);
+    //playFile = SD.open(full_path, FILE_READ);
 #endif
     if (!playFile) {
       Serial.printf("Failed trying to open file: %s\n", full_path);
     }
     else{
       Serial.printf("Opened audio file: %s\n", full_path);
-      is_playing = true;
-      playFile.seek(44);
-      audio.startI2SInterrupt();
-      updateDynamicWaveform(0); 
-      track_play_now = track->track_id;
+      //is_playing = true;
+      //playFile.seek(44);
+      //audio.startI2SInterrupt();
+      //updateDynamicWaveform(0); 
+      track_play_now = track->id;
       pitch = 0;	
 	    play_enable = 0;
       play_adr = 0;	
@@ -556,10 +583,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     }
   }
 
-  // Draw beat grid
-  if (beatgrid && beatgrid->markerCount > 0) {
-    drawBeatMarkers(waveformOffset);
-  }
+  
 
   // Draw horizontal mid-canvas line
   int midOffset = chartWidth * chartHeightHalf; 
@@ -581,78 +605,6 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
  
   // Finish stats
   appStats.end(DYNAMIC_RENDER);
-}
-
-FASTRUN void drawBeatMarkers(uint32_t waveformOffset) {
-  appStats.start(BEAT_GRID_RENDER);
-
-  const uint16_t white_190 = 0xBDF7;
-  const uint16_t tickHeight = 10;
-  const uint16_t tickBottomStart = chartHeight - tickHeight - 1;
-  const int16_t halfWidth = chartWidth / 2;
-  
-  uint16_t beatCount = beatgrid->markers[0].beatsUntilNext;
-  float firstSample = beatgrid->markers[0].sampleOffset;
-  float samplesPerBeat = (beatgrid->markers[beatgrid->markerCount - 1].sampleOffset - firstSample) / beatCount;
-  
-  int64_t halfChartSamples = (int64_t)(chartWidth / 2) * (int64_t)baseSampPerWavePoint * (int64_t)DynamicWaveformZOOM;
-  int64_t leftmostSample = waveformOffset - halfChartSamples;
-  float beatZeroSample = firstSample - (4 * samplesPerBeat);
-  
-  int32_t firstVisibleBeat = (int32_t)((leftmostSample - beatZeroSample) / samplesPerBeat);
-  if (firstVisibleBeat < -4) firstVisibleBeat = -4;
-  
-  // Samples per pixel
-  int32_t samplesPerPixel = baseSampPerWavePoint * DynamicWaveformZOOM;
-  
-  // Calculate center sample's absolute pixel position (from sample 0)
-  int64_t centerPixelPos = waveformOffset / samplesPerPixel;
-  
-  for (int32_t beat = firstVisibleBeat; beat <= beatCount + 4; beat++) {
-    // Calculate absolute sample position of this beat
-    float beatSamplePos = beatZeroSample + (beat * samplesPerBeat);
-    
-    // Calculate beat's absolute pixel position (from sample 0)
-    int64_t beatPixelPos = (int64_t)(beatSamplePos + 0.5f) / samplesPerPixel;
-    
-    // Screen position is the difference from center
-    int16_t beatX = halfWidth + (int16_t)(beatPixelPos - centerPixelPos);
-    
-    // Stop if we've gone past the right edge
-    if (beatX >= chartWidth - 1) break;
-    
-    // Draw beat line with bounds checking
-    if (beatX >= 1) {
-      uint16_t tickColor = (beat % 4 == 0) ? 0xF800 : white_190;
-      
-      // Draw top tick (3 pixels wide)
-      drawFastVLine16Bit(beatX - 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-      drawFastVLine16Bit(beatX, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-      drawFastVLine16Bit(beatX + 1, 0, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-      
-      // Draw middle section
-      drawFastVLine16Bit(beatX, tickHeight, chartHeight - (2 * tickHeight), white_190, dynamicCanvasBuffer, chartWidth);
-      
-      // Draw bottom tick
-      drawFastVLine16Bit(beatX - 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-      drawFastVLine16Bit(beatX, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-      drawFastVLine16Bit(beatX + 1, tickBottomStart, tickHeight, tickColor, dynamicCanvasBuffer, chartWidth);
-
-#if defined(USE_BEAT_NUMBERS)
-      if (beat % 4 == 0) {
-        uint16_t beatVal = beat / 4;
-        int16_t beatDigitOffset = beatX - (beatVal < 10 ? DIGIT_WIDTH : DIGIT_WIDTH * 2);
-        if (beatDigitOffset > 0) {
-          appStats.start(BEAT_DIGIT_RENDER);
-          blit_number_to_canvas(dynamicCanvasBuffer, chartWidth, beatDigitOffset, chartHeight - 1 - DIGIT_HEIGHT, beatVal);
-          appStats.end(BEAT_DIGIT_RENDER);
-        }
-      }
-#endif        
-    }
-  }
-  
-  appStats.end(BEAT_GRID_RENDER);
 }
 
 // Add these as global/static variables

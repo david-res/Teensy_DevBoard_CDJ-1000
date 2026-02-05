@@ -1,11 +1,11 @@
 #include "lvgl.h"
 #include "file_viewer.h"
-#include "database/db_manager.h"
 #include "SD.h"
 //#include "waveform.h"
 #include "dj_screen.h"
 #include "globals.h"
 #include "lv_utils.h"
+//#include "RekordboxParser.h"
 
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
@@ -96,6 +96,7 @@ FLASHMEM void createListScreen(Track** tracks, int16_t track_count)
     lv_obj_set_style_text_color(lbl_bpm_header, COLOR_GRAY, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(lbl_bpm_header, &exo2_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+
     // Load initial batch of tracks from array
     if (tracks != nullptr && track_count > 0) {
         Serial.printf("Loading initial tracks into list screen (total: %d)\n", track_count);
@@ -105,6 +106,7 @@ FLASHMEM void createListScreen(Track** tracks, int16_t track_count)
         
         for (int16_t i = 0; i < initial_load_count; i++) {
             if (tracks[i] != nullptr) {
+                Serial.printf("Adding track[%d]: %s\n", i, tracks[i]->title);
                 add_track_item(filesScreen, tracks[i]);
             } else {
                 Serial.printf("Warning: tracks[%d] is null, skipping\n", i);
@@ -129,9 +131,11 @@ FLASHMEM void createListScreen(Track** tracks, int16_t track_count)
 
 FLASHMEM void select_track_cb(lv_event_t * e)
 {
+    Serial.println("Track item clicked");
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_CLICKED) {
         Track * track = (Track *)lv_event_get_user_data(e);
+
         load_dj_screen_with_track(track);
         // Note: Don't free the track here - it's still in the global array
         // Only free when the entire tracks array is freed
@@ -196,17 +200,19 @@ lv_obj_t * add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_style_text_font(lbl_title, &exo2_18, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(lbl_title, COLOR_WHITE, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+    /*
+
     lv_obj_t * lbl_key = lv_label_create(cont_topRow);
-    lv_label_set_text(lbl_key, (char*)getKey(atoi(track->musical_key)));
+    lv_label_set_text(lbl_key, (char*)getKey(atoi(rbParser.getKeyName(track->key_id))));
     lv_obj_set_style_text_align(lbl_key, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_key, 40);
     // Style key with color coding
     lv_obj_set_style_text_font(lbl_key, &exo2_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    int key_numeric = atoi(track->musical_key); 
+    int key_numeric = atoi(rbParser.getKeyName(track->key_id)); 
     lv_obj_set_style_text_color(lbl_key, getKeyColor(key_numeric), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_t * lbl_bpm = lv_label_create(cont_topRow);
-    lv_label_set_text_fmt(lbl_bpm, "%.1f", track->bpmAnalyzed); 
+    lv_label_set_text_fmt(lbl_bpm, "%.1f", track->bpm); 
     lv_obj_set_style_text_align(lbl_bpm, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_bpm, 60);
     // Style BPM
@@ -231,7 +237,7 @@ lv_obj_t * add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_style_text_color(lbl_artist, COLOR_GRAY, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_t * lbl_rating = lv_label_create(cont_bottomRow);
-    lv_label_set_text_fmt(lbl_rating, "%.*s", track->star_rating, "**");
+    //lv_label_set_text_fmt(lbl_rating, "%.*s", track->star_rating, "**");
     lv_obj_set_style_text_align(lbl_rating, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_rating, 80);
     // Style rating - gold stars
@@ -239,16 +245,17 @@ lv_obj_t * add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_style_text_color(lbl_rating, lv_color_hex(0xFFD700), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_t * lbl_duration = lv_label_create(cont_bottomRow);
-    lv_label_set_text(lbl_duration, formatDuration(track->trackLength));
+    lv_label_set_text(lbl_duration, formatDuration(track->duration));
     lv_obj_set_style_text_align(lbl_duration, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_width(lbl_duration, 60);
     // Style duration
     lv_obj_set_style_text_font(lbl_duration, &exo2_16, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(lbl_duration, COLOR_GRAY, LV_PART_MAIN | LV_STATE_DEFAULT);
+    */
 
     //Set sizes. Use LV_SIZE_CONTENT for minimum size, or set fixed height for topRow / bottomRow (eg 30)
     lv_obj_set_size(cont_topRow, 800 - 16, LV_SIZE_CONTENT);
-    lv_obj_set_size(cont_bottomRow, 800 - 16, LV_SIZE_CONTENT);
+    //lv_obj_set_size(cont_bottomRow, 800 - 16, LV_SIZE_CONTENT);
     lv_obj_set_size(cont_outer, 800, LV_SIZE_CONTENT);
 
     return cont_outer;
@@ -267,7 +274,7 @@ FASTRUN static void update_scroll(lv_obj_t * obj)
         if (g_tracks[bottom_index] != nullptr) {
             add_track_item(obj, g_tracks[bottom_index]);
             LV_LOG_USER("Loaded bottom track at index: %" PRId32 " (ID: %d)", 
-                       bottom_index, g_tracks[bottom_index]->track_id);
+                       bottom_index, g_tracks[bottom_index]->id);
         }
         lv_obj_update_layout(obj);
     }
@@ -279,7 +286,7 @@ FASTRUN static void update_scroll(lv_obj_t * obj)
             lv_obj_t * new_item = add_track_item(obj, g_tracks[top_index]);
             lv_obj_move_to_index(new_item, 1); // Move to top (after header)
             LV_LOG_USER("Loaded top track at index: %" PRId32 " (ID: %d)", 
-                       top_index, g_tracks[top_index]->track_id);
+                       top_index, g_tracks[top_index]->id);
         }
         lv_obj_update_layout(obj);
     }

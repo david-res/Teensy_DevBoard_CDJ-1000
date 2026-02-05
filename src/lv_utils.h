@@ -20,7 +20,7 @@ const char* getKey(uint8_t numericValue);
 uint8_t lookupValue(uint8_t input);
 lv_color_t hex_string_to_color(const char* hex);
 lv_color_t getKeyColor(uint8_t numericValue);
-const char* formatDuration(const char* seconds_str);
+const char* formatDuration(uint16_t total_seconds);
 uint32_t get_voltage_mv();
 float getPSRamSpeed();
 void setPSRamSpeed(int mhz);

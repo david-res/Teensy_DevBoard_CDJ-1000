@@ -1,17 +1,16 @@
 #include <Arduino.h>
 #include <lvgl.h>
-#include "teensy41SQLite.hpp"
 #include <SD.h>
 #include "globals.h"
 #include "stats/app_stats.h"
 #include "file_viewer.h"
 #include "dj_screen.h"
 #include <SDRAM_t4.h>
-#include "inflate.h"
 #include "utils/changeSDSpeed.h"
 #include "lv_utils.h"
 #include "clockspeed/beermat_clockspeed.h"
 #include "PacketsSerial.h"
+#include "rekordbox_anlz_api.h"
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
@@ -82,6 +81,9 @@ eLCDIF_t4 lcd;
 
 uint32_t play_count = 0;
 uint32_t targetFrequency = CPU_SPEED_MHZ;
+
+RekordboxParser rbParser;          // Create it here
+Track** all_tracks;
 
 
 void DMA2_Stream5_IRQHandler(void);
@@ -575,21 +577,7 @@ void setup()
   } else {
     errorHalt("sd.begin() failed");
   }
-
-  // Start SQLite
-  T41SQLite::getInstance().setLogCallback(errorLogCallback);
-
-#if defined(RDI_DEVELOPMENTS_REV3)
-  int resultBegin = T41SQLite::getInstance().begin(&sd_io2);
-#else
-  int resultBegin = T41SQLite::getInstance().begin(&SD);
-#endif
-
-  if (resultBegin == SQLITE_OK) {
-    Serial.println("T41SQLite::getInstance().begin() succeded!");
-  } else {
-    errorHalt("T41SQLite::getInstance().begin failed");
-  }
+  Serial.println("SD Card initialized");
 
   // Init buffers
   memset(PCM, 0, sizeof(PCM));
@@ -739,24 +727,42 @@ void setup()
   // End directly start the song
   //////////////////////////////
 #else  
-  if (db_open() == false) {
-    errorHalt("Failed to initialize database");
-  }
-  
-  int16_t track_count;
-  Track** all_tracks = db_load_all_tracks(&track_count);
 
-  if (all_tracks) {
-      // Use the tracks
-      for (int16_t i = 0; i < track_count; i++) {
-          Serial.printf("Track %d: %s - %s\n", 
-                        all_tracks[i]->track_id,
-                        all_tracks[i]->title,
-                        all_tracks[i]->artist);
-      }
+  int16_t track_count;
+  
+ 	
+
+	if (!rbParser.parse("/PIONEER/rekordbox/export.pdb")) {
+		Serial.println("Parsing failed!");
+		while (1) delay(100);
+	}
+
+	track_count = rbParser.getTrackCount();
+	Serial.printf("Total tracks parsed: %d\n", track_count);
+	// Allocate array of pointers
+    all_tracks = new Track*[track_count];
+
+		// Fill the array with pointers to tracks
+	for (uint16_t i = 0; i < track_count; i++) {
+		all_tracks[i] = (Track*)rbParser.getTrack(i);
+		if (!all_tracks[i]) {
+			Serial.printf("Track %d is null!\n", i);
+		}
+	}
+
+	// Use the tracks
+	for (uint16_t i = 0; i < track_count; i++) {
+		if (all_tracks[i]) {
+			Serial.printf("Track %d: %s - %s\n", 
+						all_tracks[i]->id,
+						all_tracks[i]->title,
+						all_tracks[i]->artist);
+		}
+	}
     createListScreen(all_tracks, track_count);
-  }
-  lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+
+  	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+	
 #endif
 
 #if defined(USE_LCD_DISP)
@@ -944,10 +950,10 @@ FASTRUN void loop()
  }
   
   // Stats
-  if (appStats.readyToReport() == true) {
-    appStats.report();
-	Serial.printf("potenciometer_tempo: %d\n", potenciometer_tempo);
-  }
+  //if (appStats.readyToReport() == true) {
+   // appStats.report();
+//	Serial.printf("potenciometer_tempo: %d\n", potenciometer_tempo);
+ // }
 
   appStats.start(MAIN_LOOP);
 

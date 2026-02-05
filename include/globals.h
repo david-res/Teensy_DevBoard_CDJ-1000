@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include "stats/app_stats.h"
 #include "i2s_sync.h"
+#include "RekordboxParser.h"
+
 
 ///////////////
 // User defines
@@ -134,6 +136,10 @@ extern bool staticBufferReady;
 extern uint16_t oldStaticBufferX;
 extern uint16_t newStaticBufferX;
 extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
+
+
+// Parser instance
+extern RekordboxParser rbParser;
 
 
 		

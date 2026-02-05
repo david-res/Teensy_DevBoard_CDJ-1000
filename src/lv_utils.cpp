@@ -39,15 +39,9 @@ lv_color_t getKeyColor(uint8_t numericValue) {
     return COLOR_GRAY; // Default color for invalid keys
 }
 
-const char* formatDuration(const char* seconds_str) {
+const char* formatDuration(uint16_t total_seconds) {
     static char formatted_time[8]; // Static buffer for "MM:SS\0"
     
-    if (!seconds_str || strlen(seconds_str) == 0) {
-        strcpy(formatted_time, "0:00");
-        return formatted_time;
-    }
-    
-    int total_seconds = atoi(seconds_str);
     int minutes = total_seconds / 60;
     int seconds = total_seconds % 60;
     
