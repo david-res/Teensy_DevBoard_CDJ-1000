@@ -102,7 +102,7 @@ volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
 
 // Used in I2S ISR and loop 
 volatile uint32_t play_adr = 0;                           //Playing adress in samples (44100 per second)
-volatile uint32_t baseSampPerWavePoint = 420;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
+volatile uint32_t baseSampPerWavePoint = 294;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
 volatile uint32_t all_long = 0;                           //all long of Track in 0.5*frames   150 on 1 sec
 uint16_t track_play_now = 0;                     //Track ID of the track currently playing
 uint8_t	ftp = 0;										/////temp!

@@ -103,7 +103,7 @@ const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
 const float waveformUserGain[3] = {1.0, 0.66, 0.33};
 
-uint8_t * dynamicWaveSampleData[6]; // 0=lo samples, 1=med samples, 2=hi samples
+uint8_t * dynamicWaveSampleData[3]; // 0=lo samples, 1=med samples, 2=hi samples
 DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
 uint64_t dynamicWaveformSampleCount = 0;
 double samplesPerDaynamicPoint = 0;
@@ -125,6 +125,81 @@ uint16_t newIndicatorBuffer[2 * overviewChartHeight];  // 2px wide x 64px height
 
 
 GlobalBeatLUT globalBeats = {0};
+uint32_t dynamicWaveformEntries = 0;
+
+//#define USE_EXTMEM_FOR_WAVEFORM
+
+#ifdef USE_EXTMEM_FOR_WAVEFORM
+  #define WAVEFORM_MALLOC(size) extmem_malloc(size)
+  #define WAVEFORM_FREE(ptr) extmem_free(ptr)
+  #define WAVEFORM_LOCATION "EXTMEM"
+#else
+  #define WAVEFORM_MALLOC(size) malloc(size)
+  #define WAVEFORM_FREE(ptr) free(ptr)
+  #define WAVEFORM_LOCATION "internal RAM"
+#endif
+
+void freeDynamicWaveform() {
+    for (int i = 0; i < 3; i++) {
+        if (dynamicWaveSampleData[i] != NULL) {
+            WAVEFORM_FREE(dynamicWaveSampleData[i]);
+            dynamicWaveSampleData[i] = NULL;
+        }
+    }
+    dynamicWaveformEntries = 0;
+    Serial.println("Dynamic waveform freed from EXTMEM");
+}
+
+bool loadDynamicWaveformForTrack(const char* filepath) {
+    // Free any existing waveform first
+    freeDynamicWaveform();
+    
+    uint8_t* waveform = NULL;
+    uint32_t entries = 0;
+    
+    uint16_t err = extractDynamicWaveform(filepath, &waveform, &entries);
+    
+    if (err != ANLZ_OK) {
+        Serial.printf("Failed to load dynamic waveform: error %d\n", err);
+        return false;
+    }
+    
+    dynamicWaveformEntries = entries;
+    
+    Serial.printf("Allocating waveform in %s\n", WAVEFORM_LOCATION);
+    
+    // Allocate separate band buffers in EXTMEM
+    for (int i = 0; i < 3; i++) {
+      Serial.printf("Allocating band %d buffer for %d entries\n", i, entries);
+        dynamicWaveSampleData[i] = (uint8_t*)WAVEFORM_MALLOC(entries);
+        if (dynamicWaveSampleData[i] == NULL) {
+            Serial.printf("Out of %s for band %d\n", WAVEFORM_LOCATION, i);
+            // Cleanup
+            for (int j = 0; j < i; j++) {
+                WAVEFORM_FREE(dynamicWaveSampleData[j]);
+                dynamicWaveSampleData[j] = NULL;
+            }
+            free(waveform);
+            dynamicWaveformEntries = 0;
+            return false;
+        }
+    }
+    Serial.println("Waveform allocated successfully");
+    // De-interleave to LOW-MID-HIGH order
+    for (uint32_t i = 0; i < entries; i++) {
+        dynamicWaveSampleData[0][i] = waveform[i * 3 + 0];  // LOW
+        dynamicWaveSampleData[1][i] = waveform[i * 3 + 1];  // MID
+        dynamicWaveSampleData[2][i] = waveform[i * 3 + 2];  // HIGH
+    }
+    
+    Serial.println("Waveform de-interleaved successfully");
+    //free(waveform);
+    
+    Serial.printf("Dynamic waveform loaded in %s: %d entries, %d KB\n", 
+                  WAVEFORM_LOCATION, entries, (entries * 3) / 1024);
+    
+    return true;
+}
 
 FLASHMEM void drawOverviewCanvas()
 {
@@ -292,8 +367,8 @@ void create_middle_container(Track * track) {
     lv_obj_set_style_border_color(middle_container, lv_color_white(), 0);
     lv_obj_set_style_radius(middle_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(middle_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(middle_container, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(middle_container, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    //lv_obj_add_flag(middle_container, LV_OBJ_FLAG_HIDDEN);
+    //lv_obj_add_flag(middle_container, LV_OBJ_FLAG_IGNORE_LAYOUT);
     
 
     // Dynamic waveform canvas
@@ -301,11 +376,19 @@ void create_middle_container(Track * track) {
     lv_obj_set_size(daynamic_waveform_canvas, chartWidth, chartHeight);
     lv_obj_center(daynamic_waveform_canvas);
     lv_obj_clear_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    //lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_HIDDEN);
+    //lv_obj_add_flag(daynamic_waveform_canvas, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     // Create canvas buffer (16-bit RGB565)
     lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, chartWidth, chartHeight, LV_IMG_CF_TRUE_COLOR);
+
+    String correctedPath = String(track->anlz_ex2_path);
+    if (correctedPath.startsWith("Y/")) {
+        correctedPath = correctedPath.substring(2);  // Remove "Y/"
+    }
+
+    loadDynamicWaveformForTrack(correctedPath.c_str());
+
 }
 
 void create_bottom_container(Track * track) {
@@ -340,13 +423,13 @@ void create_bottom_container(Track * track) {
     lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
 
-  Serial.printf("path to anlz: %s\n", track->anlz_ex2_path);
-  String correctedPath = String(track->anlz_ex2_path);
-if (correctedPath.startsWith("Y/")) {
-    correctedPath = correctedPath.substring(2);  // Remove "Y/"
-}
+    Serial.printf("path to anlz: %s\n", track->anlz_ex2_path);
+    String correctedPath = String(track->anlz_ex2_path);
+    if (correctedPath.startsWith("Y/")) {
+        correctedPath = correctedPath.substring(2);  // Remove "Y/"
+    }
 
-uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleData);
+    uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleData);
     //uint16_t err = extractPreviewWaveform(track->anlz_ex2_path, overViewWaveSampleData);
     if (err == ANLZ_OK) {
         Serial.println("Preview loaded!");
@@ -355,8 +438,8 @@ uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleD
         Serial.printf("Error loading preview waveform: %d\n", err);
     }
     
-    //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
-    drawOverviewCanvas();
+  //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
+  drawOverviewCanvas();
     //lv_obj_invalidate(static_waveform_canvas);
     
    
@@ -430,20 +513,15 @@ void dj_ui_init(Track * track) {
     lv_obj_set_style_radius(main_screen, 0, LV_PART_MAIN);
     lv_obj_clear_flag(main_screen, LV_OBJ_FLAG_SCROLLABLE);
     
-    //(track->track_id, dynamicWaveSampleData, &dynamicWaveformSampleCount, (uint32_t*)&baseSampPerWavePoint);
-    
-    // Can conceivably use any baseSampPerWavePoint in WeensyPiDJ and get the best refresh rate, then add a call to display to set :)
-    //displayRefreshRate = findBestRefreshRate(baseSampPerWavePoint / 2);
-    //disp_setRefreshRate(displayRefreshRate);
-
-    
+  
 
   
     // Create all containers
     //create_top_container(track);
-    //create_middle_container(track);
+    create_middle_container(track);
     Serial.println("Creating bottom container...");
     create_bottom_container(track);  
+    updateDynamicWaveform(44100*30); 
 
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
@@ -457,7 +535,7 @@ void dj_ui_init(Track * track) {
      //const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
 #if defined(RDI_DEVELOPMENTS_REV3)
     playFile.open(full_path, FILE_READ);
-#else
+#elses
     //playFile = SD.open(full_path, FILE_READ);
 #endif
     if (!playFile) {
@@ -468,7 +546,7 @@ void dj_ui_init(Track * track) {
       //is_playing = true;
       //playFile.seek(44);
       //audio.startI2SInterrupt();
-      //updateDynamicWaveform(0); 
+      
       track_play_now = track->id;
       pitch = 0;	
 	    play_enable = 0;
@@ -559,7 +637,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   }
   
   // Start time for stats
-  appStats.start(DYNAMIC_RENDER);
+  //appStats.start(DYNAMIC_RENDER);
   
   //Clear canvas
   //memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
@@ -576,11 +654,17 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     drawFastVLine16Bit(x, 0, chartHeight, 0x00, dynamicCanvasBuffer, chartWidth);
 
     int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
-    if (index < 0 || index >= all_long) continue;
-    for (uint8_t i = 0; i < 3; i++) {
+    //if (index < 0 || index >= all_long) continue;
+    /*
+    for (uint8_t i = 2; i > 0; i--) {
         uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
         drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
+
     }
+        */
+    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
+    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
+    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
   }
 
   
@@ -591,20 +675,20 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 
   // Draw vertical mid-canvas play head line
   drawFastVLine16Bit(chartWidth / 2, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
-  //lv_obj_invalidate(daynamic_waveform_canvas);
+  lv_obj_invalidate(daynamic_waveform_canvas);
   //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
   //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
   //PXP_process();
 
   if (millis() > nextLabelMs) {
-    lv_label_set_text_fmt(time_label, "%ld", play_adr);
+    //lv_label_set_text_fmt(time_label, "%ld", play_adr);
     nextLabelMs = millis() + 90;
   }
 
-  dynamicBufferReady = true;
+  //dynamicBufferReady = true;
  
   // Finish stats
-  appStats.end(DYNAMIC_RENDER);
+  //appStats.end(DYNAMIC_RENDER);
 }
 
 // Add these as global/static variables

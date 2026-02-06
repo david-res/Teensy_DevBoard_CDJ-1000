@@ -52,8 +52,8 @@
 #define PREVIEW_WAVEFORM_WIDTH 800       // Output width for preview waveform
 #define PREVIEW_WAVEFORM_MAX_VALUE 64    // Max TOTAL height for stacked display (all bands combined)
 #define PREVIEW_WAVEFORM_MAX_INDIVIDUAL 21  // Max height for individual band
-#define DYNAMIC_WAVEFORM_MAX_VALUE 164   // Max height value for dynamic waveform
-#define REKORDBOX_WAVEFORM_MAX 255       // Original Rekordbox max value
+#define DYNAMIC_WAVEFORM_MAX_VALUE 64   // Max height value for dynamic waveform
+#define REKORDBOX_WAVEFORM_MAX 127       // Original Rekordbox max value
 
 // Rekordbox original sizes - PWV6 format
 #define REKORDBOX_PREVIEW_SAMPLES 1200   // Each band has 1200 samples
@@ -319,7 +319,7 @@ static void process_preview_waveform(const uint8_t* raw_data, uint8_t output[3][
  */
 static void process_dynamic_waveform(uint8_t* waveform, uint32_t num_entries) {
     for (uint32_t i = 0; i < num_entries * 3; i++) {
-        waveform[i] = scale_waveform_value(waveform[i], DYNAMIC_WAVEFORM_MAX_VALUE, REKORDBOX_INDIVIDUAL_MAX);
+        waveform[i] = waveform[i];//scale_waveform_value(waveform[i], DYNAMIC_WAVEFORM_MAX_VALUE, REKORDBOX_INDIVIDUAL_MAX);
     }
 }
 

@@ -8,13 +8,11 @@
 // Simple functions to extract specific data without manual file handling
 
 /**
- * Extract preview waveform from .2EX file
+ * Extract preview waveform from .2EX file (CORRECTED)
  * 
  * @param filepath Path to the .2EX file (e.g., "ANLZ0000.2EX")
  * @param preview_waveform Output buffer [3][800] for preview waveform
- *                         [0][] = MID band (vocals/instruments - highest energy)
- *                         [1][] = HIGH band (treble)
- *                         [2][] = LOW band (bass)
+ *                         [0][] = LOW band (bass), [1][] = MID band, [2][] = HIGH band (treble)
  *                         Values scaled to 0-PREVIEW_WAVEFORM_MAX_VALUE (64)
  * @return Error code (0 = success)
  * 
@@ -25,11 +23,11 @@
 uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]);
 
 /**
- * Extract dynamic waveform from .2EX file
+ * Extract dynamic waveform from .2EX file (CORRECTED - was incorrectly listed as .EXT)
  * 
  * @param filepath Path to the .2EX file (e.g., "ANLZ0000.2EX")
  * @param dynamic_waveform Pointer to store allocated waveform data
- *                         Format: [entry0_mid, entry0_high, entry0_low, entry1_mid, ...]
+ *                         Format: [entry0_low, entry0_mid, entry0_high, entry1_low, ...]
  *                         Values scaled to 0-DYNAMIC_WAVEFORM_MAX_VALUE (164)
  *                         MUST be freed by caller using free()
  * @param num_entries Output: number of waveform entries (multiply by 3 for byte count)
@@ -40,7 +38,7 @@ uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3
  *   uint32_t entries;
  *   uint16_t err = extractDynamicWaveform("0:/PIONEER/ANLZ0000.2EX", &waveform, &entries);
  *   if (err == 0) {
- *       // Use waveform data: waveform[i*3+0]=mid, waveform[i*3+1]=high, waveform[i*3+2]=low
+ *       // Use waveform data: waveform[i*3+0]=low, waveform[i*3+1]=mid, waveform[i*3+2]=high
  *       free(waveform);  // Free when done
  *   }
  */
