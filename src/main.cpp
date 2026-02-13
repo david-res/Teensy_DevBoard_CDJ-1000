@@ -123,6 +123,7 @@ uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE
 #define NEED_UP		1
 #define NEED_DOWN	2
 uint32_t CUE_ADR = 0;					//REAL CUE adr in frames 150
+uint16_t bars = 0;		
 
 void CALL_CUE(void);
 

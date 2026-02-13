@@ -108,6 +108,8 @@ extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
 extern volatile bool dynamicBufferReady;
+extern uint32_t CUE_ADR;
+extern uint16_t bars;
 
 extern uint8_t displayRefreshRate;
 
