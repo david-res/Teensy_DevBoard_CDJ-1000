@@ -12,6 +12,7 @@
 #include "rekordbox_anlz_api.h"
 #if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
+#include "lv_utils.h"
 #endif
 
 
@@ -61,6 +62,18 @@ static const lv_color_t cue_colors[8] = {
     LV_COLOR_MAKE(0x15, 0x8E, 0xE2)  // 8 - 158EE2 (Blue)
 };
 
+// Or as an array for easier indexing:
+const uint32_t HOTCUE_COLORS[8] = {
+    0xFF1493,  // A - Hot Pink
+    0x00BFFF,  // B - Cyan
+    0x00FF00,  // C - Lime Green
+    0x9D00FF,  // D - Purple
+    0x00FF00,  // E - Bright Green
+    0xFF8C00,  // F - Orange
+    0x0080FF,  // G - Blue
+    0xFFFF00   // H - Yellow
+};
+
 // Main containers
 lv_obj_t * main_screen;
 static lv_obj_t *top_container;
@@ -88,6 +101,7 @@ void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
 void drawBeatMarkers(uint32_t waveformOffset);
 void updateOverviewWaveform(uint32_t waveformOffset);
+void backButton(lv_event_t *e);
 bool useOpa = false;
 
 
@@ -97,7 +111,7 @@ uint64_t highResSampleCount = 0;
 
 
 const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
-const uint16_t col_green = 0x15EA; //From Rezo, was 0x07E0; //Amber 
+const uint16_t col_green = 0x15EA; //From Rezo, was 0x15EA; //Amber 0xF547
 const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
@@ -126,6 +140,11 @@ uint16_t newIndicatorBuffer[2 * overviewChartHeight];  // 2px wide x 64px height
 
 GlobalBeatLUT globalBeats = {0};
 uint32_t dynamicWaveformEntries = 0;
+uint32_t BEATGRID[4096];    // beatgrid (0, 3, 7... )
+uint16_t BPMGRID[4096];				// bpmgrit BPM*100
+uint32_t hotCues[8];
+uint8_t GRID_OFFSET = 0; // Default to 0 if not provided by parser
+uint16_t beatGridLenth = 0;
 
 //#define USE_EXTMEM_FOR_WAVEFORM
 
@@ -138,6 +157,65 @@ uint32_t dynamicWaveformEntries = 0;
   #define WAVEFORM_FREE(ptr) free(ptr)
   #define WAVEFORM_LOCATION "internal RAM"
 #endif
+
+
+void loadTrackData(const char* dat_filepath) {
+    BeatGridEntry* beat_grid = NULL;
+    uint32_t num_beats;
+    uint16_t original_bpm;
+    uint8_t grid_offset;
+    GRID_OFFSET = 0; // Default to 0 if not provided by parser
+    
+    // Extract beat grid and BPM data
+    uint16_t err = extractBeatGrid(dat_filepath, &beat_grid, &num_beats, 
+                                   &original_bpm, &grid_offset);
+    
+    if (err == 0) {
+        // Store grid offset
+        GRID_OFFSET = grid_offset;
+        
+        // Store beat grid length (limit to array size)
+        beatGridLenth = (num_beats > 4096) ? 4096 : num_beats;
+        
+        // Copy beat positions and BPM values
+        for (uint32_t i = 0; i < beatGridLenth; i++) {
+            BEATGRID[i] = beat_grid[i].position;  // Beat position in samples/frames
+            BPMGRID[i] = beat_grid[i].bpm;        // BPM * 100
+        }
+        
+        Serial.printf("Loaded %d beats, BPM: %.2f, Grid offset: %d\n", 
+                      beatGridLenth, original_bpm/100.0, GRID_OFFSET);
+        
+        // Free the allocated beat grid
+        free(beat_grid);
+    } else {
+        Serial.printf("Error loading beat grid: %d\n", err);
+    }
+    
+    // Extract hot cues
+    CuePoint hot_cues[3];
+    uint8_t num_hot_cues;
+    
+    err = extractHotCues(dat_filepath, hot_cues, &num_hot_cues);
+    
+    if (err == 0) {
+        // Clear hot cue array first
+        for (int i = 0; i < 8; i++) {
+            hotCues[i] = 0xFFFFFFFF;  // Or 0, depending on your "empty" value
+        }
+        
+        // Copy hot cues (only first 3 positions for A, B, C)
+        for (int i = 0; i < num_hot_cues && i < 3; i++) {
+            if (hot_cues[i].type & 0x2) {  // Is active?
+                hotCues[i] = hot_cues[i].start_pos;
+            }
+        }
+        
+        Serial.printf("Loaded %d hot cues\n", num_hot_cues);
+    } else {
+        Serial.printf("Error loading hot cues: %d\n", err);
+    }
+}
 
 void freeDynamicWaveform() {
     for (int i = 0; i < 3; i++) {
@@ -156,13 +234,15 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
     
     uint8_t* waveform = NULL;
     uint32_t entries = 0;
-    
+
+
     uint16_t err = extractDynamicWaveform(filepath, &waveform, &entries);
     
     if (err != ANLZ_OK) {
         Serial.printf("Failed to load dynamic waveform: error %d\n", err);
         return false;
     }
+    Serial.printf("Dynamic waveform extracted successfully: %d entries\n", entries);
     
     dynamicWaveformEntries = entries;
     
@@ -193,7 +273,7 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
     }
     
     Serial.println("Waveform de-interleaved successfully");
-    //free(waveform);
+    free(waveform);
     
     Serial.printf("Dynamic waveform loaded in %s: %d entries, %d KB\n", 
                   WAVEFORM_LOCATION, entries, (entries * 3) / 1024);
@@ -245,6 +325,8 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(top_container, 0, 0);
     lv_obj_set_style_radius(top_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(top_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(top_container, backButton, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(top_container, LV_OBJ_FLAG_CLICKABLE);
     
     // Title and BPM/Key container
     //LV_COLOR_MAKE(0x53, 0x53, 0x53)
@@ -257,6 +339,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(title_bpm_container, 0, 0);
      lv_obj_set_style_radius(title_bpm_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(title_bpm_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(title_bpm_container, LV_OBJ_FLAG_CLICKABLE);
 
     // Title label (left side)
     title_label = lv_label_create(title_bpm_container);
@@ -265,6 +348,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(title_label, &exo2_20, 0);
     lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 5);
     lv_obj_clear_flag(title_label, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
     
 
     // BPM label (right side)
@@ -274,16 +358,19 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(bpm_label, &exo2_32, 0);
     lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
     lv_obj_clear_flag(bpm_label, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(bpm_label, LV_OBJ_FLAG_CLICKABLE);
    
 
     // Key label (below BPM)
     key_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(key_label, (char*)getKey(atoi(rbParser.getKeyName(track->key_id))));
+    lv_label_set_text(key_label, rbParser.getKeyName(track->key_id));
     lv_obj_set_style_text_font(key_label, &exo2_20, 0);
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
-    int key_numeric = atoi(rbParser.getKeyName(track->key_id)); 
-    lv_obj_set_style_text_color(key_label, getKeyColor(key_numeric), LV_PART_MAIN | LV_STATE_DEFAULT);
+    const char* keyName = rbParser.getKeyName(track->key_id);
+    const char* keyColor = getKeyColor(keyName);
+    lv_obj_set_style_text_color(key_label,lv_color_hex(strtol(keyColor + 1, nullptr, 16)), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(key_label, LV_OBJ_FLAG_CLICKABLE);
 
 
     lv_obj_t *progress_line = lv_obj_create(title_bpm_container);
@@ -428,7 +515,8 @@ void create_bottom_container(Track * track) {
     if (correctedPath.startsWith("Y/")) {
         correctedPath = correctedPath.substring(2);  // Remove "Y/"
     }
-
+    
+    
     uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleData);
     //uint16_t err = extractPreviewWaveform(track->anlz_ex2_path, overViewWaveSampleData);
     if (err == ANLZ_OK) {
@@ -441,6 +529,7 @@ void create_bottom_container(Track * track) {
   //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
   drawOverviewCanvas();
     //lv_obj_invalidate(static_waveform_canvas);
+
     
    
 
@@ -517,7 +606,9 @@ void dj_ui_init(Track * track) {
 
   
     // Create all containers
-    //create_top_container(track);
+    Serial.printf("anlz path: %s\n", track->anlz_path);
+    loadTrackData(track->anlz_path);
+    create_top_container(track);
     create_middle_container(track);
     Serial.println("Creating bottom container...");
     create_bottom_container(track);  
@@ -706,4 +797,12 @@ FASTRUN void updatePlaybackPosition_new(uint16_t newX)
   }
 
   return;
+}
+
+
+void backButton(lv_event_t *e){
+    Serial.println("Back button clicked, returning to browser");
+    create_dj_browser_ui();
+    populate_track_list(all_tracks, track_count);
+	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "Arduino.h"
 
 // Embedded system configuration
 // Define ANLZ_EMBEDDED before including this header to enable embedded-friendly features
@@ -40,8 +41,10 @@
 #define TAG_PWV5 0x50575635  // Color waveform extended (from .EXT file)
 #define TAG_PWV6 0x50575636  // 3-band waveform overview (from .2EX file, 1200 entries)
 #define TAG_PWV7 0x50575637  // 3-band waveform high-res (from .2EX file, variable entries)
-#define TAG_PCOB 0x50434F42  // Cue points bank
-#define TAG_PCPT 0x50435054  // Cue point entry
+#define TAG_PCOB 0x50434F42  // "PCOB" - old cue list
+#define TAG_PCO2 0x50434F32  // "PCO2" - nxs2 cue list
+#define TAG_PCPT 0x50435054  // "PCPT" - old cue entry
+#define TAG_PCP2 0x50435032  // "PCP2" - nxs2 cue entry
 
 // Maximum sizes
 #define MAX_FILE_SIZE 135000
@@ -324,27 +327,50 @@ static void process_dynamic_waveform(uint8_t* waveform, uint32_t num_entries) {
 }
 
 uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+    Serial.println("=== Starting DAT parse ===");
+    
     if (!file_data || !data || file_size < 12) {
+        Serial.println("ERROR: Invalid input or file too small");
         return ANLZ_ERR_DAT_CORRUPTED;
     }
     
+    // Print first 32 bytes for inspection
+    Serial.print("First 32 bytes: ");
+    for (int i = 0; i < 32 && i < file_size; i++) {
+        Serial.printf("%02X ", file_data[i]);
+    }
+    Serial.println();
+    
     // Verify file size
     uint32_t header_file_size = read_be32(&file_data[8]);
+    Serial.printf("Header file size: %u, Actual: %u\n", header_file_size, file_size);
+    
     if (header_file_size != file_size) {
+        Serial.println("ERROR: File size mismatch");
         return ANLZ_ERR_DAT_CORRUPTED;
     }
     
     // Get first tag position
     uint32_t pos = read_be32(&file_data[4]);
+    Serial.printf("First tag position: %u\n", pos);
     
-    // Verify PPTH tag
+    // Print tag at position
+    Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                  file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+    
+    // ========== PPTH TAG ==========
     if (!verify_tag(file_data, pos, TAG_PPTH)) {
+        Serial.println("ERROR: PPTH tag not found");
         return ANLZ_ERR_DAT_CORRUPTED;
     }
+    Serial.println("✓ PPTH tag verified");
     
     uint32_t ppth_header_size = read_be32(&file_data[pos + 4]);
     uint32_t ppth_tag_size = read_be32(&file_data[pos + 8]);
     uint32_t ppth_string_len = read_be32(&file_data[pos + 12]);
+    
+    Serial.printf("PPTH: header=%u, tag_size=%u, str_len=%u\n", 
+                  ppth_header_size, ppth_tag_size, ppth_string_len);
     
     // Extract path (UTF-16 to ASCII)
     uint32_t path_start = pos + ppth_header_size;
@@ -354,148 +380,366 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
         data->audio_path[i] = file_data[path_start + i * 2 + 1];
     }
     data->audio_path[path_chars] = '\0';
+    Serial.printf("Audio path: %s\n", data->audio_path);
     
-    // Move to PVBR tag
+    // ========== PVBR TAG ==========
     pos += ppth_tag_size;
+    Serial.printf("\nNext tag position: %u\n", pos);
+    Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                  file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+    
     if (!verify_tag(file_data, pos, TAG_PVBR)) {
+        Serial.println("ERROR: PVBR tag not found");
         return ANLZ_ERR_DAT_CORRUPTED;
     }
+    Serial.println("✓ PVBR tag verified");
     
     uint32_t pvbr_header_size = read_be32(&file_data[pos + 4]);
     uint32_t pvbr_tag_size = read_be32(&file_data[pos + 8]);
+    
+    Serial.printf("PVBR: header=%u, tag_size=%u\n", pvbr_header_size, pvbr_tag_size);
     
     // Extract BPM info
     uint32_t pvbr_data = pos + pvbr_header_size;
     data->original_bpm = read_be16(&file_data[pvbr_data + 8]);
     data->grid_offset = file_data[pvbr_data + 14];
     
-    // Move to PQTZ tag (beat grid)
+    Serial.printf("BPM: %u (%.2f), Grid offset: %u\n", 
+                  data->original_bpm, data->original_bpm/100.0, data->grid_offset);
+    
+    // ========== PQTZ TAG (BEAT GRID) ==========
     pos += pvbr_tag_size;
+    Serial.printf("\nNext tag position: %u\n", pos);
+    Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                  file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+    
     if (!verify_tag(file_data, pos, TAG_PQTZ)) {
+        Serial.println("ERROR: PQTZ tag not found");
         return ANLZ_ERR_DAT_CORRUPTED;
     }
+    Serial.println("✓ PQTZ tag verified");
     
     uint32_t pqtz_header_size = read_be32(&file_data[pos + 4]);
     uint32_t pqtz_tag_size = read_be32(&file_data[pos + 8]);
-    uint32_t pqtz_entry_bytes = read_be32(&file_data[pos + 12]);
-    uint32_t pqtz_entry_count = read_be32(&file_data[pos + 16]);
+    uint32_t pqtz_unknown1 = read_be32(&file_data[pos + 12]);
+    uint32_t pqtz_unknown2 = read_be32(&file_data[pos + 16]);
+    uint32_t pqtz_entry_count = read_be32(&file_data[pos + 20]);
     
-    // Allocate beat grid
+    Serial.printf("PQTZ: header=%u, tag_size=%u\n", pqtz_header_size, pqtz_tag_size);
+    Serial.printf("PQTZ: unknown1=0x%08X, unknown2=0x%08X\n", pqtz_unknown1, pqtz_unknown2);
+    Serial.printf("PQTZ: Number of beats=%u\n", pqtz_entry_count);
+    
+    if (pqtz_entry_count > 100000) {
+        Serial.printf("ERROR: Unrealistic beat count: %u\n", pqtz_entry_count);
+        return ANLZ_ERR_DAT_CORRUPTED;
+    }
+    
     if (pqtz_entry_count > MAX_BEAT_GRID_ENTRIES) {
+        Serial.printf("WARNING: Limiting beats from %u to %u\n", pqtz_entry_count, MAX_BEAT_GRID_ENTRIES);
         pqtz_entry_count = MAX_BEAT_GRID_ENTRIES;
     }
     
-    data->beat_grid = (BeatGridEntry*)malloc(pqtz_entry_count * sizeof(BeatGridEntry));
-    if (!data->beat_grid) {
-        return ANLZ_ERR_DATA_NOT_READ;
-    }
-    
-    data->beat_grid_count = pqtz_entry_count;
-    
-    // Parse beat grid entries
-    uint32_t beat_data_start = pos + pqtz_header_size;
-    for (uint32_t i = 0; i < pqtz_entry_count; i++) {
-        uint32_t entry_pos = beat_data_start + (i * pqtz_entry_bytes);
-        data->beat_grid[i].bpm = read_be16(&file_data[entry_pos]);
-        data->beat_grid[i].position = read_be32(&file_data[entry_pos + 2]);
-    }
-    
-    // Move to PWV2 tag
-    pos += pqtz_tag_size;
-    if (!verify_tag(file_data, pos, TAG_PWV2)) {
-        return ANLZ_ERR_DAT_CORRUPTED;
-    }
-    
-    uint32_t pwv2_tag_size = read_be32(&file_data[pos + 8]);
-    
-    // Move to PCOB tag (cue points)
-    pos += pwv2_tag_size;
-    if (!verify_tag(file_data, pos, TAG_PCOB)) {
-        return ANLZ_ERR_DAT_CORRUPTED;
-    }
-    
-    uint8_t pcob_type = file_data[pos + 15];
-    uint32_t pcob_header_size = read_be32(&file_data[pos + 4]);
-    uint32_t pcob_tag_size = read_be32(&file_data[pos + 8]);
-    uint8_t num_cue_points = file_data[pos + 19] & 0x0F;
-    
-    // Parse Hot Cues (PCOB type 1)
-    if (pcob_type == 1 && num_cue_points > 0) {
-        data->hot_cue_count = (num_cue_points > 3) ? 3 : num_cue_points;
-        uint32_t cue_pos = pos + pcob_header_size;
+    if (pqtz_entry_count > 0) {
+        data->beat_grid = (BeatGridEntry*)malloc(pqtz_entry_count * sizeof(BeatGridEntry));
+        if (!data->beat_grid) {
+            Serial.println("ERROR: Cannot allocate beat grid memory");
+            return ANLZ_ERR_DATA_NOT_READ;
+        }
         
-        for (uint8_t i = 0; i < num_cue_points; i++) {
-            if (!verify_tag(file_data, cue_pos, TAG_PCPT)) {
-                break;
+        data->beat_grid_count = pqtz_entry_count;
+        uint32_t beat_data_start = pos + pqtz_header_size;
+        Serial.printf("Beat data starts at offset: %u\n", beat_data_start);
+        
+        for (uint32_t i = 0; i < pqtz_entry_count; i++) {
+            uint32_t entry_pos = beat_data_start + (i * 8);
+            
+            uint16_t beat_number = read_be16(&file_data[entry_pos]);
+            uint16_t tempo = read_be16(&file_data[entry_pos + 2]);
+            uint32_t time_ms = read_be32(&file_data[entry_pos + 4]);
+            
+            data->beat_grid[i].bpm = tempo;
+            data->beat_grid[i].position = ms_to_frames(time_ms);
+            
+            if (i < 10) {
+                Serial.printf("Beat %u: beat_num=%u, tempo=%.2f, time=%u ms, frames=%u\n", 
+                              i, beat_number, tempo/100.0, time_ms, data->beat_grid[i].position);
             }
-            
-            uint32_t pcpt_header_size = read_be32(&file_data[cue_pos + 4]);
-            uint32_t pcpt_tag_size = read_be32(&file_data[cue_pos + 8]);
-            uint8_t cue_id = file_data[cue_pos + 15];
-            uint8_t cue_active = file_data[cue_pos + 19];
-            
-            if (cue_id > 0 && cue_id <= 3) {
-                uint8_t idx = cue_id - 1;
-                uint32_t data_pos = cue_pos + pcpt_header_size;
-                
-                if (cue_active) {
-                    data->hot_cues[idx].type = 2; // Active
-                }
-                
-                uint32_t start_ms = read_be32(&file_data[data_pos + 4]);
-                data->hot_cues[idx].start_pos = ms_to_frames(start_ms);
-                
-                if (file_data[data_pos] == 2) { // Loop type
-                    data->hot_cues[idx].type |= 0x1;
-                    uint32_t end_ms = read_be32(&file_data[data_pos + 8]);
-                    data->hot_cues[idx].end_pos = ms_to_frames(end_ms);
-                }
-            }
-            
-            cue_pos += pcpt_tag_size;
+        }
+        Serial.printf("✓ Parsed %u beats\n", pqtz_entry_count);
+    } else {
+        Serial.println("WARNING: No beats in this track");
+        data->beat_grid = NULL;
+        data->beat_grid_count = 0;
+    }
+    
+    // ========== SKIP ALL WAVEFORM TAGS ==========
+    pos += pqtz_tag_size;
+    Serial.printf("\nNext tag position: %u\n", pos);
+    
+    // Keep skipping waveform tags until we find something else
+    uint32_t next_tag;
+    while (pos + 8 < file_size) {
+        Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                      file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+        
+        next_tag = read_be32(&file_data[pos]);
+        
+        // Check if tag starts with "PW" (0x5057) - waveform tags
+        if ((next_tag >> 16) == 0x5057) {
+            Serial.println("Found waveform tag, skipping...");
+            uint32_t waveform_tag_size = read_be32(&file_data[pos + 8]);
+            Serial.printf("Waveform tag size: %u bytes\n", waveform_tag_size);
+            pos += waveform_tag_size;
+            Serial.printf("After skipping, pos=%u\n", pos);
+        } else {
+            // Not a waveform tag, stop skipping
+            break;
         }
     }
     
-    // Move to second PCOB (Memory Cues)
-    uint32_t pcob2_pos = pos + pcob_tag_size;
-    if (verify_tag(file_data, pcob2_pos, TAG_PCOB)) {
-        pcob_type = file_data[pcob2_pos + 15];
-        pcob_header_size = read_be32(&file_data[pcob2_pos + 4]);
-        num_cue_points = file_data[pcob2_pos + 19] & 0x0F;
+    if (pos + 20 > file_size) {
+        Serial.println("Reached end of file after skipping waveforms");
+        Serial.println("=== DAT parse successful (beat grid only) ===\n");
+        return ANLZ_OK;
+    }
+    
+    // ========== CUE TAGS (PCOB or PCO2) - FIRST TAG ==========
+    Serial.printf("\nChecking for cues at pos %u\n", pos);
+    Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                  file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+    
+    next_tag = read_be32(&file_data[pos]);
+    bool is_nxs2 = (next_tag == TAG_PCO2);
+    bool is_old = (next_tag == TAG_PCOB);
+    
+    if (!is_nxs2 && !is_old) {
+        Serial.println("No cue tag found, ending parse");
+        Serial.println("=== DAT parse successful ===\n");
+        return ANLZ_OK;
+    }
+    
+    if (is_nxs2) {
+        Serial.println("✓ PCO2 tag verified (nxs2 format)");
+    } else {
+        Serial.println("✓ PCOB tag verified (old format)");
+    }
+    
+    uint32_t cue_header_size = read_be32(&file_data[pos + 4]);
+    uint32_t cue_tag_size = read_be32(&file_data[pos + 8]);
+    uint8_t cue_type;
+    
+    if (is_nxs2) {
+        cue_type = file_data[pos + 12];  // PCO2: type at byte 12
+    } else {
+        cue_type = file_data[pos + 15];  // PCOB: type at byte 15
+    }
+    
+    uint16_t num_cues;
+    if (is_nxs2) {
+        num_cues = read_be16(&file_data[pos + 16]);  // PCO2: lencues at bytes 16-17
+    } else {
+        num_cues = read_be16(&file_data[pos + 18]);  // PCOB: lencues at bytes 18-19
+    }
+    
+    Serial.printf("Cues: type=%u (%s), count=%u, format=%s\n", 
+                  cue_type, cue_type == 1 ? "Hot Cues" : "Memory Cues", 
+                  num_cues, is_nxs2 ? "nxs2" : "old");
+    
+    if (num_cues > 0) {
+        uint32_t cue_data_pos = pos + cue_header_size;
         
-        // Parse Memory Cues (PCOB type 0)
-        if (pcob_type == 0 && num_cue_points > 0) {
-            data->memory_cue_count = (num_cue_points > 8) ? 8 : num_cue_points;
-            uint32_t cue_pos = pcob2_pos + pcob_header_size;
+        if (cue_type == 1) {  // Hot Cues
+            data->hot_cue_count = (num_cues > 3) ? 3 : num_cues;
+            Serial.printf("Parsing %u hot cues...\n", num_cues);
             
-            for (uint8_t i = 0; i < data->memory_cue_count; i++) {
-                if (!verify_tag(file_data, cue_pos, TAG_PCPT)) {
+            for (uint16_t i = 0; i < num_cues; i++) {
+                if (cue_data_pos + 40 > file_size) break;
+                
+                uint32_t entry_tag = read_be32(&file_data[cue_data_pos]);
+                
+                if (is_nxs2 && entry_tag != TAG_PCP2) {
+                    Serial.printf("WARNING: Expected PCP2 at pos %u, got 0x%08X\n", cue_data_pos, entry_tag);
+                    break;
+                }
+                if (!is_nxs2 && entry_tag != TAG_PCPT) {
+                    Serial.printf("WARNING: Expected PCPT at pos %u, got 0x%08X\n", cue_data_pos, entry_tag);
                     break;
                 }
                 
-                uint32_t pcpt_header_size = read_be32(&file_data[cue_pos + 4]);
-                uint32_t pcpt_tag_size = read_be32(&file_data[cue_pos + 8]);
-                uint8_t cue_active = file_data[cue_pos + 19];
+                uint32_t entry_header_size = read_be32(&file_data[cue_data_pos + 4]);
+                uint32_t entry_size = read_be32(&file_data[cue_data_pos + 8]);
                 
-                if (cue_active) {
-                    data->memory_cues[i].type = 2; // Active
+                uint8_t hot_cue_num;
+                if (is_nxs2) {
+                    hot_cue_num = file_data[cue_data_pos + 12];  // PCO2: single byte
+                } else {
+                    // PCOB: 4-byte value at bytes 12-15
+                    uint32_t hot_cue_32 = read_be32(&file_data[cue_data_pos + 12]);
+                    hot_cue_num = (uint8_t)hot_cue_32;
                 }
                 
-                uint32_t data_pos = cue_pos + pcpt_header_size;
-                uint32_t start_ms = read_be32(&file_data[data_pos + 4]);
-                data->memory_cues[i].start_pos = ms_to_frames(start_ms);
+                Serial.printf("  Hot Cue entry %u: hot_cue_num=%u, entry_size=%u\n", i, hot_cue_num, entry_size);
                 
-                if (file_data[data_pos] == 2) { // Loop type
-                    data->memory_cues[i].type |= 0x1;
-                    uint32_t end_ms = read_be32(&file_data[data_pos + 8]);
-                    data->memory_cues[i].end_pos = ms_to_frames(end_ms);
+                if (hot_cue_num > 0 && hot_cue_num <= 3) {
+                    uint8_t idx = hot_cue_num - 1;
+                    
+                    uint32_t entry_data = cue_data_pos + entry_header_size;
+                    uint8_t cue_point_type;
+                    uint32_t time_ms;
+                    uint32_t loop_time_ms = 0;
+                    
+                    if (is_nxs2) {
+                        // PCO2/PCP2 format
+                        cue_point_type = file_data[entry_data];
+                        time_ms = read_be32(&file_data[entry_data + 4]);
+                        loop_time_ms = read_be32(&file_data[entry_data + 8]);
+                    } else {
+                        // PCOB/PCPT format
+                        cue_point_type = file_data[entry_data];
+                        time_ms = read_be32(&file_data[entry_data + 4]);
+                        loop_time_ms = read_be32(&file_data[entry_data + 8]);
+                    }
+                    
+                    data->hot_cues[idx].start_pos = ms_to_frames(time_ms);
+                    data->hot_cues[idx].type = 2;  // Mark as active
+                    
+                    Serial.printf("    start=%u ms (%u frames), type=%u\n", 
+                                  time_ms, data->hot_cues[idx].start_pos, cue_point_type);
+                    
+                    if (cue_point_type == 2) {  // Loop
+                        data->hot_cues[idx].type |= 0x1;  // Mark as loop
+                        data->hot_cues[idx].end_pos = ms_to_frames(loop_time_ms);
+                        Serial.printf("    Loop end=%u ms (%u frames)\n", 
+                                      loop_time_ms, data->hot_cues[idx].end_pos);
+                    }
                 }
                 
-                cue_pos += pcpt_tag_size;
+                cue_data_pos += entry_size;
             }
+            Serial.printf("✓ Parsed %u hot cues\n", data->hot_cue_count);
+            
+        } else if (cue_type == 0) {  // Memory Cues
+            data->memory_cue_count = (num_cues > 8) ? 8 : num_cues;
+            Serial.printf("Parsing %u memory cues...\n", num_cues);
+            
+            for (uint16_t i = 0; i < data->memory_cue_count; i++) {
+                if (cue_data_pos + 40 > file_size) break;
+                
+                uint32_t entry_tag = read_be32(&file_data[cue_data_pos]);
+                
+                if (is_nxs2 && entry_tag != TAG_PCP2) break;
+                if (!is_nxs2 && entry_tag != TAG_PCPT) break;
+                
+                uint32_t entry_header_size = read_be32(&file_data[cue_data_pos + 4]);
+                uint32_t entry_size = read_be32(&file_data[cue_data_pos + 8]);
+                
+                uint32_t entry_data = cue_data_pos + entry_header_size;
+                uint8_t cue_point_type = file_data[entry_data];
+                uint32_t time_ms = read_be32(&file_data[entry_data + 4]);
+                uint32_t loop_time_ms = read_be32(&file_data[entry_data + 8]);
+                
+                data->memory_cues[i].start_pos = ms_to_frames(time_ms);
+                data->memory_cues[i].type = 2;  // Mark as active
+                
+                Serial.printf("  Memory Cue %u: start=%u ms (%u frames)\n", 
+                              i, time_ms, data->memory_cues[i].start_pos);
+                
+                if (cue_point_type == 2) {
+                    data->memory_cues[i].type |= 0x1;
+                    data->memory_cues[i].end_pos = ms_to_frames(loop_time_ms);
+                }
+                
+                cue_data_pos += entry_size;
+            }
+            Serial.printf("✓ Parsed %u memory cues\n", data->memory_cue_count);
         }
     }
     
+    // ========== CHECK FOR SECOND CUE TAG ==========
+    pos += cue_tag_size;
+    
+    if (pos + 20 > file_size) {
+        Serial.println("=== DAT parse successful ===\n");
+        return ANLZ_OK;
+    }
+    
+    Serial.printf("\nChecking for second cue tag at pos %u\n", pos);
+    Serial.printf("Tag at pos %u: %c%c%c%c\n", pos,
+                  file_data[pos], file_data[pos+1], file_data[pos+2], file_data[pos+3]);
+    
+    next_tag = read_be32(&file_data[pos]);
+    is_nxs2 = (next_tag == TAG_PCO2);
+    is_old = (next_tag == TAG_PCOB);
+    
+    if (!is_nxs2 && !is_old) {
+        Serial.println("No second cue tag");
+        Serial.println("=== DAT parse successful ===\n");
+        return ANLZ_OK;
+    }
+    
+    if (is_nxs2) {
+        Serial.println("✓ Second PCO2 tag verified");
+    } else {
+        Serial.println("✓ Second PCOB tag verified");
+    }
+    
+    cue_header_size = read_be32(&file_data[pos + 4]);
+    cue_tag_size = read_be32(&file_data[pos + 8]);
+    
+    if (is_nxs2) {
+        cue_type = file_data[pos + 12];
+    } else {
+        cue_type = file_data[pos + 15];
+    }
+    
+    if (is_nxs2) {
+        num_cues = read_be16(&file_data[pos + 16]);
+    } else {
+        num_cues = read_be16(&file_data[pos + 18]);
+    }
+    
+    Serial.printf("Second cue tag: type=%u (%s), count=%u\n", 
+                  cue_type, cue_type == 1 ? "Hot Cues" : "Memory Cues", num_cues);
+    
+    if (num_cues > 0 && cue_type == 0) {  // Only parse if it's memory cues
+        uint32_t cue_data_pos = pos + cue_header_size;
+        data->memory_cue_count = (num_cues > 8) ? 8 : num_cues;
+        
+        Serial.printf("Parsing %u memory cues from second tag...\n", num_cues);
+        
+        for (uint16_t i = 0; i < data->memory_cue_count; i++) {
+            if (cue_data_pos + 40 > file_size) break;
+            
+            uint32_t entry_tag = read_be32(&file_data[cue_data_pos]);
+            
+            if (is_nxs2 && entry_tag != TAG_PCP2) break;
+            if (!is_nxs2 && entry_tag != TAG_PCPT) break;
+            
+            uint32_t entry_header_size = read_be32(&file_data[cue_data_pos + 4]);
+            uint32_t entry_size = read_be32(&file_data[cue_data_pos + 8]);
+            
+            uint32_t entry_data = cue_data_pos + entry_header_size;
+            uint8_t cue_point_type = file_data[entry_data];
+            uint32_t time_ms = read_be32(&file_data[entry_data + 4]);
+            uint32_t loop_time_ms = read_be32(&file_data[entry_data + 8]);
+            
+            data->memory_cues[i].start_pos = ms_to_frames(time_ms);
+            data->memory_cues[i].type = 2;
+            
+            Serial.printf("  Memory Cue %u: start=%u ms (%u frames)\n", 
+                          i, time_ms, data->memory_cues[i].start_pos);
+            
+            if (cue_point_type == 2) {
+                data->memory_cues[i].type |= 0x1;
+                data->memory_cues[i].end_pos = ms_to_frames(loop_time_ms);
+            }
+            
+            cue_data_pos += entry_size;
+        }
+        Serial.printf("✓ Parsed %u memory cues\n", data->memory_cue_count);
+    }
+    
+    Serial.println("=== DAT parse successful ===\n");
     return ANLZ_OK;
 }
 
@@ -600,6 +844,8 @@ uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzDa
     // Parse PWV7 from .2EX file
     // PWV7 has variable entries × 3 bytes [mid, high, low]
     // Header is 24 bytes (not 14 as documented)
+
+    
     
     if (!file_data || !data || file_size < 12) {
         return ANLZ_ERR_EXT_PWV3_INVALID;
@@ -636,6 +882,12 @@ uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzDa
             // Verify we have enough data in the file
             if (pwv7_data_start + pwv7_data_bytes > file_size) {
                 return ANLZ_ERR_CANNOT_READ_EXT;
+            }
+
+                    // Free any previous allocation
+            if (data->dynamic_waveform) {
+                free(data->dynamic_waveform);
+                data->dynamic_waveform = nullptr;
             }
             
             // Allocate dynamic waveform buffer

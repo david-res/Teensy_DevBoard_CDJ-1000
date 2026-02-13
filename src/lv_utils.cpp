@@ -1,11 +1,13 @@
 #include "lv_utils.h"
 
+/*
 const char* getKey(uint8_t numericValue) {
     if (numericValue < sizeof(keyLookup) / sizeof(keyLookup[0])) {
         return keyLookup[numericValue].key;
     }
     return "N/A";
 }
+*/    
 
 uint8_t lookupValue(uint8_t input) {
     switch (input) {
@@ -32,12 +34,23 @@ lv_color_t hex_string_to_color(const char* hex) {
     return lv_color_hex(color_val);
 }
 
+
+const char* getKeyColor(const char* keyName) {
+    for (const auto& entry : keyLookupColor) {
+        if (strcmp(entry.name, keyName) == 0) {
+            return entry.color;
+        }
+    }
+    return "#ffffff"; // fallback white
+}
+/*
 lv_color_t getKeyColor(uint8_t numericValue) {
     if (numericValue < sizeof(keyLookupColor) / sizeof(keyLookupColor[0])) {
         return hex_string_to_color(keyLookupColor[numericValue].key);
     }
     return COLOR_GRAY; // Default color for invalid keys
 }
+*/
 
 const char* formatDuration(uint16_t total_seconds) {
     static char formatted_time[8]; // Static buffer for "MM:SS\0"

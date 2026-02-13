@@ -21,6 +21,7 @@
 
 #include <Arduino.h>
 #include <SD.h>  // Or #include <SdFat.h> if using SdFat library
+#define DEBUG_PARSER
 
 // ============================================================================
 // MEMORY CONFIGURATION
@@ -189,13 +190,13 @@ public:
 
 inline RekordboxParser::RekordboxParser() {
     // Allocate arrays in EXTMEM (external RAM)
-    tracks = (Track*)extmem_malloc(sizeof(Track) * MAX_TRACKS);
-    keys = (Key*)extmem_malloc(sizeof(Key) * MAX_KEYS);
-    artists = (Artist*)extmem_malloc(sizeof(Artist) * MAX_ARTISTS);
-    albums = (Album*)extmem_malloc(sizeof(Album) * MAX_ALBUMS);
-    genres = (Genre*)extmem_malloc(sizeof(Genre) * MAX_GENRES);
-    labels = (Label*)extmem_malloc(sizeof(Label) * MAX_LABELS);
-    playlists = (Playlist*)extmem_malloc(sizeof(Playlist) * MAX_PLAYLISTS);
+    tracks = (Track*)malloc(sizeof(Track) * MAX_TRACKS);
+    keys = (Key*)malloc(sizeof(Key) * MAX_KEYS);
+    artists = (Artist*)malloc(sizeof(Artist) * MAX_ARTISTS);
+    albums = (Album*)malloc(sizeof(Album) * MAX_ALBUMS);
+    genres = (Genre*)malloc(sizeof(Genre) * MAX_GENRES);
+    labels = (Label*)malloc(sizeof(Label) * MAX_LABELS);
+    playlists = (Playlist*)malloc(sizeof(Playlist) * MAX_PLAYLISTS);
     
     // Initialize counts
     track_count = 0;
@@ -221,13 +222,13 @@ inline RekordboxParser::RekordboxParser() {
 
 inline RekordboxParser::~RekordboxParser() {
     // Free EXTMEM allocations
-    if (tracks) extmem_free(tracks);
-    if (keys) extmem_free(keys);
-    if (artists) extmem_free(artists);
-    if (albums) extmem_free(albums);
-    if (genres) extmem_free(genres);
-    if (labels) extmem_free(labels);
-    if (playlists) extmem_free(playlists);
+    if (tracks) free(tracks);
+    if (keys) free(keys);
+    if (artists) free(artists);
+    if (albums) free(albums);
+    if (genres) free(genres);
+    if (labels) free(labels);
+    if (playlists) free(playlists);
 }
 
 inline uint32_t RekordboxParser::readUInt32(uint8_t* data, uint32_t offset) {
@@ -252,21 +253,94 @@ inline bool RekordboxParser::readPage(uint32_t page_num) {
     return (bytes_read == PAGE_SIZE);
 }
 
+// Helper: Read a DeviceSQL string from buffer at given position into output char array
+// Returns the number of characters read, or 0 on failure
+inline uint16_t readDeviceSQLString(uint8_t* page_data, uint16_t str_pos, char* output, uint16_t max_len) {
+    if (str_pos >= PAGE_SIZE) return 0;
+    
+    uint8_t len_kind = page_data[str_pos];
+    
+    if (len_kind & 0x01) {
+        // Short ASCII string: length is (len_kind >> 1) - 1
+        uint8_t str_len = (len_kind >> 1) - 1;
+        if (str_len == 0 || str_len >= max_len) return 0;
+        if (str_pos + 1 + str_len > PAGE_SIZE) return 0;
+        
+        memcpy(output, &page_data[str_pos + 1], str_len);
+        output[str_len] = '\0';
+        return str_len;
+    } else if (len_kind == 0x40) {
+        // Long ASCII string: next 2 bytes are total field length
+        if (str_pos + 3 >= PAGE_SIZE) return 0;
+        uint16_t field_len = page_data[str_pos + 1] | (page_data[str_pos + 2] << 8);
+        uint16_t str_len = field_len - 4;  // subtract header overhead
+        if (str_len == 0 || str_len >= max_len) return 0;
+        if (str_pos + 4 + str_len > PAGE_SIZE) return 0;
+        
+        memcpy(output, &page_data[str_pos + 4], str_len);
+        output[str_len] = '\0';
+        return str_len;
+    } else if (len_kind == 0x90) {
+        // UTF-16LE string: next 2 bytes are total field length
+        if (str_pos + 3 >= PAGE_SIZE) return 0;
+        uint16_t field_len = page_data[str_pos + 1] | (page_data[str_pos + 2] << 8);
+        uint16_t str_data_len = (field_len - 4) / 2;  // number of UTF-16 chars
+        if (str_data_len == 0 || str_data_len >= max_len) return 0;
+        if (str_pos + 4 + (str_data_len * 2) > PAGE_SIZE) return 0;
+        
+        // Convert UTF-16LE to ASCII (take low byte of each char)
+        for (uint16_t i = 0; i < str_data_len && i < max_len - 1; i++) {
+            output[i] = page_data[str_pos + 4 + (i * 2)];
+        }
+        uint16_t copy_len = (str_data_len < max_len - 1) ? str_data_len : max_len - 1;
+        output[copy_len] = '\0';
+        return copy_len;
+    }
+    
+    return 0;  // Unknown string format
+}
+
 inline void RekordboxParser::parseTrackEntry(uint8_t* page_data, uint16_t offset, uint32_t page_offset) {
-    // Check for track marker 0x24 0x00
-    if (page_data[offset] != 0x24 || page_data[offset+1] != 0x00) {
+    // Track row structure per Deep Symmetry docs:
+    // Bytes 0x00-0x01: subtype (always 0x0024 for tracks)
+    // Bytes 0x04-0x07: bitmask
+    // Bytes 0x08-0x0b: sample_rate
+    // Bytes 0x20-0x23: key_id
+    // Bytes 0x28-0x2b: label_id
+    // Bytes 0x38-0x3b: tempo (BPM * 100)
+    // Bytes 0x3c-0x3f: genre_id
+    // Bytes 0x40-0x43: album_id
+    // Bytes 0x44-0x47: artist_id
+    // Bytes 0x48-0x4b: id (track ID)
+    // Bytes 0x54-0x55: duration (seconds)
+    // Byte  0x58: color_id
+    // Byte  0x59: rating
+    // Bytes 0x5a-0x5b: file_type
+    // Bytes 0x5c-0x5d: u7 (always 0x0003)
+    // Bytes 0x5e onwards: 21 x uint16 string offsets
+    //   Index 14 (at 0x5e + 28 = 0x7a): analyze_path
+    //   Index 17 (at 0x5e + 34 = 0x80): title
+    //   Index 20 (at 0x5e + 40 = 0x86): file_path (audio)
+    
+    // Verify subtype is 0x0024
+    uint16_t subtype = readUInt16(page_data, offset);
+    if (subtype != 0x0024) {
         return;
     }
     
-    // Read track ID at offset +72
-    uint16_t track_id = readUInt16(page_data, offset + 72);
+    // Need at least 0x88 bytes for the full row header + string offsets
+    if (offset + 0x88 > PAGE_SIZE) {
+        return;
+    }
+    
+    // Read track ID at offset 0x48
+    uint16_t track_id = readUInt16(page_data, offset + 0x48);
     
     if (track_id == 0 || track_id > MAX_TRACKS) {
         return;
     }
     
     // Find existing track or create new slot
-    // IMPORTANT: We update existing tracks to get the latest metadata
     int track_index = -1;
     for (uint16_t i = 0; i < track_count; i++) {
         if (tracks[i].id == track_id) {
@@ -286,37 +360,30 @@ inline void RekordboxParser::parseTrackEntry(uint8_t* page_data, uint16_t offset
     track->id = track_id;
     track->valid = true;
     
-    // ALWAYS update these core fields with latest values
-    // Key ID at offset +32
-    track->key_id = page_data[offset + 32];
+    // Key ID at offset 0x20 (4 bytes, use low byte)
+    track->key_id = page_data[offset + 0x20];
     
-    // BPM at offset +56 (stored as BPM * 100)
-    uint32_t bpm_raw = page_data[offset + 56] | 
-                       (page_data[offset + 57] << 8) | 
-                       (page_data[offset + 58] << 16);
+    // BPM (tempo) at offset 0x38 (stored as BPM * 100, 4 bytes)
+    uint32_t bpm_raw = readUInt32(page_data, offset + 0x38);
     track->bpm = bpm_raw / 100.0f;
     
-    // Duration at offset +84 (seconds)
-    track->duration = readUInt16(page_data, offset + 84);
+    // Duration at offset 0x54 (seconds, 2 bytes)
+    track->duration = readUInt16(page_data, offset + 0x54);
     
-    // Rating at offset +88
-    track->rating = readUInt16(page_data, offset + 88);
+    // Rating at byte 0x59
+    track->rating = page_data[offset + 0x59];
     
     // File offset for reference
     track->file_offset = page_offset + offset;
     
-    // Update reference fields - ALWAYS update with latest IDs
-    // Artist ID at offset +68 (0x44) - 4 bytes as per Deep Symmetry docs
-    uint32_t artist_id = readUInt32(page_data, offset + 68);
-    
-    #ifdef DEBUG_PARSER
-    Serial.printf("  Track ID %d: artist_id=%d\n", track_id, artist_id);
-    #endif
+    // Artist ID at offset 0x44 (4 bytes)
+    uint32_t artist_id = readUInt32(page_data, offset + 0x44);
     
     const char* artist_name = getArtistName(artist_id);
     
     #ifdef DEBUG_PARSER
-    Serial.printf("    -> artist_name='%s'\n", artist_name ? artist_name : "NULL");
+    Serial.printf("  Track %d: artist_id=%d, artist_count=%d, artist_name='%s'\n", 
+                  track_id, artist_id, artist_count, artist_name ? artist_name : "NULL");
     #endif
     
     if (artist_name && artist_name[0] != '\0') {
@@ -324,8 +391,8 @@ inline void RekordboxParser::parseTrackEntry(uint8_t* page_data, uint16_t offset
         track->artist[MAX_TITLE_LENGTH - 1] = '\0';
     }
     
-    // Album ID at offset +64 (0x40) - 4 bytes as per Deep Symmetry docs
-    uint32_t album_id = readUInt32(page_data, offset + 64);
+    // Album ID at offset 0x40 (4 bytes)
+    uint32_t album_id = readUInt32(page_data, offset + 0x40);
     const char* album_name = getAlbumName(album_id);
     
     #ifdef DEBUG_PARSER
@@ -338,116 +405,90 @@ inline void RekordboxParser::parseTrackEntry(uint8_t* page_data, uint16_t offset
         track->album[MAX_TITLE_LENGTH - 1] = '\0';
     }
     
-    // Genre ID at offset +60 (0x3C) - 4 bytes
-    uint32_t genre_id = readUInt32(page_data, offset + 60);
+    // Genre ID at offset 0x3C (4 bytes)
+    uint32_t genre_id = readUInt32(page_data, offset + 0x3C);
     const char* genre_name = getGenreName(genre_id);
     if (genre_name && genre_name[0] != '\0') {
         strncpy(track->genre, genre_name, MAX_TITLE_LENGTH - 1);
         track->genre[MAX_TITLE_LENGTH - 1] = '\0';
     }
     
-    // Label ID at offset +40 (0x28) - 4 bytes
-    uint32_t label_id = readUInt32(page_data, offset + 40);
+    // Label ID at offset 0x28 (4 bytes)
+    uint32_t label_id = readUInt32(page_data, offset + 0x28);
     const char* label_name = getLabelName(label_id);
     if (label_name && label_name[0] != '\0') {
         strncpy(track->label, label_name, MAX_TITLE_LENGTH - 1);
         track->label[MAX_TITLE_LENGTH - 1] = '\0';
     }
     
-    // Find ANLZ and audio file paths
-    // ANLZ path starts before .DAT, audio path starts after title
-    for (uint16_t i = offset + 92; i < PAGE_SIZE - 4 && i < offset + 400; i++) {
-        if (page_data[i] == '.' && 
-            page_data[i+1] == 'D' && 
-            page_data[i+2] == 'A' && 
-            page_data[i+3] == 'T') {
-            
-            // ANLZ path: look backwards from .DAT to find start (typically 'Y/')
-            uint16_t anlz_start = i;
-            for (uint16_t j = i; j > offset + 92 && j > i - 80; j--) {
-                if (page_data[j] == 'Y' && page_data[j+1] == '/') {
-                    anlz_start = j;
-                    break;
-                }
-            }
-            
-            // Copy ANLZ .DAT path
-            uint16_t anlz_len = 0;
-            for (uint16_t j = 0; j < 127 && (anlz_start + j) <= i + 3; j++) {
-                track->anlz_path[j] = page_data[anlz_start + j];
-                anlz_len++;
-            }
-            track->anlz_path[anlz_len] = '\0';
-            
-            // Generate .EXT path (replace .DAT with .EXT)
-            strncpy(track->anlz_ext_path, track->anlz_path, 127);
-            track->anlz_ext_path[127] = '\0';
-            if (anlz_len >= 4) {
-                track->anlz_ext_path[anlz_len - 3] = 'E';
-                track->anlz_ext_path[anlz_len - 2] = 'X';
-                track->anlz_ext_path[anlz_len - 1] = 'T';
-            }
-            
-            // Generate .EX2 path (replace .DAT with .EX2)
-            strncpy(track->anlz_ex2_path, track->anlz_path, 127);
-            track->anlz_ex2_path[127] = '\0';
-            if (anlz_len >= 4) {
-                track->anlz_ex2_path[anlz_len - 3] = '2';
-                track->anlz_ex2_path[anlz_len - 2] = 'E';
-                track->anlz_ex2_path[anlz_len - 1] = 'X';
-            }
-            
-            // Title starts 16 bytes after .DAT
-            uint16_t title_start = i + 16;
-            uint16_t title_len = 0;
-            
-            // Read title until 0x03
-            for (uint16_t j = 0; j < MAX_TITLE_LENGTH - 1; j++) {
-                if (title_start + j >= PAGE_SIZE) break;
-                if (page_data[title_start + j] == 0x03) break;
-                
-                track->title[j] = page_data[title_start + j];
-                title_len++;
-            }
-            track->title[title_len] = '\0';
-            
-            // Audio path: look for .wav, .mp3, .flac, .aiff after title
-            uint16_t search_start = title_start + title_len;
-            for (uint16_t j = search_start; j < PAGE_SIZE - 4 && j < search_start + 200; j++) {
-                // Check for audio file extensions
-                if ((page_data[j] == '.' && page_data[j+1] == 'w' && page_data[j+2] == 'a' && page_data[j+3] == 'v') ||
-                    (page_data[j] == '.' && page_data[j+1] == 'm' && page_data[j+2] == 'p' && page_data[j+3] == '3') ||
-                    (page_data[j] == '.' && page_data[j+1] == 'f' && page_data[j+2] == 'l' && page_data[j+3] == 'a') ||
-                    (page_data[j] == '.' && page_data[j+1] == 'a' && page_data[j+2] == 'i' && page_data[j+3] == 'f')) {
-                    
-                    // Found extension, look backwards for path start (typically '/' or after 0x03)
-                    uint16_t audio_start = j;
-                    for (uint16_t k = j; k > search_start && k > j - 120; k--) {
-                        if (page_data[k] == '/' && page_data[k-1] != 0x03) {
-                            audio_start = k;
-                            break;
-                        }
-                    }
-                    
-                    // Copy audio path
-                    uint16_t audio_len = 0;
-                    uint16_t ext_end = j + 4;
-                    if (page_data[j+1] == 'f') ext_end = j + 5; // .flac
-                    if (page_data[j+1] == 'a') ext_end = j + 5; // .aiff
-                    
-                    for (uint16_t k = 0; k < 127 && (audio_start + k) < ext_end; k++) {
-                        if (page_data[audio_start + k] == 0) break;
-                        track->audio_path[k] = page_data[audio_start + k];
-                        audio_len++;
-                    }
-                    track->audio_path[audio_len] = '\0';
-                    
-                    break;
-                }
-            }
-            
-            break;
+    // ========================================================================
+    // Read strings using the 21 x uint16 offset array starting at byte 0x5e
+    // Each offset is relative to the start of the track row
+    // ========================================================================
+    
+    // String index 17 = title (offset at 0x5e + 17*2 = 0x80)
+    uint16_t title_str_offset = readUInt16(page_data, offset + 0x80);
+    if (title_str_offset > 0 && title_str_offset < PAGE_SIZE) {
+        uint16_t title_pos = offset + title_str_offset;
+        readDeviceSQLString(page_data, title_pos, track->title, MAX_TITLE_LENGTH);
+    }
+    
+    #ifdef DEBUG_PARSER
+    Serial.printf("  Track ID %d: title='%s'\n", track_id, track->title);
+    #endif
+    
+    // String index 14 = analyze_path (offset at 0x5e + 14*2 = 0x7a)
+    uint16_t anlz_str_offset = readUInt16(page_data, offset + 0x7a);
+    if (anlz_str_offset > 0 && anlz_str_offset < PAGE_SIZE) {
+        uint16_t anlz_pos = offset + anlz_str_offset;
+        char temp_path[128];
+        temp_path[0] = '\0';
+        readDeviceSQLString(page_data, anlz_pos, temp_path, 128);
+        
+        // Strip leading "Y/" if present
+        const char* anlz_src = temp_path;
+        if (anlz_src[0] == 'Y' && anlz_src[1] == '/') {
+            anlz_src += 2;
         }
+        strncpy(track->anlz_path, anlz_src, 127);
+        track->anlz_path[127] = '\0';
+        
+        size_t path_len = strlen(track->anlz_path);
+        
+        // Generate .EXT path from .DAT path
+        strncpy(track->anlz_ext_path, track->anlz_path, 127);
+        track->anlz_ext_path[127] = '\0';
+        if (path_len >= 4) {
+            track->anlz_ext_path[path_len - 3] = 'E';
+            track->anlz_ext_path[path_len - 2] = 'X';
+            track->anlz_ext_path[path_len - 1] = 'T';
+        }
+        
+        // Generate .2EX path from .DAT path
+        strncpy(track->anlz_ex2_path, track->anlz_path, 127);
+        track->anlz_ex2_path[127] = '\0';
+        if (path_len >= 4) {
+            track->anlz_ex2_path[path_len - 3] = '2';
+            track->anlz_ex2_path[path_len - 2] = 'E';
+            track->anlz_ex2_path[path_len - 1] = 'X';
+        }
+    }
+    
+    // String index 20 = file_path / audio path (offset at 0x5e + 20*2 = 0x86)
+    uint16_t audio_str_offset = readUInt16(page_data, offset + 0x86);
+    if (audio_str_offset > 0 && audio_str_offset < PAGE_SIZE) {
+        uint16_t audio_pos = offset + audio_str_offset;
+        char temp_audio[128];
+        temp_audio[0] = '\0';
+        readDeviceSQLString(page_data, audio_pos, temp_audio, 128);
+        
+        // Strip leading "Y/" if present
+        const char* audio_src = temp_audio;
+        if (audio_src[0] == 'Y' && audio_src[1] == '/') {
+            audio_src += 2;
+        }
+        strncpy(track->audio_path, audio_src, 127);
+        track->audio_path[127] = '\0';
     }
 }
 
@@ -517,12 +558,125 @@ inline void RekordboxParser::parseKeysTable(uint32_t first_page, uint32_t last_p
 
 inline void RekordboxParser::parseArtistsTable(uint32_t first_page, uint32_t last_page) {
     uint32_t current_page = first_page;
+    uint8_t page_count = 0;
+    const uint8_t MAX_PAGES = 100;
     
     #ifdef DEBUG_PARSER
     Serial.printf("Parsing artists: first_page=%d, last_page=%d\n", first_page, last_page);
     #endif
     
-    while (current_page != 0 && current_page <= last_page) {
+    // Check if first_page is valid (within reasonable bounds)
+    if (first_page == 0 || first_page > 100) {
+        // Invalid pointer - scan all pages instead
+        #ifdef DEBUG_PARSER
+        Serial.println("Invalid artists pointer - scanning all pages");
+        #endif
+        
+        // Get total pages from header
+        if (!readPage(0)) return;
+        uint32_t next_unused = readUInt32(buffer, 20);
+        if (next_unused == 0 || next_unused > 1000) next_unused = 100;
+        
+        // Scan all pages looking for artist entries
+        for (uint32_t page_num = 1; page_num < next_unused && page_num < 100; page_num++) {
+            if (!readPage(page_num)) continue;
+            
+            uint8_t flags = buffer[0x1b];
+            if ((flags & 0x40) != 0) continue;  // Skip strange pages
+            
+            // Row count is at byte 0x18
+            uint8_t num_rows_page = buffer[0x18];
+            if (num_rows_page == 0 || num_rows_page > 16) continue;
+            
+            // Row offsets are in group 0, slots (15-N) through 14
+            uint16_t group_offset = PAGE_SIZE - 36;
+            
+            for (uint8_t slot = (15 - num_rows_page); slot < 15 && artist_count < MAX_ARTISTS; slot++) {
+                uint16_t row_offset = readUInt16(buffer, group_offset + 2 + slot * 2);
+                uint16_t row_start = 0x28 + row_offset;
+                
+                if (row_start + 20 >= PAGE_SIZE) continue;
+                
+                // Check for artist subtype
+                uint16_t subtype = readUInt16(buffer, row_start);
+                if (subtype != 0x0060 && subtype != 0x0064) continue;
+                
+                // Get artist ID
+                uint32_t artist_id = readUInt32(buffer, row_start + 4);
+                if (artist_id == 0 || artist_id > 10000) continue;
+                
+                // Check if already exists
+                bool exists = false;
+                for (uint16_t i = 0; i < artist_count; i++) {
+                    if (artists[i].id == artist_id) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (exists) continue;
+                
+                // Get name offset
+                uint16_t name_offset;
+                if (subtype == 0x0060) {
+                    name_offset = buffer[row_start + 9];
+                } else {
+                    name_offset = readUInt16(buffer, row_start + 10);
+                }
+                
+                uint16_t name_pos = row_start + name_offset;
+                if (name_pos >= PAGE_SIZE) continue;
+                
+                // Parse DeviceSQL string
+                uint8_t len_kind = buffer[name_pos];
+                
+                if (len_kind & 0x01) {
+                    // Short ASCII string
+                    uint8_t str_len = (len_kind >> 1) - 1;
+                    if (str_len > 0 && str_len < MAX_TITLE_LENGTH && name_pos + 1 + str_len <= PAGE_SIZE) {
+                        Artist* artist = &artists[artist_count];
+                        artist->id = artist_id;
+                        memcpy(artist->name, &buffer[name_pos + 1], str_len);
+                        artist->name[str_len] = '\0';
+                        
+                        #ifdef DEBUG_PARSER
+                        Serial.printf("Found artist ID=%d: '%s'\n", artist_id, artist->name);
+                        #endif
+                        
+                        artist_count++;
+                    }
+                } else if (len_kind == 0x90) {
+                    // UTF-16LE string
+                    uint16_t str_field_len = readUInt16(buffer, name_pos + 1);
+                    uint16_t str_data_len = (str_field_len - 4) / 2;
+                    
+                    if (str_data_len > 0 && str_data_len < MAX_TITLE_LENGTH && name_pos + 4 + (str_data_len * 2) <= PAGE_SIZE) {
+                        Artist* artist = &artists[artist_count];
+                        artist->id = artist_id;
+                        
+                        for (uint16_t i = 0; i < str_data_len && i < MAX_TITLE_LENGTH - 1; i++) {
+                            artist->name[i] = buffer[name_pos + 4 + (i * 2)];
+                        }
+                        artist->name[str_data_len < MAX_TITLE_LENGTH ? str_data_len : MAX_TITLE_LENGTH - 1] = '\0';
+                        
+                        #ifdef DEBUG_PARSER
+                        Serial.printf("Found artist ID=%d: '%s'\n", artist_id, artist->name);
+                        #endif
+                        
+                        artist_count++;
+                    }
+                }
+            }
+        }
+        
+        #ifdef DEBUG_PARSER
+        Serial.printf("Scanned all pages - found %d artists\n", artist_count);
+        #endif
+        
+        return;  // Done with scan
+    }
+    
+    // Original code for valid pointers - follow next_page links
+    while (current_page != 0 && page_count++ < MAX_PAGES) {
         if (!readPage(current_page)) break;
         
         uint32_t next_page = readUInt32(buffer, 12);
@@ -530,133 +684,78 @@ inline void RekordboxParser::parseArtistsTable(uint32_t first_page, uint32_t las
         uint8_t flags = buffer[27];
         
         #ifdef DEBUG_PARSER
-        Serial.printf("  Page %d: type=%d, flags=0x%02x\n", current_page, page_type, flags);
+        Serial.printf("  Artist page %d: type=%d, flags=0x%02x, next=%d\n", current_page, page_type, flags, next_page);
         #endif
         
-        // Check page type (artist pages seem to be type 1)
-        if (page_type != 1) {
-            #ifdef DEBUG_PARSER
-            Serial.printf("  -> Skipping (wrong type)\n");
-            #endif
+        // Don't filter by page_type
+        if ((flags & 0x40) != 0) {
             current_page = next_page;
             continue;
         }
         
-        // NOTE: Temporarily not filtering strange pages to see what happens
-        // if ((flags & 0x40) != 0) {
-        //     Serial.printf("  -> Skipping (strange page)\n");
-        //     current_page = next_page;
-        //     continue;
-        // }
-        
-        // Get row presence flags
-        uint16_t num_rows_small = ((buffer[8] << 8 | buffer[9]) & 0x1FFF);
-        uint16_t num_rows_present = ((buffer[10] << 8 | buffer[11]) >> 5);
+        // Row count is at byte 0x18
+        uint8_t num_rows_page = buffer[0x18];
         
         #ifdef DEBUG_PARSER
-        Serial.printf("  -> num_rows_small=%d, num_rows_present=%d\n", num_rows_small, num_rows_present);
+        Serial.printf("    num_rows=%d\n", num_rows_page);
         #endif
         
-        // Parse rows using row index at end of page
-        for (uint16_t row_idx = 0; row_idx < num_rows_small && artist_count < MAX_ARTISTS; row_idx++) {
-            // Calculate row group (16 rows per group)
-            uint16_t group = row_idx / 16;
-            uint16_t group_offset = PAGE_SIZE - (group * 36) - 36;
+        if (num_rows_page > 0 && num_rows_page <= 16) {
+            uint16_t group_offset = PAGE_SIZE - 36;
             
-            // Check row presence bit
-            uint16_t presence_word = readUInt16(buffer, group_offset);
-            if ((presence_word & (1 << (row_idx % 16))) == 0) {
-                continue; // Row not present
-            }
+            for (uint8_t slot = (15 - num_rows_page); slot < 15 && artist_count < MAX_ARTISTS; slot++) {
+                uint16_t row_offset = readUInt16(buffer, group_offset + 2 + slot * 2);
+                uint16_t row_start = 0x28 + row_offset;
             
-            // Get row offset
-            uint16_t row_offset_pos = group_offset + 2 + ((row_idx % 16) * 2);
-            uint16_t row_offset = readUInt16(buffer, row_offset_pos);
-            uint16_t row_start = 0x28 + row_offset; // 0x28 = page header size
+                if (row_start + 10 >= PAGE_SIZE) continue;
             
-            if (row_start + 10 >= PAGE_SIZE) continue;
-            
-            // Parse artist row structure according to Deep Symmetry docs
             uint16_t subtype = readUInt16(buffer, row_start);
             
-            #ifdef DEBUG_PARSER
-            Serial.printf("    Row %d: subtype=0x%04x, row_start=%d\n", row_idx, subtype, row_start);
-            #endif
-            
-            // Subtype 0x60 = short name, 0x64 = far name
             if (subtype != 0x0060 && subtype != 0x0064) {
-                #ifdef DEBUG_PARSER
-                Serial.printf("    -> Wrong subtype, skipping\n");
-                #endif
                 continue;
             }
             
-            // Bytes 4-7: artist ID (4 bytes!)
             uint32_t artist_id = readUInt32(buffer, row_start + 4);
             if (artist_id == 0 || artist_id > 10000) {
-                #ifdef DEBUG_PARSER
-                Serial.printf("    -> Invalid ID=%d, skipping\n", artist_id);
-                #endif
                 continue;
             }
             
-            #ifdef DEBUG_PARSER
-            Serial.printf("    -> Artist ID=%d\n", artist_id);
-            #endif
-            
-            // Get name offset
             uint16_t name_offset;
             if (subtype == 0x0060) {
-                // Short form: 1-byte offset at position 9
                 name_offset = buffer[row_start + 9];
             } else {
-                // Long form: 2-byte offset at position 10-11
                 name_offset = readUInt16(buffer, row_start + 10);
             }
             
-            // Name is relative to row start
             uint16_t name_pos = row_start + name_offset;
             if (name_pos >= PAGE_SIZE) continue;
             
-            // Parse DeviceSQL string
             uint8_t len_kind = buffer[name_pos];
             
-            #ifdef DEBUG_PARSER
-            Serial.printf("    -> name_offset=%d, name_pos=%d, len_kind=0x%02x\n", name_offset, name_pos, len_kind);
-            #endif
-            
             if (len_kind & 0x01) {
-                // Short ASCII string
-                uint8_t str_len = (len_kind >> 1) - 1; // Exclude len_kind byte itself
+                uint8_t str_len = (len_kind >> 1) - 1;
                 if (str_len > 0 && str_len < MAX_TITLE_LENGTH && name_pos + 1 + str_len <= PAGE_SIZE) {
                     Artist* artist = &artists[artist_count];
                     artist->id = artist_id;
                     memcpy(artist->name, &buffer[name_pos + 1], str_len);
                     artist->name[str_len] = '\0';
-                    #ifdef DEBUG_PARSER
-                    Serial.printf("    -> Added artist: '%s'\n", artist->name);
-                    #endif
                     artist_count++;
                 }
             } else if (len_kind == 0x90) {
-                // UTF-16LE string
                 uint16_t str_field_len = readUInt16(buffer, name_pos + 1);
-                uint16_t str_data_len = (str_field_len - 4) / 2; // UTF-16 = 2 bytes per char
+                uint16_t str_data_len = (str_field_len - 4) / 2;
                 
                 if (str_data_len > 0 && str_data_len < MAX_TITLE_LENGTH && name_pos + 4 + (str_data_len * 2) <= PAGE_SIZE) {
                     Artist* artist = &artists[artist_count];
                     artist->id = artist_id;
                     
-                    // Convert UTF-16LE to ASCII (simple conversion, drops high bytes)
                     for (uint16_t i = 0; i < str_data_len && i < MAX_TITLE_LENGTH - 1; i++) {
                         artist->name[i] = buffer[name_pos + 4 + (i * 2)];
                     }
                     artist->name[str_data_len < MAX_TITLE_LENGTH ? str_data_len : MAX_TITLE_LENGTH - 1] = '\0';
-                    #ifdef DEBUG_PARSER
-                    Serial.printf("    -> Added artist: '%s'\n", artist->name);
-                    #endif
                     artist_count++;
                 }
+            }
             }
         }
         
@@ -667,7 +766,6 @@ inline void RekordboxParser::parseArtistsTable(uint32_t first_page, uint32_t las
     Serial.printf("Total artists parsed: %d\n", artist_count);
     #endif
 }
-
 inline void RekordboxParser::parseAlbumsTable(uint32_t first_page, uint32_t last_page) {
     uint32_t current_page = first_page;
     
@@ -678,7 +776,7 @@ inline void RekordboxParser::parseAlbumsTable(uint32_t first_page, uint32_t last
         uint32_t page_type = readUInt32(buffer, 8);
         uint8_t flags = buffer[27];
         
-        if (page_type != 2 || (flags & 0x40) != 0) {
+        if (page_type != 3 || (flags & 0x40) != 0) {
             current_page = next_page;
             continue;
         }
@@ -728,7 +826,7 @@ inline void RekordboxParser::parseGenresTable(uint32_t first_page, uint32_t last
         uint32_t page_type = readUInt32(buffer, 8);
         uint8_t flags = buffer[27];
         
-        if (page_type != 4 || (flags & 0x40) != 0) {
+        if (page_type != 1 || (flags & 0x40) != 0) {
             current_page = next_page;
             continue;
         }
@@ -778,7 +876,7 @@ inline void RekordboxParser::parseLabelsTable(uint32_t first_page, uint32_t last
         uint32_t page_type = readUInt32(buffer, 8);
         uint8_t flags = buffer[27];
         
-        if (page_type != 3 || (flags & 0x40) != 0) {
+        if (page_type != 4 || (flags & 0x40) != 0) {
             current_page = next_page;
             continue;
         }
@@ -1080,21 +1178,21 @@ inline bool RekordboxParser::parse(const char* filename) {
                 tracks_first = first_page;
                 tracks_last = last_page;
                 break;
-            case 1:  // Artists
+            case 1:  // Genres
+                genres_first = first_page;
+                genres_last = last_page;
+                break;
+            case 2:  // Artists
                 artists_first = first_page;
                 artists_last = last_page;
                 break;
-            case 2:  // Albums
+            case 3:  // Albums
                 albums_first = first_page;
                 albums_last = last_page;
                 break;
-            case 3:  // Labels
+            case 4:  // Labels
                 labels_first = first_page;
                 labels_last = last_page;
-                break;
-            case 4:  // Genres
-                genres_first = first_page;
-                genres_last = last_page;
                 break;
             case 5:  // Keys
                 keys_first = first_page;
@@ -1151,13 +1249,31 @@ inline bool RekordboxParser::parse(const char* filename) {
             if (!readPage(current_page)) break;
             
             uint32_t next_page = readUInt32(buffer, 12);
-            uint32_t page_type = readUInt32(buffer, 8);
-            uint8_t flags = buffer[27];
+            uint8_t flags = buffer[0x1b];
             
-            if (page_type == 0 && (flags & 0x40) == 0) {
-                // Scan page for tracks
-                for (uint16_t offset = 0; offset < PAGE_SIZE - 100; offset++) {
-                    parseTrackEntry(buffer, offset, current_page * PAGE_SIZE);
+            // Only process data pages (page_flags & 0x40 == 0)
+            if ((flags & 0x40) == 0) {
+                // Row count is at byte 0x18
+                uint8_t num_rows = buffer[0x18];
+                
+                #ifdef DEBUG_PARSER
+                Serial.printf("Track page %d: num_rows=%d, flags=0x%02x\n", 
+                              current_page, num_rows, flags);
+                #endif
+                
+                if (num_rows > 0 && num_rows <= 16) {
+                    // Row offsets are in group 0, slots (15-num_rows) through 14
+                    // Group 0 starts at PAGE_SIZE - 36
+                    uint16_t group_offset = PAGE_SIZE - 36;
+                    
+                    for (uint8_t slot = (15 - num_rows); slot < 15; slot++) {
+                        uint16_t row_offset = readUInt16(buffer, group_offset + 2 + slot * 2);
+                        uint16_t row_start = 0x28 + row_offset;
+                        
+                        if (row_start + 0x88 >= PAGE_SIZE) continue;
+                        
+                        parseTrackEntry(buffer, row_start, current_page * PAGE_SIZE);
+                    }
                 }
             }
             
@@ -1165,11 +1281,11 @@ inline bool RekordboxParser::parse(const char* filename) {
         }
     }
     
-    deduplicateTracks();
+        deduplicateTracks();
     
     Serial.println("Parsing playlists...");
     if (playlists_tree_first != 0) {
-        parsePlaylistTree(playlists_tree_first, playlists_tree_last);
+       parsePlaylistTree(playlists_tree_first, playlists_tree_last);
     }
     
     if (playlists_entries_first != 0) {
@@ -1180,10 +1296,10 @@ inline bool RekordboxParser::parse(const char* filename) {
     
     Serial.println("Parsing history...");
     if (history_first != 0) {
-        parseHistory(history_first, history_last);
+        //parseHistory(history_first, history_last);
     }
     
-    file.close();
+    //file.close();
     
     Serial.print("Parsed: ");
     Serial.print(track_count);

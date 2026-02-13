@@ -140,6 +140,8 @@ extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
 
 // Parser instance
 extern RekordboxParser rbParser;
+extern Track** all_tracks;
+extern int16_t track_count;
 
 
 		
@@ -150,68 +152,37 @@ extern RekordboxParser rbParser;
 
 
 struct KeyInfo {
-    uint8_t numericValue;
-    const char* key;
-};
-
-struct KeyInfoColor {
-    uint8_t numericValue;
+    const char* name;
     const char* color;
 };
 
-constexpr KeyInfo keyLookup[] = {
-    {0, "C"},
-    {1, "Am"},
-    {2, "G"},
-    {3, "Em"},
-    {4, "D"},
-    {5, "Bm"},
-    {6, "A"},
-    {7, "F#m"},
-    {8, "E"},
-    {9, "Dbm"},
-    {10, "B"},
-    {11, "Abm"},
-    {12, "F#"},
-    {13, "Ebm"},
-    {14, "Db"},
-    {15, "Bbm"},
-    {16, "Ab"},
-    {17, "Fm"},
-    {18, "Eb"},
-    {19, "Cm"},
-    {20, "Bb"},
-    {21, "Gm"},
-    {22, "F"},
-    {23, "Dm"}
+constexpr KeyInfo keyLookupColor[] = {
+    {"Am", "#ee82d9"},
+    {"Em", "#f2abe4"},
+    {"Bm", "#ce8fff"},
+    {"F#m", "#ddb4fd"},
+    {"Dbm", "#9fb6ff"},
+    {"Abm", "#becdfd"},
+    {"Ebm", "#56d9f9"},
+    {"Bbm", "#8ee4f9"},
+    {"Fm", "#00ebeb"},
+    {"Cm", "#55f0f0"},
+    {"Gm", "#01edca"},
+    {"Dm", "#56f1da"},
+    {"A", "#3cee81"},
+    {"E", "#7df2aa"},
+    {"B", "#86f24f"},
+    {"F#", "#aef589"},
+    {"Db", "#dfca73"},
+    {"Ab", "#e8daa1"},
+    {"Eb", "#ffa07c"},
+    {"Bb", "#fdbfa7"},
+    {"F", "#ff8894"},
+    {"C", "#fdafb7"},
+    {"G", "#ff81b4"},
+    {"D", "#fdaacc"}
 };
 
-constexpr KeyInfo keyLookupColor[] = {
-    {0, "#ee82d9"},
-    {1, "#f2abe4"},
-    {2, "#ce8fff"},
-    {3, "#ddb4fd"},
-    {4, "#9fb6ff"},
-    {5, "#becdfd"},
-    {6, "#56d9f9"},
-    {7, "#8ee4f9"},
-    {8, "#00ebeb"},
-    {9, "#55f0f0"},
-    {10, "#01edca"},
-    {11, "#56f1da"},
-    {12, "#3cee81"},
-    {13, "#7df2aa"},
-    {14, "#86f24f"},
-    {15, "#aef589"},
-    {16, "#dfca73"},
-    {17, "#e8daa1"},
-    {18, "#ffa07c"},
-    {19, "#fdbfa7"},
-    {20, "#ff8894"},
-    {21, "#fdafb7"},
-    {22, "#ff81b4"},
-    {23, "#fdaacc"}
-};
 
 
 // Global beat lookup structure

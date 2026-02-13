@@ -214,6 +214,7 @@ uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform
     if (!ANLZ_FILE_VALID(file)) {
         return ANLZ_ERR_CANNOT_OPEN_EXT;
     }
+    Serial.printf("Opened file: %s\n", filepath);
     
     uint32_t file_size = ANLZ_FILE_SIZE(file);
     uint8_t* buffer = (uint8_t*)malloc(file_size);
@@ -221,7 +222,8 @@ uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform
         ANLZ_FILE_CLOSE(file);
         return ANLZ_ERR_CANNOT_READ_EXT;
     }
-    
+    Serial.printf("Allocated buffer for file size: %u bytes\n", file_size);
+
     uint32_t bytes_read = ANLZ_FILE_READ_DATA(file, buffer, file_size);
     ANLZ_FILE_CLOSE(file);
     
@@ -229,17 +231,28 @@ uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform
         free(buffer);
         return ANLZ_ERR_CANNOT_READ_EXT;
     }
-    
+    Serial.printf("Read file data: %u bytes\n", bytes_read);
+
     // Parse dynamic waveform (PWV7 from .2EX file)
     AnlzData temp_data;
     anlz_init(&temp_data);
-    
+    Serial.println("Parsing dynamic waveform...");
+
+    // Before parsing
+    if (*dynamic_waveform) {
+        free(*dynamic_waveform);
+        *dynamic_waveform = nullptr;
+    }
+        
     uint16_t error = anlz_parse_dynamic(buffer, file_size, &temp_data);
+    Serial.printf("Parsing result: error code %d\n", error);
     free(buffer);
-    
+    Serial.println("Finished parsing dynamic waveform.");
+    delay(1);
     if (error == ANLZ_OK) {
         *dynamic_waveform = temp_data.dynamic_waveform;
         *num_entries = temp_data.dynamic_waveform_entries;
+        Serial.printf("Extracted dynamic waveform: %u entries\n", *num_entries);
         // Don't free temp_data.dynamic_waveform - we're returning it to caller
     }
     

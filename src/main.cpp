@@ -83,7 +83,9 @@ uint32_t play_count = 0;
 uint32_t targetFrequency = CPU_SPEED_MHZ;
 
 RekordboxParser rbParser;          // Create it here
-Track** all_tracks;
+int16_t track_count = 0;
+Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initialized to nullptr	
+
 
 
 void DMA2_Stream5_IRQHandler(void);
@@ -728,7 +730,7 @@ void setup()
   //////////////////////////////
 #else  
 
-  int16_t track_count;
+  
   
  	
 
@@ -753,15 +755,19 @@ void setup()
 	// Use the tracks
 	for (uint16_t i = 0; i < track_count; i++) {
 		if (all_tracks[i]) {
-			Serial.printf("Track %d: %s - %s\n", 
+			Serial.printf("Track %d: %s - %s %s\n", 
 						all_tracks[i]->id,
 						all_tracks[i]->title,
-						all_tracks[i]->artist);
+						all_tracks[i]->artist,
+						rbParser.getKeyName(all_tracks[i]->key_id));
 		}
 	}
-    createListScreen(all_tracks, track_count);
+	
+	create_dj_browser_ui();
+	populate_track_list(all_tracks, track_count);
+	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 
-  	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+  	
 	
 #endif
 

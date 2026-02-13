@@ -24,5 +24,6 @@ const char* formatDuration(uint16_t total_seconds);
 uint32_t get_voltage_mv();
 float getPSRamSpeed();
 void setPSRamSpeed(int mhz);
+const char* getKeyColor(const char* keyName);
 
 #endif // LV_UTILS_H
