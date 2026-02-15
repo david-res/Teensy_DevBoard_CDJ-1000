@@ -94,9 +94,6 @@ extern volatile uint32_t all_long;
 extern bool is_playing;
 extern uint32_t slip_play_adr;
 extern uint8_t mem_offset_adress;
-extern float c0, c1, c2, c3, r0, r1, r2, r3;
-extern int32_t even1, even2, odd1, odd2;
-extern float COEF[8];
 extern uint8_t play_enable;
 extern uint8_t slip_play_enable;
 extern uint32_t slip_position;
@@ -109,7 +106,12 @@ extern uint32_t LOOP_OUT;
 extern uint8_t lock_control;
 extern volatile bool dynamicBufferReady;
 extern uint32_t CUE_ADR;
+extern uint16_t PreviousPhase;
 extern uint16_t bars;
+extern uint8_t REMAIN_ENABLE;
+extern uint8_t dynamicWaveformZOOM;
+extern uint16_t originalBPM;
+extern uint8_t tempo_need_update;
 
 extern uint8_t displayRefreshRate;
 

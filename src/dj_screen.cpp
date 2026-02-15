@@ -96,11 +96,15 @@ static lv_obj_t *static_waveform_canvas;
 static lv_obj_t *cue_buttons[8];
 
 
+
+
 void drawFastVLine16Bit(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride);
 void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t color, uint16_t * buffer, uint16_t stride);
 void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
-void drawBeatMarkers(uint32_t waveformOffset);
+void RedrawWaveforms(uint32_t position);
+void updateDynamicWaveform(uint32_t waveformOffset);
 void updateOverviewWaveform(uint32_t waveformOffset);
+void ShowPhaseMeter(uint16_t phase);
 void backButton(lv_event_t *e);
 bool useOpa = false;
 
@@ -145,6 +149,18 @@ uint16_t BPMGRID[4096];				// bpmgrit BPM*100
 uint32_t hotCues[8];
 uint8_t GRID_OFFSET = 0; // Default to 0 if not provided by parser
 uint16_t beatGridLenth = 0;
+
+uint32_t PreviousPositionDW = UINT32_MAX;
+uint8_t Prev10m = 0xFF;
+uint8_t Prev1m = 0xFF;
+uint8_t Prev10s = 0xFF;
+uint8_t Prev1s = 0xFF;
+uint8_t Prev10f = 0xFF;
+uint8_t Prev1f = 0xFF;
+uint8_t PrevHf = 0xFF;
+
+
+uint8_t DynamicWaveformZOOM = 1;
 
 //#define USE_EXTMEM_FOR_WAVEFORM
 
@@ -408,18 +424,13 @@ void create_top_container(Track * track) {
         lv_obj_set_pos(progress_bars[i], i * 65, 15);
         lv_obj_set_style_radius(progress_bars[i], 0, LV_PART_MAIN);
         lv_obj_clear_flag(progress_bars[i], LV_OBJ_FLAG_SCROLLABLE);
-        
-        if (i < 3) {
-            lv_obj_set_style_bg_color(progress_bars[i], COLOR_TEXT_SECONDARY, 0);
-        } else {
-            lv_obj_set_style_bg_color(progress_bars[i], COLOR_PROGRESS, 0);
-        }
         lv_obj_set_style_border_width(progress_bars[i], 0, 0);
+        lv_obj_set_style_bg_color(progress_bars[i], lv_color_hex(0xA6C8FF), LV_PART_MAIN);
     }
 
     // Bar count label
     bar_count_label = lv_label_create(info_container);
-    lv_label_set_text(bar_count_label, "94 || 0.34");
+    //lv_label_set_text(bar_count_label, "94 || 0.34");
     lv_obj_set_style_text_color(bar_count_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bar_count_label, &exo2_18, 0);
     lv_obj_set_pos(bar_count_label, 0, 35);
@@ -427,7 +438,7 @@ void create_top_container(Track * track) {
 
     // Time label (center)
     time_label = lv_label_create(info_container);
-    lv_label_set_text(time_label, "03:00.4");
+    //lv_label_set_text(time_label, "03:00.4");
     lv_obj_set_style_text_color(time_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(time_label, &exo2_28, 0);
     lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
@@ -612,8 +623,11 @@ void dj_ui_init(Track * track) {
     create_top_container(track);
     create_middle_container(track);
     Serial.println("Creating bottom container...");
-    create_bottom_container(track);  
-    updateDynamicWaveform(BEATGRID[0]); 
+    create_bottom_container(track); 
+    PreviousPhase = 0xFFFF;
+    PreviousPositionDW = UINT32_MAX;
+    bars = 0; 
+    RedrawWaveforms(500);
 
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
@@ -627,17 +641,17 @@ void dj_ui_init(Track * track) {
      //const char * fName = "mixxx-export/86 - raise_your_hands.wav"; // track->path
 #if defined(RDI_DEVELOPMENTS_REV3)
     playFile.open(full_path, FILE_READ);
-#elses
-    //playFile = SD.open(full_path, FILE_READ);
+#else
+    playFile = SD.open(track->audio_path, FILE_READ);
 #endif
     if (!playFile) {
       Serial.printf("Failed trying to open file: %s\n", full_path);
     }
     else{
       Serial.printf("Opened audio file: %s\n", full_path);
-      //is_playing = true;
-      //playFile.seek(44);
-      //audio.startI2SInterrupt();
+      is_playing = true;
+      playFile.seek(44);
+      audio.startI2SInterrupt();
       
       track_play_now = track->id;
       pitch = 0;	
@@ -720,7 +734,79 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
   }
 }
 
-int DynamicWaveformZOOM = 1;
+void RedrawWaveforms(uint32_t position){
+
+	if(position>all_long)
+		{
+		return;	
+		}
+	uint32_t clock_pos;	
+
+	if(REMAIN_ENABLE)
+		{
+		clock_pos = all_long - position;	
+		}	
+	else
+		{
+		clock_pos	= position;
+		}
+
+
+    static uint32_t prev_clock_pos = UINT32_MAX;
+    if (clock_pos != prev_clock_pos) {
+    prev_clock_pos = clock_pos;
+
+    char time_str[16];
+        uint32_t min10  = (clock_pos / 90000) % 10;
+        uint32_t min1   = (clock_pos / 9000) % 10;
+        uint32_t sec10  = (clock_pos / 1500) % 6;
+        uint32_t sec1   = (clock_pos / 150) % 10;
+        uint32_t frm10  = ((clock_pos / 2) % 75) / 10;
+        uint32_t frm1   = ((clock_pos / 2) % 75) % 10;
+        uint32_t hf     = (clock_pos % 2) * 5;
+
+        lv_snprintf(time_str, sizeof(time_str), "%s%lu%lu:%lu%lu:%lu%lu.%lu",
+                    REMAIN_ENABLE ? "-" : "",
+                    min10, min1, sec10, sec1, frm10, frm1, hf);
+        lv_label_set_text(time_label, time_str);
+    }
+    /*
+    if(needle_enable || (Tbuffer[23]&0x20))						//detecting touch on sensor or touch on jog 
+		{
+		if(RED_VERTICAL_LINE==0)
+			{
+			RED_VERTICAL_LINE = 1;	
+			forcibly_redraw = 1;	
+			}
+		}
+	else
+		{
+		if(RED_VERTICAL_LINE)
+			{
+			RED_VERTICAL_LINE = 0;	
+			forcibly_redraw = 1;	
+			}
+		}
+
+    */
+   //updateOverviewWaveform((position*799)/all_long);
+   position = position/DynamicWaveformZOOM;
+
+   if(position != PreviousPositionDW ) { // ||forcibly_redraw==1)
+        PreviousPositionDW = position;
+        updateDynamicWaveform(position);
+        ShowPhaseMeter(bars);
+        if(originalBPM != BPMGRID[bars])										//������� �������� �� ������� (dSHOW==WAVEFORM)!!!
+				{
+				originalBPM = BPMGRID[bars];
+				tempo_need_update = 2;		
+				}	
+   } //
+
+}
+
+
+
 uint32_t nextLabelMs = 0;
 /*
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
@@ -784,6 +870,58 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //appStats.end(DYNAMIC_RENDER);
 }
 */
+
+void ShowPhaseMeter(uint16_t phase)
+{
+    if (PreviousPhase == phase) {
+        return;
+    }
+
+    uint16_t int_offset;
+
+    if (phase == 0xFFFF) {
+        // Reset state - all bars to default gradient, show "--.-"
+        for (int i = 0; i < 4; i++) {
+            lv_obj_set_style_bg_color(progress_bars[i], lv_color_hex(0x8080FF), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(progress_bars[i], LV_OPA_60, LV_PART_MAIN);
+            lv_obj_set_style_border_color(progress_bars[i], lv_color_hex(0xA6C8FF), LV_PART_MAIN);
+        }
+        lv_label_set_text(bar_count_label, "--.-");
+    }
+    else {
+        int_offset = (( GRID_OFFSET-1 ) & 0x0003);
+
+        // Reset previous active bar back to default
+        uint8_t prev_bar = (PreviousPhase + int_offset) % 4;
+        lv_obj_set_style_bg_opa(progress_bars[prev_bar], LV_OPA_60, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(progress_bars[prev_bar], lv_color_hex(0x8080FF), LV_PART_MAIN);
+        lv_obj_set_style_border_color(progress_bars[prev_bar], lv_color_hex(0xA6C8FF), LV_PART_MAIN);
+
+        int_offset += phase;
+        uint8_t active_bar = int_offset % 4;
+        //Serial.printf("Phase: %d, Int offset: %d, Active bar: %d\n", phase, int_offset, active_bar);
+
+        if (active_bar == 0) {
+            // Beat 1 - RED highlight
+            lv_obj_set_style_bg_color(progress_bars[active_bar], lv_color_hex(0xFF4040), LV_PART_MAIN);
+        } else {
+            // Other beats - BLUE highlight
+            lv_obj_set_style_bg_color(progress_bars[active_bar], lv_color_hex(0xA6C8FF), LV_PART_MAIN);
+        }
+        lv_obj_set_style_bg_opa(progress_bars[active_bar], LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_color(progress_bars[active_bar], lv_color_hex(0xA6C8FF), LV_PART_MAIN);
+
+        // Update bar/beat label: "BB.B"
+        char bar_str[8];
+        lv_snprintf(bar_str, sizeof(bar_str), "%lu%lu.%lu",
+                    (int_offset / 40) % 10,
+                    (int_offset >> 2) % 10,
+                    (int_offset % 4) + 1);
+        lv_label_set_text(bar_count_label, bar_str);
+    }
+
+    PreviousPhase = phase;
+}
 
 #define LOOP_INACTIVE_COLOR 0x0000 // Green
 #define LOOP_ACTIVE_COLOR 0xF800 // Red
@@ -858,42 +996,46 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     }
     */
     // --- Draw beat grid lines (top + bottom gutters) ---
-   if ((beatIdx + beatX) < beatGridLenth &&
-        (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % DynamicWaveformZOOM)) == adr) {
-      uint16_t beatColor;
-      if (((beatIdx + beatX) % 4) == ((-GRID_OFFSET) & 0x03)) {
-        beatColor = 0xF800; // red downbeat
-      } else if (DynamicWaveformZOOM < 8) {
-        beatColor = col_white;
-      } else {
-        beatX++;
-        continue;
-      }
+    
+        if ((beatIdx + beatX) < beatGridLenth &&
+                (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % DynamicWaveformZOOM)) == adr) {
+            uint16_t beatColor;
+            if (((beatIdx + beatX) % 4) == ((GRID_OFFSET) & 0x03)) {
+                beatColor = 0xF800; // red downbeat
+            } else if (DynamicWaveformZOOM < 8) {
+                beatColor = col_white;
+            } else {
+                beatX++;
+                continue;
+            } 
 
-      // Full height line
-      drawFastVLine16Bit(x, 0, chartHeight, beatColor, dynamicCanvasBuffer, chartWidth);
+            // Full height line
+            drawFastVLine16Bit(x, 0, chartHeight, 0x8410 , dynamicCanvasBuffer, chartWidth);
 
-      // Top tick: 6px tall, 2px wide to the right
-      if ((x + 1) < chartWidth) {
-        drawFastVLine16Bit(x + 1, 0, 10, beatColor, dynamicCanvasBuffer, chartWidth);
-      }
+            // Top tick: 6px tall, 2px wide to the right
+            if ((x) < chartWidth) {
+                drawFastVLine16Bit(x, 0, 16, beatColor, dynamicCanvasBuffer, chartWidth);
+            }
 
-      // Bottom tick: 6px tall, 2px wide to the right
-      if ((x + 1) < chartWidth) {
-        drawFastVLine16Bit(x + 1, chartHeight - 10, 10, beatColor, dynamicCanvasBuffer, chartWidth);
-      }
+            // Bottom tick: 6px tall, 2px wide to the right
+            if ((x) < chartWidth) {
+                drawFastVLine16Bit(x , chartHeight - 16, 16, beatColor, dynamicCanvasBuffer, chartWidth);
+            }
 
-      beatX++;
-    }
-    // --- Draw 3 waveform bands (back to front so band 0 is on top) --
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
+            beatX++;
+            }
+            if(adr<=all_long){
+            // --- Draw 3 waveform bands (back to front so band 0 is on top) --
+                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
+            }
 
-    // --- Track bar position at play head ---
-    if (x == playHeadX) {
-      bars = beatIdx + beatX;
-    }
+            // --- Track bar position at play head ---
+            if (x == playHeadX) {
+            bars = beatIdx + beatX;
+            }
+    
   }
 
   // --- Draw horizontal center line ---

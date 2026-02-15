@@ -101,6 +101,18 @@ volatile uint8_t offset_adress = 0;                       //address offset for c
 volatile int16_t LR[2][4] __attribute__((aligned(32)));
 volatile uint16_t PCM_2[2] __attribute__((aligned(32)));
 volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
+float c0, c1, c2, c3, r0, r1, r2, r3;
+int32_t even1, even2, odd1, odd2;
+static float COEF[8] = {			//////optimal 2x
+0.45868970870461956,
+0.04131401926395584,
+0.48068024766578432,
+0.17577925564495955,
+-0.246185007019907091, 
+0.24614027139700284,
+-0.36030925263849456,
+0.10174985775982505
+};
 
 // Used in I2S ISR and loop 
 volatile uint32_t play_adr = 0;                           //Playing adress in samples (44100 per second)
@@ -123,7 +135,9 @@ uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE
 #define NEED_UP		1
 #define NEED_DOWN	2
 uint32_t CUE_ADR = 0;					//REAL CUE adr in frames 150
-uint16_t bars = 0;		
+uint16_t PreviousPhase = 0xFFFF;
+uint16_t bars = 0;
+uint16_t originalBPM = 0xFFFF;						//this original BPM*100 of track (pitch = 0.00%) 	
 
 void CALL_CUE(void);
 
@@ -135,18 +149,6 @@ uint16_t LOG_TABLE[8] = {1200, 128, 72, 40, 18, 15, 9, 3};
 bool is_playing = false;
 uint32_t slip_play_adr = 0;                      //Playing adress for SLIP MODE in samples (44100 per second)
 uint8_t mem_offset_adress = 0;                   //address offset for calling CUE audio data (for memory)
-int32_t even1, even2, odd1, odd2;
-float COEF[8] = {            //////optimal 2x
-  0.45868970870461956,
-  0.04131401926395584,
-  0.48068024766578432,
-  0.17577925564495955,
-  -0.246185007019907091, 
-  0.24614027139700284,
-  -0.36030925263849456,
-  0.10174985775982505
-};
-
  uint8_t play_enable = 0;
  uint8_t slip_play_enable = 0;
  uint32_t slip_position = 0;
@@ -234,7 +236,7 @@ uint8_t CUE_OPERATION = 0;
 #define WAVEFORM 1
 uint8_t dSHOW = TRACK_LIST;
 
-uint8_t REMAIN_ENABLE = 0;
+uint8_t REMAIN_ENABLE = 1;
 
 void ledTIMER();
 IntervalTimer ledTimer;
@@ -983,54 +985,66 @@ FASTRUN void loop()
   }
 
   if (is_playing == true) {
-    if (end_of_track == 0) {
-      static uint32_t play_adr_temp = 0;
-
-      if ((play_adr_temp / baseSampPerWavePoint) != (snapshot_play_adr / baseSampPerWavePoint)) {
-        //Serial.printf("Play adr: %lu\n", snapshot_play_adr);
-        updateDynamicWaveform(snapshot_play_adr);
-        updatePlaybackPosition_new((snapshot_play_adr / baseSampPerWavePoint) * (chartWidth - 1)/all_long);
-        play_adr_temp = snapshot_play_adr; 
-      }
+	
+    if(end_of_track == 0) {
+	  RedrawWaveforms(play_adr/294);
       
-      if(end_adr_valid_data<128) {
-        bytes_read = playFileRead(PCM[end_adr_valid_data][0], 32768);
-        //Serial.printf("Start filling buffers: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);
-        end_adr_valid_data++;
-          
-      } else if((end_adr_valid_data<((snapshot_play_adr>>13)+42)) && (filling_step==0 || filling_step==6)) {
-        
-        //filling the buffer forward
-        if(filling_step==6) {
-          playFileSeek((32768*end_adr_valid_data)+44);
-          filling_step = 0;	
-        }
-
-        bytes_read = playFileRead(PCM[end_adr_valid_data&0x7F][0], 32768);
-        //Serial.printf("Filling buffer forward: end_adr_valid_data: %d wav file bytes read: %d \n",end_adr_valid_data, bytes_read);	
-        //Serial.printf("all_long %d snapshot_play_adr %d \n", all_long, snapshot_play_adr);		
-        //DrawCueMarker(1+((end_adr_valid_data*11145)/all_long));
-        end_adr_valid_data++;
-        if ((end_adr_valid_data-start_adr_valid_data)>128) {
-          start_adr_valid_data = end_adr_valid_data-128;	
-        }
-      } else if(((end_adr_valid_data>((snapshot_play_adr>>13)+86) || ((end_adr_valid_data-start_adr_valid_data)<124)) && start_adr_valid_data>3) || (filling_step!=0 && filling_step!=6)) {					//filling the buffer back
-        Serial.println("filling buffers backwards");		
-        if(filling_step == 0 || filling_step == 6) {
-          if((end_adr_valid_data - start_adr_valid_data) > 127) {
-            end_adr_valid_data = start_adr_valid_data + 124;	
-          }	
-          start_adr_valid_data -= 4;	
-          playFileSeek((32768 * start_adr_valid_data) + 44);
-          filling_step = 1;	
-        } else if (filling_step >= 1 && filling_step <= 4) {
-          playFileRead(PCM[(start_adr_valid_data + filling_step - 1) & 0x7F][0], 32768);
-          filling_step++;
-        } else if(filling_step == 5) {
-          //DrawCueMarker(1+((start_adr_valid_data*11145)/all_long));	
-          filling_step = 6;		
-        }
-      }
+      if (end_adr_valid_data < 128)
+		{
+			playFile.read(PCM[end_adr_valid_data][0], 32768);
+			end_adr_valid_data++;
+		}
+		else if ((end_adr_valid_data < ((play_adr >> 13) + 42)) && (filling_step == 0 || filling_step == 6))  // filling the buffer forward
+		{
+			if (filling_step == 6)
+			{
+				playFile.seek((32768UL * end_adr_valid_data) + 44);
+				filling_step = 0;
+			}
+			playFile.read(PCM[end_adr_valid_data & 0x7F][0], 32768);
+			end_adr_valid_data++;
+			if ((end_adr_valid_data - start_adr_valid_data) > 128)
+			{
+				start_adr_valid_data = end_adr_valid_data - 128;
+			}
+		}
+		else if (((end_adr_valid_data > ((play_adr >> 13) + 86) || ((end_adr_valid_data - start_adr_valid_data) < 124)) && start_adr_valid_data > 3) || (filling_step != 0 && filling_step != 6))  // filling the buffer back
+		{
+			if (filling_step == 0 || filling_step == 6)
+			{
+				if ((end_adr_valid_data - start_adr_valid_data) > 127)
+				{
+					end_adr_valid_data = start_adr_valid_data + 124;
+				}
+				start_adr_valid_data -= 4;
+				playFile.seek((32768UL * start_adr_valid_data) + 44);
+				filling_step = 1;
+			}
+			else if (filling_step == 1)
+			{
+				playFile.read(PCM[start_adr_valid_data & 0x7F][0], 32768);
+				filling_step = 2;
+			}
+			else if (filling_step == 2)
+			{
+				playFile.read(PCM[(start_adr_valid_data + 1) & 0x7F][0], 32768);
+				filling_step = 3;
+			}
+			else if (filling_step == 3)
+			{
+				playFile.read(PCM[(start_adr_valid_data + 2) & 0x7F][0], 32768);
+				filling_step = 4;
+			}
+			else if (filling_step == 4)
+			{
+				playFile.read(PCM[(start_adr_valid_data + 3) & 0x7F][0], 32768);
+				filling_step = 5;
+			}
+			else if (filling_step == 5)
+			{
+				filling_step = 6;
+			}
+		}
     } else {
       audio.stopI2SInterrupt();
       play_count += 1;
@@ -1095,10 +1109,6 @@ FASTRUN void SAI_IRQHandler(void)
 }
 
 FASTRUN void advancePosition_rezo() {
-  static float c0, c1, c2, c3, r0, r1, r2, r3;
-  static uint8_t step_position;
-  static uint32_t sdram_adr =0;
-  
   if(((play_adr+step_position+3)<=(294*all_long)))						//change all_long extract!
 			{
 			end_of_track = 0;	
@@ -1497,7 +1507,7 @@ void DMA2_Stream5_IRQHandler(void){
 				else if((play_enable==0) && (CUE_ADR==(play_adr/294)))				//return to CUE adress, when track stopped
 					{
 					change_speed = NO_CHANGE;	
-					//play_adr = 294*CUE_ADR;		
+					play_adr = 294*CUE_ADR;		
 					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
 						{			
 						slip_play_adr = play_adr;

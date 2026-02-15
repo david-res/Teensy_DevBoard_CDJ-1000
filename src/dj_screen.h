@@ -12,6 +12,7 @@ void dj_ui_init(Track * track);
 void updateDynamicWaveform(uint32_t waveformOffset);
 void updatePlaybackPosition(uint16_t newX);
 void updatePlaybackPosition_new(uint16_t newX);
+void RedrawWaveforms(uint32_t position);
 extern FILE_TYPE playFile;
 
 #endif
