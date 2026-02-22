@@ -85,6 +85,7 @@ static lv_obj_t *title_label;
 static lv_obj_t *artist_label;
 static lv_obj_t *bpm_label;
 static lv_obj_t *key_label;
+static lv_obj_t *progress_line;
 static lv_obj_t *bar_count_label;
 static lv_obj_t *time_label;
 static lv_obj_t *current_bpm_label;
@@ -103,7 +104,7 @@ void drawFastVLine16BitOverview(uint16_t x, uint16_t y, uint16_t h, uint16_t col
 void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t color, uint8_t opa);
 void RedrawWaveforms(uint32_t position);
 void updateDynamicWaveform(uint32_t waveformOffset);
-void updateOverviewWaveform(uint32_t waveformOffset);
+void updateOverviewWaveform(uint16_t Tpos);
 void ShowPhaseMeter(uint16_t phase);
 void backButton(lv_event_t *e);
 bool useOpa = false;
@@ -115,7 +116,7 @@ uint64_t highResSampleCount = 0;
 
 
 const uint16_t col_blue = 0x135D; //From Rezo, was 0x001F;
-const uint16_t col_green = 0x15EA; //From Rezo, was 0x15EA; //Amber 0xF547
+const uint16_t col_green = 0xfc60; //From Rezo, was 0x15EA; //Amber 0xF547
 const uint16_t col_white = 0xF7DE; //From Rezo, was 0xFFFF;
 
 const uint16_t waveformColors[3] = {col_blue, col_green, col_white};
@@ -144,11 +145,12 @@ uint16_t newIndicatorBuffer[2 * overviewChartHeight];  // 2px wide x 64px height
 
 GlobalBeatLUT globalBeats = {0};
 uint32_t dynamicWaveformEntries = 0;
-uint32_t BEATGRID[4096];    // beatgrid (0, 3, 7... )
-uint16_t BPMGRID[4096];				// bpmgrit BPM*100
-uint32_t hotCues[8];
+int32_t BEATGRID[4096] ={0};    // beatgrid (0, 3, 7... )
+uint16_t BPMGRID[4096] = {0};				// bpmgrit BPM*100
+uint32_t hotCues[8] = {0};
 uint8_t GRID_OFFSET = 0; // Default to 0 if not provided by parser
 uint16_t beatGridLenth = 0;
+uint8_t numCuePoints = 0;
 
 uint32_t PreviousPositionDW = UINT32_MAX;
 uint8_t Prev10m = 0xFF;
@@ -160,7 +162,7 @@ uint8_t Prev1f = 0xFF;
 uint8_t PrevHf = 0xFF;
 
 
-uint8_t DynamicWaveformZOOM = 1;
+
 
 //#define USE_EXTMEM_FOR_WAVEFORM
 
@@ -226,7 +228,7 @@ void loadTrackData(const char* dat_filepath) {
                 hotCues[i] = hot_cues[i].start_pos;
             }
         }
-        
+        numCuePoints = num_hot_cues;
         Serial.printf("Loaded %d hot cues\n", num_hot_cues);
     } else {
         Serial.printf("Error loading hot cues: %d\n", err);
@@ -342,19 +344,94 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(top_container, 0, 0);
     lv_obj_set_style_radius(top_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(top_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(top_container, backButton, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_flag(top_container, LV_OBJ_FLAG_CLICKABLE);
-    
-    // Title and BPM/Key container
-    //LV_COLOR_MAKE(0x53, 0x53, 0x53)
+    lv_obj_clear_flag(top_container, LV_OBJ_FLAG_CLICKABLE);
+
+    // === BACK BUTTON (left, square, same height as title_bpm_container = 70px) ===
+    int btn_h = 70;
+    int back_btn_w = btn_h; // square
+    int gap = 4;
+
+    lv_obj_t *back_btn = lv_obj_create(top_container);
+    lv_obj_set_size(back_btn, back_btn_w, btn_h);
+    lv_obj_set_pos(back_btn, 0, 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_color(back_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(back_btn, 1, 0);
+    lv_obj_set_style_radius(back_btn, 5, 0);
+    lv_obj_set_style_pad_all(back_btn, 0, 0);
+    lv_obj_clear_flag(back_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(back_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back_btn, backButton, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, LV_SYMBOL_LIST);
+    lv_obj_set_style_text_color(back_label, lv_color_hex(0xcccccc), 0);
+    //lv_obj_set_style_text_font(back_label, &exo2_20, 0);
+    lv_obj_center(back_label);
+
+    // === QUANTIZE + SLIP BUTTONS (right of title_bpm_container) ===
+    int side_btn_w = 80;
+    int title_bpm_w = SCREEN_WIDTH - back_btn_w - gap - (side_btn_w * 3 + gap * 3);
+
+    lv_obj_t *quantize_btn = lv_obj_create(top_container);
+    lv_obj_set_size(quantize_btn, side_btn_w, btn_h);
+    lv_obj_set_pos(quantize_btn, back_btn_w + gap + title_bpm_w + gap, 0);
+    lv_obj_set_style_bg_color(quantize_btn, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_color(quantize_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(quantize_btn, 1, 0);
+    lv_obj_set_style_radius(quantize_btn, 5, 0);
+    lv_obj_set_style_pad_all(quantize_btn, 0, 0);
+    lv_obj_clear_flag(quantize_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(quantize_btn, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *quantize_label = lv_label_create(quantize_btn);
+    lv_label_set_text(quantize_label, "QNTZ");
+    lv_obj_set_style_text_color(quantize_label, lv_color_hex(0xcccccc), 0);
+    lv_obj_set_style_text_font(quantize_label, &exo2_20, 0);
+    lv_obj_center(quantize_label);
+
+    lv_obj_t *slip_btn = lv_obj_create(top_container);
+    lv_obj_set_size(slip_btn, side_btn_w, btn_h);
+    lv_obj_set_pos(slip_btn, back_btn_w + gap + title_bpm_w + gap + side_btn_w + gap, 0);
+    lv_obj_set_style_bg_color(slip_btn, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_color(slip_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(slip_btn, 1, 0);
+    lv_obj_set_style_radius(slip_btn, 5, 0);
+    lv_obj_set_style_pad_all(slip_btn, 0, 0);
+    lv_obj_clear_flag(slip_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(slip_btn, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *slip_label = lv_label_create(slip_btn);
+    lv_label_set_text(slip_label, "SLIP");
+    lv_obj_set_style_text_color(slip_label, lv_color_hex(0xcccccc), 0);
+    lv_obj_set_style_text_font(slip_label, &exo2_20, 0);
+    lv_obj_center(slip_label);
+
+    lv_obj_t *gate_btn = lv_obj_create(top_container);
+    lv_obj_set_size(gate_btn, side_btn_w, btn_h);
+    lv_obj_set_pos(gate_btn, back_btn_w + gap + title_bpm_w + gap + (side_btn_w + gap) * 2, 0);
+    lv_obj_set_style_bg_color(gate_btn, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_color(gate_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(gate_btn, 1, 0);
+    lv_obj_set_style_radius(gate_btn, 5, 0);
+    lv_obj_set_style_pad_all(gate_btn, 0, 0);
+    lv_obj_clear_flag(gate_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(gate_btn, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *gate_label = lv_label_create(gate_btn);
+    lv_label_set_text(gate_label, "GATE");
+    lv_obj_set_style_text_color(gate_label, lv_color_hex(0xcccccc), 0);
+    lv_obj_set_style_text_font(gate_label, &exo2_20, 0);
+    lv_obj_center(gate_label);
+
+    // === TITLE + BPM CONTAINER (between back button and side buttons) ===
     lv_obj_t *title_bpm_container = lv_obj_create(top_container);
-    lv_obj_set_size(title_bpm_container, SCREEN_WIDTH, 70);
-    lv_obj_set_pos(title_bpm_container, 0, 0);
-    //lv_obj_set_style_bg_opa(title_bpm_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(title_bpm_container, title_bpm_w, btn_h);
+    lv_obj_set_pos(title_bpm_container, back_btn_w + gap, 0);
     lv_obj_set_style_bg_color(title_bpm_container, LV_COLOR_MAKE(0x53, 0x53, 0x53), 0);
     lv_obj_set_style_border_width(title_bpm_container, 0, 0);
     lv_obj_set_style_pad_all(title_bpm_container, 0, 0);
-     lv_obj_set_style_radius(title_bpm_container, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(title_bpm_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(title_bpm_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(title_bpm_container, LV_OBJ_FLAG_CLICKABLE);
 
@@ -366,17 +443,15 @@ void create_top_container(Track * track) {
     lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 5);
     lv_obj_clear_flag(title_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
-    
 
     // BPM label (right side)
     bpm_label = lv_label_create(title_bpm_container);
-    lv_label_set_text_fmt(bpm_label,"%.1f", track->bpm);
+    lv_label_set_text_fmt(bpm_label, "%.1f", track->bpm);
     lv_obj_set_style_text_color(bpm_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bpm_label, &exo2_32, 0);
     lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
     lv_obj_clear_flag(bpm_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bpm_label, LV_OBJ_FLAG_CLICKABLE);
-   
 
     // Key label (below BPM)
     key_label = lv_label_create(title_bpm_container);
@@ -385,26 +460,24 @@ void create_top_container(Track * track) {
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
     const char* keyName = rbParser.getKeyName(track->key_id);
     const char* keyColor = getKeyColor(keyName);
-    lv_obj_set_style_text_color(key_label,lv_color_hex(strtol(keyColor + 1, nullptr, 16)), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(key_label, lv_color_hex(strtol(keyColor + 1, nullptr, 16)), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(key_label, LV_OBJ_FLAG_CLICKABLE);
 
-
-    lv_obj_t *progress_line = lv_obj_create(title_bpm_container);
-    lv_obj_set_size(progress_line, 700, 3);
-    lv_obj_set_pos(progress_line, 0, 67);
+    progress_line = lv_obj_create(title_bpm_container);
+    lv_obj_set_size(progress_line, title_bpm_w, 3);
+    lv_obj_set_pos(progress_line, 0, btn_h - 3);
     lv_obj_set_style_bg_color(progress_line, lv_color_hex(0x158EE2), 0);
     lv_obj_set_style_border_width(progress_line, 0, 0);
     lv_obj_clear_flag(progress_line, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // Artist label (below title)
+
+    // Artist label (below title_bpm_container row)
     artist_label = lv_label_create(top_container);
     lv_label_set_text(artist_label, track->artist);
     lv_obj_set_style_text_color(artist_label, COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(artist_label, &exo2_20, 0);
-    lv_obj_set_pos(artist_label, 0, 40);
+    lv_obj_set_pos(artist_label, back_btn_w + gap, 40);
     lv_obj_clear_flag(artist_label, LV_OBJ_FLAG_SCROLLABLE);
-
 
     // Bottom info container (bars, time, BPM info)
     lv_obj_t *info_container = lv_obj_create(top_container);
@@ -415,9 +488,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(info_container, 0, 0);
     lv_obj_clear_flag(info_container, LV_OBJ_FLAG_SCROLLABLE);
 
-
     // Progress bars (left section)
-    
     for (int i = 0; i < 4; i++) {
         progress_bars[i] = lv_obj_create(info_container);
         lv_obj_set_size(progress_bars[i], 60, 16);
@@ -430,7 +501,6 @@ void create_top_container(Track * track) {
 
     // Bar count label
     bar_count_label = lv_label_create(info_container);
-    //lv_label_set_text(bar_count_label, "94 || 0.34");
     lv_obj_set_style_text_color(bar_count_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bar_count_label, &exo2_18, 0);
     lv_obj_set_pos(bar_count_label, 0, 35);
@@ -438,12 +508,10 @@ void create_top_container(Track * track) {
 
     // Time label (center)
     time_label = lv_label_create(info_container);
-    //lv_label_set_text(time_label, "03:00.4");
     lv_obj_set_style_text_color(time_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(time_label, &exo2_28, 0);
     lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
     lv_obj_clear_flag(time_label, LV_OBJ_FLAG_SCROLLABLE);
-   
 
     // BPM info (right section)
     current_bpm_label = lv_label_create(info_container);
@@ -452,9 +520,9 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(current_bpm_label, &exo2_24, 0);
     lv_obj_align(current_bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
     lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Additional tempo info labels can be added here
 }
+
+
 
 void create_middle_container(Track * track) {
     middle_container = lv_obj_create(main_screen);
@@ -466,6 +534,7 @@ void create_middle_container(Track * track) {
     lv_obj_set_style_border_color(middle_container, lv_color_white(), 0);
     lv_obj_set_style_radius(middle_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(middle_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(middle_container, LV_OBJ_FLAG_CLICKABLE);
     //lv_obj_add_flag(middle_container, LV_OBJ_FLAG_HIDDEN);
     //lv_obj_add_flag(middle_container, LV_OBJ_FLAG_IGNORE_LAYOUT);
     
@@ -503,13 +572,14 @@ void create_bottom_container(Track * track) {
     lv_obj_set_style_pad_column(bottom_container, 0, 0);
     lv_obj_set_style_pad_gap(bottom_container, 0, 0);
     lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_CLICKABLE);
 
     // Static waveform container
     lv_obj_t *static_wave_container = lv_obj_create(bottom_container);
     lv_obj_set_size(static_wave_container, chartWidth, overviewChartHeight);
     lv_obj_set_pos(static_wave_container, 0, 0);
     lv_obj_set_style_bg_color(static_wave_container, COLOR_BG, 0);
-    lv_obj_set_style_border_width(static_wave_container, 1, 0);
+    lv_obj_set_style_border_width(static_wave_container, 0, 0);
     lv_obj_set_style_border_color(static_wave_container, lv_color_white(), 0);
     lv_obj_set_style_radius(static_wave_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(static_wave_container, LV_OBJ_FLAG_SCROLLABLE);
@@ -538,43 +608,100 @@ void create_bottom_container(Track * track) {
         Serial.printf("Error loading preview waveform: %d\n", err);
     }
     
-  //lv_canvas_fill_bg(static_waveform_canvas, COLOR_BG, LV_OPA_COVER);
-  drawOverviewCanvas();
-    //lv_obj_invalidate(static_waveform_canvas);
-
-    
+  
+    drawOverviewCanvas();
    
-
-
+    
     // Cue buttons container
-    /*
     lv_obj_t *cue_container = lv_obj_create(bottom_container);
     lv_obj_set_size(cue_container, SCREEN_WIDTH, 94);
-    lv_obj_set_pos(cue_container, 0, 90);
-    lv_obj_set_style_bg_opa(cue_container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(cue_container, 0, 0);
+    lv_obj_set_pos(cue_container, 0, 65);
+    lv_obj_set_style_bg_color(cue_container, lv_color_hex(0x1c1c1c), 0);
+    lv_obj_set_style_bg_opa(cue_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(cue_container, 1, 0);
+    lv_obj_set_style_border_color(cue_container, lv_color_hex(0x444444), 0);
     lv_obj_set_style_pad_all(cue_container, 0, 0);
     lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_SCROLLABLE);
-    
+    lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_CLICKABLE);
+
+    // "HOT CUE" label + flanking rules
+    lv_obj_t *rule_left = lv_obj_create(cue_container);
+    lv_obj_set_size(rule_left, 310, 1);
+    lv_obj_set_pos(rule_left, 8, 8);
+    lv_obj_set_style_bg_color(rule_left, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(rule_left, 0, 0);
+    lv_obj_set_style_radius(rule_left, 0, 0);
+
+    lv_obj_t *hclbl = lv_label_create(cue_container);
+    lv_label_set_text(hclbl, "HOT CUE");
+    lv_obj_set_style_text_color(hclbl, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(hclbl, &exo2_20, 0); // swap for your font
+    lv_obj_set_pos(hclbl, 325, 0);
+
+    lv_obj_t *rule_right = lv_obj_create(cue_container);
+    lv_obj_set_size(rule_right, 310, 1);
+    lv_obj_set_pos(rule_right, 480, 8);
+    lv_obj_set_style_bg_color(rule_right, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(rule_right, 0, 0);
+    lv_obj_set_style_radius(rule_right, 0, 0);
+
+    // Cue colors A-H
+    static const uint32_t cue_hex_colors[] = {
+        0xe83030,  // A - red
+        0x00bfff,  // B - cyan
+        0x40dd40,  // C - green
+        0xff69b4,  // D - pink
+        0x40dd40,  // E - green
+        0xe09020,  // F - orange
+        0x4488ff,  // G - blue
+        0xdddd00,  // H - yellow
+    };
+
+    int btn_w   = (SCREEN_WIDTH - 16) / 8-6; // 8 buttons with 8px padding on sides and 6px gap
+    int btn_h   = 60;
+    int gap     = 6;
+    int start_x = 8;
+    int start_y = 22;
+
     // Create 8 cue buttons (A-H)
     for (int i = 0; i < 8; i++) {
-        cue_buttons[i] = lv_btn_create(cue_container);
-        lv_obj_set_size(cue_buttons[i], 80, 50);
-        lv_obj_set_pos(cue_buttons[i], i * 100 + 10, 5);
-        lv_obj_set_style_bg_color(cue_buttons[i], cue_colors[i], 0);
-        lv_obj_set_style_border_width(cue_buttons[i], 0, 0);
-        lv_obj_set_style_radius(cue_buttons[i], 8, 0);
+        cue_buttons[i] = lv_obj_create(cue_container);
+        lv_obj_set_size(cue_buttons[i], btn_w, btn_h);
+        lv_obj_set_pos(cue_buttons[i], start_x + i * (btn_w + gap), start_y);
+        lv_obj_set_style_bg_color(cue_buttons[i], lv_color_hex(0x2a2a2a), 0);
+        lv_obj_set_style_bg_opa(cue_buttons[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(cue_buttons[i], lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_width(cue_buttons[i], 1, 0);
+        lv_obj_set_style_radius(cue_buttons[i], 5, 0);
+        lv_obj_set_style_pad_all(cue_buttons[i], 0, 0);
         lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_SCROLLABLE);
 
-        // Button label
+        // Letter label — top left, colored
         lv_obj_t *btn_label = lv_label_create(cue_buttons[i]);
         char btn_text[2] = {'A' + i, '\0'};
         lv_label_set_text(btn_label, btn_text);
-        lv_obj_set_style_text_color(btn_label, lv_color_white(), 0);
+        lv_obj_set_style_text_color(btn_label, lv_color_hex(cue_hex_colors[i]), 0);
         lv_obj_set_style_text_font(btn_label, &exo2_20, 0);
-        lv_obj_center(btn_label);
-    }
-        */
+        lv_obj_set_pos(btn_label, 6, 5);
+
+        // Glow behind bar
+        lv_obj_t *glow = lv_obj_create(cue_buttons[i]);
+        lv_obj_set_size(glow, btn_w - 10, 8);
+        lv_obj_set_pos(glow, 5, btn_h - 14);
+        lv_obj_set_style_bg_color(glow, lv_color_hex(cue_hex_colors[i]), 0);
+        lv_obj_set_style_bg_opa(glow, LV_OPA_20, 0);
+        lv_obj_set_style_border_width(glow, 0, 0);
+        lv_obj_set_style_radius(glow, 3, 0);
+
+        // Colored underline bar
+        lv_obj_t *bar = lv_obj_create(cue_buttons[i]);
+        lv_obj_set_size(bar, btn_w - 14, 4);
+        lv_obj_set_pos(bar, 7, btn_h - 12);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(cue_hex_colors[i]), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 2, 0);
+    }    
 }
 
 uint8_t findBestRefreshRate(uint16_t samplesPerWavepoint, uint8_t minHz = 30, uint8_t maxHz = 68) {
@@ -789,8 +916,8 @@ void RedrawWaveforms(uint32_t position){
 		}
 
     */
-   //updateOverviewWaveform((position*799)/all_long);
-   position = position/DynamicWaveformZOOM;
+   updateOverviewWaveform((position*799)/all_long);
+   position = position/dynamicWaveformZOOM;
 
    if(position != PreviousPositionDW ) { // ||forcibly_redraw==1)
         PreviousPositionDW = position;
@@ -821,7 +948,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   //Clear canvas
   //memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
   
-  uint32_t pos = (waveformOffset / baseSampPerWavePoint) / DynamicWaveformZOOM; 
+  uint32_t pos = (waveformOffset / baseSampPerWavePoint) / dynamicWaveformZOOM; 
   //If zoom is bigger than 1, need to find the highest value in between each jump
   //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
 
@@ -832,7 +959,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     // Clear single line here, rather than memset whole canvas - no performance hit and later, this becomes loop color, etc
     drawFastVLine16Bit(x, 0, chartHeight, 0x00, dynamicCanvasBuffer, chartWidth);
 
-    int64_t index = DynamicWaveformZOOM * (x + pos - (chartWidth / 2));
+    int64_t index = dynamicWaveformZOOM * (x + pos - (chartWidth / 2));
     //if (index < 0 || index >= all_long) continue;
     
     //for (uint8_t i = 2; i > 0; i--) {
@@ -923,6 +1050,58 @@ void ShowPhaseMeter(uint16_t phase)
     PreviousPhase = phase;
 }
 
+// Call this with position 0-798 to move the cursor
+// The cursor is 2px wide, so valid range is 0 to chartWidth-2
+FASTRUN void updateOverviewWaveform(uint16_t Tpos)
+{
+  static uint16_t previousPos = 0xFFFF;  // Invalid initial value to force first draw
+
+  if (Tpos > chartWidth - 2) return;
+
+  if (previousPos == Tpos) return;
+
+  // --- Restore waveform columns under old cursor ---
+  if (previousPos != 0xFFFF) {
+    for (uint8_t col = 0; col < 2; col++) {
+      uint16_t x = previousPos + col;
+
+      // Clear the full column to black
+      drawFastVLine16BitOverview(x, 0, overviewChartHeight, 0x0000,
+                                 overviewCanvasBuffer, chartWidth);
+
+      // Redraw stacked waveform: MID (bottom), HIGH (middle), LOW (top)
+      uint8_t mid_h  = overViewWaveSampleData[0][x];
+      uint8_t high_h = overViewWaveSampleData[1][x];
+      uint8_t low_h  = overViewWaveSampleData[2][x];
+
+      uint8_t base = 0;
+
+      drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_h), mid_h,
+                                 waveformColors[0], overviewCanvasBuffer, chartWidth);
+      base += mid_h;
+
+      drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_h), high_h,
+                                 waveformColors[1], overviewCanvasBuffer, chartWidth);
+      base += high_h;
+
+      drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_h), low_h,
+                                 waveformColors[2], overviewCanvasBuffer, chartWidth);
+    }
+  }
+
+  // --- Draw new cursor (2px wide, white) ---
+  drawFastVLine16BitOverview(Tpos,     0, overviewChartHeight, 0xFFFF,
+                             overviewCanvasBuffer, chartWidth);
+  drawFastVLine16BitOverview(Tpos + 1, 0, overviewChartHeight, 0xFFFF,
+                             overviewCanvasBuffer, chartWidth);
+
+    lv_obj_set_size(progress_line, Tpos, 3);
+    previousPos = Tpos;
+
+  // Invalidate so LVGL redraws
+  lv_obj_invalidate(static_waveform_canvas);
+}
+
 #define LOOP_INACTIVE_COLOR 0x0000 // Green
 #define LOOP_ACTIVE_COLOR 0xF800 // Red
 
@@ -940,16 +1119,16 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   uint16_t beatIdx = 0;
   uint32_t rangeStart = 0;
   if (pos >= playHeadX) {
-    rangeStart = DynamicWaveformZOOM * (pos - playHeadX);
+    rangeStart = dynamicWaveformZOOM * (pos - playHeadX);
     while (beatIdx < beatGridLenth &&
-           (BEATGRID[beatIdx] - (BEATGRID[beatIdx] % DynamicWaveformZOOM)) < rangeStart) {
+           (BEATGRID[beatIdx] - (BEATGRID[beatIdx] % dynamicWaveformZOOM)) < rangeStart) {
       beatIdx++;
     }
   }
   uint16_t beatX = 0; // local beat counter within visible range
 
   for (uint16_t x = 0; x < chartWidth; x++) {
-    int64_t index = DynamicWaveformZOOM * (x + pos - playHeadX);
+    int64_t index = dynamicWaveformZOOM * (x + pos - playHeadX);
 
     // --- Determine background color (loop region, default black) ---
     uint16_t bgColor = 0x0000; // black
@@ -970,7 +1149,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     // --- Draw memory cue markers (top, small triangles) ---
     if (number_of_memory_cue_points > 0) {
       for (uint8_t j = 0; j < number_of_memory_cue_points; j++) {
-        if ((MEMORY_adr[0][j] - (MEMORY_adr[0][j] % DynamicWaveformZOOM)) == adr) {
+        if ((MEMORY_adr[0][j] - (MEMORY_adr[0][j] % dynamicWaveformZOOM)) == adr) {
           // Draw red marker: small vertical line at top
           drawFastVLine16Bit(x, 0, 6, col_red, dynamicCanvasBuffer, chartWidth);
         }
@@ -981,7 +1160,7 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     if (number_of_hot_cue_points > 0) {
       for (uint8_t j = 0; j < 3; j++) {
         if (HCUE_adr[0][j] != 0xFFFF) {
-          if ((HCUE_adr[0][j] - (HCUE_adr[0][j] % DynamicWaveformZOOM)) == adr) {
+          if ((HCUE_adr[0][j] - (HCUE_adr[0][j] % dynamicWaveformZOOM)) == adr) {
             uint16_t hcColor = (HCUE_type[j] & 0x1) ? CUE_COLOR : col_green;
             drawFastVLine16Bit(x, 0, 6, hcColor, dynamicCanvasBuffer, chartWidth);
             drawFastVLine16Bit(x, chartHeight - 6, 6, hcColor, dynamicCanvasBuffer, chartWidth);
@@ -991,18 +1170,18 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     }
 
     // --- Draw cue marker (bottom) ---
-    if ((CUE_ADR - (CUE_ADR % DynamicWaveformZOOM)) == adr) {
+    if ((CUE_ADR - (CUE_ADR % dynamicWaveformZOOM)) == adr) {
       drawFastVLine16Bit(x, chartHeight - 6, 6, CUE_COLOR, dynamicCanvasBuffer, chartWidth);
     }
     */
     // --- Draw beat grid lines (top + bottom gutters) ---
     
         if ((beatIdx + beatX) < beatGridLenth &&
-                (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % DynamicWaveformZOOM)) == adr) {
+                (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % dynamicWaveformZOOM)) == adr) {
             uint16_t beatColor;
             if (((beatIdx + beatX) % 4) == ((GRID_OFFSET) & 0x03)) {
                 beatColor = 0xF800; // red downbeat
-            } else if (DynamicWaveformZOOM < 8) {
+            } else if (dynamicWaveformZOOM < 8) {
                 beatColor = col_white;
             } else {
                 beatX++;
@@ -1010,16 +1189,16 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
             } 
 
             // Full height line
-            drawFastVLine16Bit(x, 0, chartHeight, 0x8410 , dynamicCanvasBuffer, chartWidth);
-
+            //drawFastVLine16Bit(x, 0, chartHeight, 0x8410 , dynamicCanvasBuffer, chartWidth);
+            #define TICK_HEIGHT 10
             // Top tick: 6px tall, 2px wide to the right
             if ((x) < chartWidth) {
-                drawFastVLine16Bit(x, 0, 16, beatColor, dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x, 0, TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
             }
 
             // Bottom tick: 6px tall, 2px wide to the right
             if ((x) < chartWidth) {
-                drawFastVLine16Bit(x , chartHeight - 16, 16, beatColor, dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x , chartHeight - TICK_HEIGHT, TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
             }
 
             beatX++;
@@ -1047,7 +1226,8 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   drawFastVLine16Bit(playHeadX, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
   drawFastVLine16Bit(playHeadX + 1, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
 
-  lv_obj_invalidate(daynamic_waveform_canvas);
+    dynamicBufferReady = true;
+  //lv_obj_invalidate(daynamic_waveform_canvas);
 
 }
 

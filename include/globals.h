@@ -91,6 +91,14 @@ extern volatile uint32_t all_long;
 /////////////////////
 //User defined params
 /////////////////////
+
+extern int32_t BEATGRID[4096];    // beatgrid (0, 3, 7... )
+extern uint16_t BPMGRID[4096];				// bpmgrit BPM*100
+extern uint32_t hotCues[8];
+extern uint8_t GRID_OFFSET; // Default to 0 if not provided by parser
+extern uint16_t beatGridLenth0;
+extern uint8_t numCuePoints;
+
 extern bool is_playing;
 extern uint32_t slip_play_adr;
 extern uint8_t mem_offset_adress;
@@ -112,6 +120,7 @@ extern uint8_t REMAIN_ENABLE;
 extern uint8_t dynamicWaveformZOOM;
 extern uint16_t originalBPM;
 extern uint8_t tempo_need_update;
+
 
 extern uint8_t displayRefreshRate;
 

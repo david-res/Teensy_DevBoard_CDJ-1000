@@ -90,6 +90,10 @@ Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initia
 
 void DMA2_Stream5_IRQHandler(void);
 
+void SEEK_AUDIOFRAME(uint32_t seek_adr);
+void CALL_CUE(void);
+void SET_CUE(uint32_t nf_adr);
+
 // Used in the I2S ISR
 volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
 volatile uint32_t position = 0;
@@ -123,11 +127,11 @@ uint8_t	ftp = 0;										/////temp!
 
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
-EXTMEM_NOCACHE_PCM uint16_t PCM[205][8192][2] __attribute__((aligned(32)));
+EXTMEM_NOCACHE_PCM volatile uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
 
 // Make volatile as critical to buffer management
-volatile uint16_t start_adr_valid_data = 0;               //filling adress in memory
-volatile uint16_t end_adr_valid_data = 0;                 //filling adress in memory ()
+volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
+volatile uint32_t end_adr_valid_data = 0;                 //filling adress in memory ()
 volatile uint8_t filling_step = 0;
 
 uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE 
@@ -199,6 +203,8 @@ uint8_t TEMPO_RESET_BUTTON_pressed = 0;
 uint8_t TEMPO_RANGE_BUTTON_pressed = 0;
 uint8_t TRACK_NEXT_BUTTON_pressed = 0;
 uint8_t TRACK_PREVIOUS_BUTTON_pressed = 0;
+uint8_t WAVE_NEXT_BUTTON_pressed = 0;
+uint8_t WAVE_PREVIOUS_BUTTON_pressed = 0;
 uint8_t CALL_NEXT_BUTTON_pressed = 0;
 uint8_t CALL_PREVIOUS_BUTTON_pressed = 0;
 uint8_t SEARCH_FF_BUTTON_pressed = 0;
@@ -223,6 +229,7 @@ uint8_t JOG_PRESSED = 0;
 uint8_t need_call_to_cue = 0;
 uint8_t keep_slip = 0;
 uint8_t slip_mode = 0;
+uint8_t dynamicWaveformZOOM = 1;
 
 uint8_t CUE_OPERATION = 0;
 #define CUE_NEED_SET 1
@@ -959,10 +966,9 @@ FASTRUN void loop()
  }
   
   // Stats
-  //if (appStats.readyToReport() == true) {
-   // appStats.report();
-//	Serial.printf("potenciometer_tempo: %d\n", potenciometer_tempo);
- // }
+  if (appStats.readyToReport() == true) {
+    appStats.report();
+}
 
   appStats.start(MAIN_LOOP);
 
@@ -991,8 +997,10 @@ FASTRUN void loop()
       
       if (end_adr_valid_data < 128)
 		{
+			appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data][0], 32768);
 			end_adr_valid_data++;
+			appStats.end(PLAYFILE_READ);
 		}
 		else if ((end_adr_valid_data < ((play_adr >> 13) + 42)) && (filling_step == 0 || filling_step == 6))  // filling the buffer forward
 		{
@@ -1001,8 +1009,10 @@ FASTRUN void loop()
 				playFile.seek((32768UL * end_adr_valid_data) + 44);
 				filling_step = 0;
 			}
+			appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data & 0x7F][0], 32768);
 			end_adr_valid_data++;
+			appStats.end(PLAYFILE_READ);
 			if ((end_adr_valid_data - start_adr_valid_data) > 128)
 			{
 				start_adr_valid_data = end_adr_valid_data - 128;
@@ -1017,28 +1027,38 @@ FASTRUN void loop()
 					end_adr_valid_data = start_adr_valid_data + 124;
 				}
 				start_adr_valid_data -= 4;
+				appStats.start(PLAYFILE_SEEK);
 				playFile.seek((32768UL * start_adr_valid_data) + 44);
+				appStats.end(PLAYFILE_SEEK);
 				filling_step = 1;
 			}
 			else if (filling_step == 1)
 			{
+				appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[start_adr_valid_data & 0x7F][0], 32768);
 				filling_step = 2;
+				appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 2)
 			{
+				appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 1) & 0x7F][0], 32768);
 				filling_step = 3;
+				appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 3)
 			{
+				appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 2) & 0x7F][0], 32768);
 				filling_step = 4;
+				appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 4)
 			{
+				appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 3) & 0x7F][0], 32768);
 				filling_step = 5;
+				appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 5)
 			{
@@ -1078,6 +1098,102 @@ FASTRUN void loop()
 		{
 		offset_adress = 0;
 		ftp = 0;		
+		}
+			
+		
+	if(CUE_OPERATION==CUE_NEED_SET)
+		{
+		if(QUANTIZE && dSHOW==WAVEFORM)				//add calculate bars in background process
+			{
+			if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+				{
+				SET_CUE(BEATGRID[bars]);	
+				}
+			else
+				{
+				SET_CUE(BEATGRID[bars-1]);		
+				}				
+			}
+		else
+			{
+			SET_CUE(play_adr/294);	
+			}
+		CUE_OPERATION = 0;	
+		}
+	else if(CUE_OPERATION==CUE_NEED_CALL)
+		{
+		CALL_CUE();
+		CUE_OPERATION = 0;			
+		}
+	else if(CUE_OPERATION==MEMORY_NEED_NEXT_SET)
+		{
+			/*
+		if(numCuePoints>0)
+			{
+				
+			JJ=0;
+			while(MEMORY_adr[0][JJ]<=(play_adr/294) && (JJ<numCuePoints-1))
+				{
+				JJ++;	
+				}
+			if((play_adr/294)<MEMORY_adr[0][JJ])
+				{
+				if(loop_active)				//deactivate loop
+					{
+					loop_active = 0;
+					LOOP_OUT = 0;			
+					}
+				//SET_MEMORY_CUE_1(MEMORY_adr[0][JJ]);
+				CUE_OPERATION = MEMORY_NEED_SET_PART2;	
+				}
+			else
+				{
+				CUE_OPERATION = 0;	
+				}
+				
+			}
+		else
+			{
+			CUE_OPERATION = 0;	
+			}
+			*/
+		}	
+	else if(CUE_OPERATION==MEMORY_NEED_PREVIOUS_SET)
+		{
+			/*
+		if(numCuePoints>0)
+			{
+			JJ = numCuePoints-1;
+			while(MEMORY_adr[0][JJ]>=(play_adr/294) && (JJ>0))
+				{
+				JJ--;	
+				}
+			if((play_adr/294)>MEMORY_adr[0][JJ])
+				{
+				if(loop_active)				//deactivate loop
+					{
+					loop_active = 0;
+					LOOP_OUT = 0;			
+					}	
+				//SET_MEMORY_CUE_1(MEMORY_adr[0][JJ]);
+				CUE_OPERATION = MEMORY_NEED_SET_PART2;	
+				}
+			else
+				{
+				CUE_OPERATION = 0;	
+				}
+			}
+		else
+			{
+			CUE_OPERATION = 0;	
+			}	
+			*/		
+		}	
+	else if(CUE_OPERATION==MEMORY_NEED_SET_PART2 && ((end_adr_valid_data-start_adr_valid_data)>64))	
+		{
+		//SET_MEMORY_CUE_2();
+		offset_adress = 0;		
+		CUE_OPERATION = 0;
 		}
   appStats.end(MAIN_LOOP);
 }
@@ -2185,7 +2301,7 @@ void DMA2_Stream5_IRQHandler(void){
 					{
 					TEMPO_RANGE_BUTTON_pressed = 0;	
 					}	
-				else if((Rbuffer[18]&0x1) && CALL_NEXT_BUTTON_pressed==0) 							///////////CALL NEXT Button	>
+				else if((Rbuffer[17]&0x1) && CALL_NEXT_BUTTON_pressed==0) 							///////////CALL NEXT Button	>
 					{
 					if(lock_control==0)	
 						{		
@@ -2193,11 +2309,11 @@ void DMA2_Stream5_IRQHandler(void){
 						}
 					CALL_NEXT_BUTTON_pressed = 1;	
 					}
-				else if((Rbuffer[18]&0x1)==0 && CALL_NEXT_BUTTON_pressed==1)	
+				else if((Rbuffer[17]&0x1)==0 && CALL_NEXT_BUTTON_pressed==1)	
 					{
 					CALL_NEXT_BUTTON_pressed = 0;	
 					}
-				else if((Rbuffer[18]&0x2) && CALL_PREVIOUS_BUTTON_pressed==0) 							///////////CALL PREVIOUS Button <
+				else if((Rbuffer[17]&0x2) && CALL_PREVIOUS_BUTTON_pressed==0) 							///////////CALL PREVIOUS Button <
 					{
 					if(lock_control==0)	
 						{		
@@ -2205,11 +2321,42 @@ void DMA2_Stream5_IRQHandler(void){
 						}
 					CALL_PREVIOUS_BUTTON_pressed = 1;	
 					}
-				else if((Rbuffer[18]&0x2)==0 && CALL_PREVIOUS_BUTTON_pressed==1)	
+				else if((Rbuffer[17]&0x2)==0 && CALL_PREVIOUS_BUTTON_pressed==1)	
 					{
 					CALL_PREVIOUS_BUTTON_pressed = 0;	
 					}
-					
+				
+				else if((Rbuffer[18] & 0x1) && WAVE_NEXT_BUTTON_pressed == 0)              /////////// WAVE NEXT Button >
+				{
+					if(lock_control == 0)
+					{
+						if(dynamicWaveformZOOM < 16)
+						{
+							dynamicWaveformZOOM *= 2;
+						}
+					}
+					WAVE_NEXT_BUTTON_pressed = 1;
+				}
+				else if((Rbuffer[18] & 0x1) == 0 && WAVE_NEXT_BUTTON_pressed == 1)
+				{
+					WAVE_NEXT_BUTTON_pressed = 0;
+				}
+				else if((Rbuffer[18] & 0x2) && WAVE_PREVIOUS_BUTTON_pressed == 0)          /////////// WAVE PREVIOUS Button 
+				{
+					if(lock_control == 0)
+					{
+						if(dynamicWaveformZOOM > 1)
+						{
+							dynamicWaveformZOOM /= 2;
+						}
+					}
+					WAVE_PREVIOUS_BUTTON_pressed = 1;
+				}
+				else if((Rbuffer[18] & 0x2) == 0 && WAVE_PREVIOUS_BUTTON_pressed == 1)
+				{
+					WAVE_PREVIOUS_BUTTON_pressed = 0;
+				}	
+
 				if((Rbuffer[17]&0x10) && SLIP_MODE_BUTTON_pressed==0) 							///////////SLIP MODE Button
 					{
 					if(Tbuffer[19]&0x8)					//ON_SLIP_MODE => OFF_SLIP_MODE
@@ -2504,7 +2651,30 @@ void ledTIMER()
 //CAL CUE,seek audio frame
 //
 //
-//	
+//
+
+void SEEK_AUDIOFRAME(uint32_t seek_adr)
+	{
+	if(seek_adr>(294*all_long))
+		{
+		return;	
+		}
+	seek_adr &= 0xFFFFE000;	
+
+	if(playFile.seek(((seek_adr<<2)+44)))
+		{
+		end_adr_valid_data = (seek_adr>>13);
+		start_adr_valid_data = end_adr_valid_data; 	
+		play_adr = seek_adr;	
+		if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
+			{	
+			slip_play_adr = play_adr;	
+			}			
+		}
+	return;	
+	}
+
+
 void CALL_CUE(void)
 	{
 	uint32_t seek_adr = 294*CUE_ADR;
@@ -2522,7 +2692,31 @@ void CALL_CUE(void)
 	offset_adress = 128-mem_offset_adress;	
 	}
 	
-	
+void SET_CUE(uint32_t nf_adr)
+	{
+	uint16_t c_adr;	
+	uint32_t copy_cnt = 0;				//internal counter
+	uint32_t AIS = 0;							//adress in samples 44k for CUE	
+		
+	CUE_ADR = nf_adr;	
+	AIS = (294*CUE_ADR)&0xFFFFE000;							//rounding up to 8192
+	AIS-=81920;
+	mem_offset_adress = (AIS&0xFFFFF)>>13;
+		
+	for(copy_cnt=0;copy_cnt<327680;copy_cnt++)
+		{
+		PCM[(copy_cnt>>14)+128][(copy_cnt>>1)&0x1FFF][copy_cnt&0x01] = PCM[((copy_cnt>>14)+mem_offset_adress)&0x7F][(copy_cnt>>1)&0x1FFF][copy_cnt&0x01];	
+		}
+	//DrawCueMarker(1+(400*CUE_ADR/all_long));	
+	c_adr = ((nf_adr/2)%135)+1;	
+	RED_CIRCLE_CUE_ADR = (1000*c_adr/1589)+1;
+	if(dSHOW==WAVEFORM)							//Redraw cue on dynamic waveform
+		{
+		//forcibly_redraw = 1;
+		}	
+	REALTIME_CUE_LED_BLINK = 0;					//start blink led
+	return;	
+	}	
 
 void g_process_serial_rx (uint16_t x)
 {
