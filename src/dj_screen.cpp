@@ -87,6 +87,7 @@ static lv_obj_t *bpm_label;
 static lv_obj_t *key_label;
 static lv_obj_t *progress_line;
 static lv_obj_t *bar_count_label;
+static lv_obj_t *time_container;
 static lv_obj_t *time_label;
 static lv_obj_t *current_bpm_label;
 static lv_obj_t *tempo_range_label;
@@ -95,6 +96,9 @@ static lv_obj_t *progress_bars[4];
 static lv_obj_t *daynamic_waveform_canvas;
 static lv_obj_t *static_waveform_canvas;
 static lv_obj_t *cue_buttons[8];
+static lv_obj_t *quantize_btn;
+static lv_obj_t *slip_btn;
+static lv_obj_t *gate_btn;
 
 
 
@@ -127,9 +131,10 @@ DMAMEM uint16_t dynamicCanvasBuffer[800 * 164];
 uint64_t dynamicWaveformSampleCount = 0;
 double samplesPerDaynamicPoint = 0;
 
+
 //To store repeating group data of samples for the overview waveform
-uint8_t overViewWaveSampleData[3][800];
-DMAMEM uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
+uint8_t overViewWaveSampleData[3][PREVIEW_WAVEFORM_WIDTH];
+DMAMEM uint16_t overviewCanvasBuffer[PREVIEW_WAVEFORM_WIDTH * overviewChartHeight];
 uint64_t overviewWaveformSampleCount = 0;
 double samplesPerOverviewPoint = 0;
 
@@ -303,9 +308,9 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
 FLASHMEM void drawOverviewCanvas()
 {
   //Clear overview canvas
-  memset(overviewCanvasBuffer, 0, chartWidth * overviewChartHeight * 2);
+  memset(overviewCanvasBuffer, 0, PREVIEW_WAVEFORM_WIDTH * overviewChartHeight * 2);
 
-  for (uint16_t x = 0; x < chartWidth; x++) {
+  for (uint16_t x = 0; x < PREVIEW_WAVEFORM_WIDTH; x++) {
     // Stack from bottom to top: MID (white) → HIGH (orange) → LOW (blue)
     // overViewWaveSampleData[0] = MID
     // overViewWaveSampleData[1] = HIGH  
@@ -319,19 +324,82 @@ FLASHMEM void drawOverviewCanvas()
     uint8_t base = 0;  // Start from bottom
     
     // Draw MID (white) at bottom
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_height), mid_height, waveformColors[0], overviewCanvasBuffer, chartWidth);
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_height), mid_height, waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
     base += mid_height;
     
     // Draw HIGH (orange) on top of MID
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_height), high_height, waveformColors[1], overviewCanvasBuffer, chartWidth);
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_height), high_height, waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
     base += high_height;
     
     // Draw LOW (blue) on top of HIGH
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_height), low_height, waveformColors[2], overviewCanvasBuffer, chartWidth);
+    drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_height), low_height, waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
   }
   
   //Invalidate canvas, as this is updated done rarely
   lv_obj_invalidate(static_waveform_canvas);
+}
+
+
+// Add this above create_top_container, or in your header
+static void configcb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+
+    if (code == LV_EVENT_CLICKED) {
+        bool is_active = lv_obj_has_state(btn, LV_STATE_USER_1);
+
+        if (is_active) {
+            lv_obj_clear_state(btn, LV_STATE_USER_1);
+            lv_obj_set_style_text_color(label, lv_color_hex(0xcccccc), 0);
+        } else {
+            lv_obj_add_state(btn, LV_STATE_USER_1);
+            lv_obj_set_style_text_color(label, lv_color_hex(0xe09020), 0);
+        }
+
+        if (btn == slip_btn) {
+            slip_play_enable ^= 1;
+        }
+    } else if (code == LV_EVENT_PRESSED) {
+        if (btn == quantize_btn) {
+            // finger down on quantize
+            //Rbuffer[18] |= 0x40; // Set bit 6 to enable quantize
+        } else if (btn == slip_btn) {
+            // finger down on slip
+        } else if (btn == gate_btn) {
+            // finger down on gate
+        }
+    } else if (code == LV_EVENT_RELEASED) {
+        if (btn == quantize_btn) {
+            // finger up on quantize
+           //Rbuffer[18] &= ~0x40; // Clear bit 6 to disable quantize
+        } else if (btn == slip_btn) {
+            // finger up on slip
+        } else if (btn == gate_btn) {
+            // finger up on gate
+        }
+    }
+}
+
+
+static void overviewWaveformClick(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_CLICKED || code == LV_EVENT_PRESSING) {
+        static int32_t last_x = -1;
+
+        lv_indev_t *indev = lv_indev_get_act();
+        lv_point_t point;
+        lv_indev_get_point(indev, &point);
+
+        int32_t x = point.x;
+        Serial.printf("Clicked at x=%d\n", x);
+
+        if (x != last_x) {
+            last_x = x;
+            SEEK_AUDIOFRAME(294 * (((x-40) * all_long) / PREVIEW_WAVEFORM_WIDTH-1));
+        }
+    }
 }
 
 void create_top_container(Track * track) {
@@ -353,7 +421,7 @@ void create_top_container(Track * track) {
 
     lv_obj_t *back_btn = lv_obj_create(top_container);
     lv_obj_set_size(back_btn, back_btn_w, btn_h);
-    lv_obj_set_pos(back_btn, 0, 0);
+    lv_obj_set_pos(back_btn, 2, 0);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2a2a2a), 0);
     lv_obj_set_style_border_color(back_btn, lv_color_hex(0x555555), 0);
     lv_obj_set_style_border_width(back_btn, 1, 0);
@@ -373,7 +441,7 @@ void create_top_container(Track * track) {
     int side_btn_w = 80;
     int title_bpm_w = SCREEN_WIDTH - back_btn_w - gap - (side_btn_w * 3 + gap * 3);
 
-    lv_obj_t *quantize_btn = lv_obj_create(top_container);
+    quantize_btn = lv_obj_create(top_container);
     lv_obj_set_size(quantize_btn, side_btn_w, btn_h);
     lv_obj_set_pos(quantize_btn, back_btn_w + gap + title_bpm_w + gap, 0);
     lv_obj_set_style_bg_color(quantize_btn, lv_color_hex(0x2a2a2a), 0);
@@ -383,6 +451,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(quantize_btn, 0, 0);
     lv_obj_clear_flag(quantize_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(quantize_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(quantize_btn, configcb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *quantize_label = lv_label_create(quantize_btn);
     lv_label_set_text(quantize_label, "QNTZ");
@@ -390,7 +459,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(quantize_label, &exo2_20, 0);
     lv_obj_center(quantize_label);
 
-    lv_obj_t *slip_btn = lv_obj_create(top_container);
+    slip_btn = lv_obj_create(top_container);
     lv_obj_set_size(slip_btn, side_btn_w, btn_h);
     lv_obj_set_pos(slip_btn, back_btn_w + gap + title_bpm_w + gap + side_btn_w + gap, 0);
     lv_obj_set_style_bg_color(slip_btn, lv_color_hex(0x2a2a2a), 0);
@@ -400,6 +469,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(slip_btn, 0, 0);
     lv_obj_clear_flag(slip_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(slip_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(slip_btn, configcb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *slip_label = lv_label_create(slip_btn);
     lv_label_set_text(slip_label, "SLIP");
@@ -407,7 +477,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(slip_label, &exo2_20, 0);
     lv_obj_center(slip_label);
 
-    lv_obj_t *gate_btn = lv_obj_create(top_container);
+    gate_btn = lv_obj_create(top_container);
     lv_obj_set_size(gate_btn, side_btn_w, btn_h);
     lv_obj_set_pos(gate_btn, back_btn_w + gap + title_bpm_w + gap + (side_btn_w + gap) * 2, 0);
     lv_obj_set_style_bg_color(gate_btn, lv_color_hex(0x2a2a2a), 0);
@@ -417,6 +487,7 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(gate_btn, 0, 0);
     lv_obj_clear_flag(gate_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(gate_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(gate_btn, configcb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *gate_label = lv_label_create(gate_btn);
     lv_label_set_text(gate_label, "GATE");
@@ -440,7 +511,7 @@ void create_top_container(Track * track) {
     lv_label_set_text(title_label, track->title);
     lv_obj_set_style_text_color(title_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(title_label, &exo2_20, 0);
-    lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 5);
+    lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 6, 5);
     lv_obj_clear_flag(title_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
 
@@ -448,8 +519,8 @@ void create_top_container(Track * track) {
     bpm_label = lv_label_create(title_bpm_container);
     lv_label_set_text_fmt(bpm_label, "%.1f", track->bpm);
     lv_obj_set_style_text_color(bpm_label, COLOR_TEXT_PRIMARY, 0);
-    lv_obj_set_style_text_font(bpm_label, &exo2_32, 0);
-    lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_text_font(bpm_label, &exo2_24, 0);
+    lv_obj_align(bpm_label, LV_ALIGN_TOP_RIGHT, -6, 0);
     lv_obj_clear_flag(bpm_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bpm_label, LV_OBJ_FLAG_CLICKABLE);
 
@@ -476,7 +547,7 @@ void create_top_container(Track * track) {
     lv_label_set_text(artist_label, track->artist);
     lv_obj_set_style_text_color(artist_label, COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(artist_label, &exo2_20, 0);
-    lv_obj_set_pos(artist_label, back_btn_w + gap, 40);
+    lv_obj_set_pos(artist_label, back_btn_w + gap+6, 40);
     lv_obj_clear_flag(artist_label, LV_OBJ_FLAG_SCROLLABLE);
 
     // Bottom info container (bars, time, BPM info)
@@ -507,18 +578,44 @@ void create_top_container(Track * track) {
     lv_obj_clear_flag(bar_count_label, LV_OBJ_FLAG_SCROLLABLE);
 
     // Time label (center)
+    /*
     time_label = lv_label_create(info_container);
     lv_obj_set_style_text_color(time_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(time_label, &exo2_28, 0);
     lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
     lv_obj_clear_flag(time_label, LV_OBJ_FLAG_SCROLLABLE);
+    */
+
+    // Time container (center)
+    time_container = lv_obj_create(info_container);
+    lv_obj_set_size(time_container, 300, 40);
+    lv_obj_align(time_container, LV_ALIGN_CENTER, 55, 0);
+    lv_obj_set_style_bg_opa(time_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(time_container, 0, 0);
+    lv_obj_set_style_pad_all(time_container, 0, 0);
+    lv_obj_clear_flag(time_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Digit indices:  0=sign  1=min10  2=min1  3=':'  4=sec10  5=sec1  6=':'  7=frm10  8=frm1  9='.'  10=hf
+    const char *init[] = { " ", "0", "0", ":", "0", "0", ":", "0", "0", ".", "0" };
+    int x = 0;
+    for (int i = 0; i < 11; i++) {
+        lv_obj_t *d = lv_label_create(time_container);
+        lv_label_set_text(d, init[i]);
+        lv_obj_set_style_text_font(d, &exo2_28, 0);
+        // separators slightly dimmer
+        bool is_sep = (i == 0 || i == 3 || i == 6 || i == 9);
+        lv_obj_set_style_text_color(d, is_sep ? lv_color_make(0x88, 0x88, 0x88) : lv_color_make(0xFF, 0xFF, 0xFF), 0);
+        lv_obj_set_pos(d, x, 0);
+        // advance x by character width (tune these to your font)
+        x += (is_sep ? 10 : 18);
+    }
 
     // BPM info (right section)
     current_bpm_label = lv_label_create(info_container);
     lv_label_set_text(current_bpm_label, "125");
     lv_obj_set_style_text_color(current_bpm_label, COLOR_TEXT_PRIMARY, 0);
-    lv_obj_set_style_text_font(current_bpm_label, &exo2_24, 0);
-    lv_obj_align(current_bpm_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_text_font(current_bpm_label, &exo2_32, 0);
+    lv_obj_align(current_bpm_label, LV_ALIGN_TOP_RIGHT, -10, 0);
     lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
 }
 
@@ -565,31 +662,35 @@ void create_bottom_container(Track * track) {
     lv_obj_set_pos(bottom_container, 0, bottomContainerPos);
     lv_obj_set_style_bg_color(bottom_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(bottom_container, 0, 0);
-    lv_obj_set_style_pad_all(bottom_container, 0, 0);
-    lv_obj_set_style_border_width(bottom_container, 0, 0);
+    //lv_obj_set_style_border_color(bottom_container, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_pad_all(bottom_container, 0, 0);
     lv_obj_set_style_pad_row(bottom_container, 0, 0);
     lv_obj_set_style_pad_column(bottom_container, 0, 0);
     lv_obj_set_style_pad_gap(bottom_container, 0, 0);
     lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_EVENT_BUBBLE);
+    //lv_obj_clear_flag(bottom_container, LV_OBJ_FLAG_CLICKABLE);
 
     // Static waveform container
     lv_obj_t *static_wave_container = lv_obj_create(bottom_container);
-    lv_obj_set_size(static_wave_container, chartWidth, overviewChartHeight);
-    lv_obj_set_pos(static_wave_container, 0, 0);
+    lv_obj_set_size(static_wave_container, PREVIEW_WAVEFORM_WIDTH, overviewChartHeight);
+    lv_obj_set_pos(static_wave_container, 40, 0);
     lv_obj_set_style_bg_color(static_wave_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(static_wave_container, 0, 0);
     lv_obj_set_style_border_color(static_wave_container, lv_color_white(), 0);
     lv_obj_set_style_radius(static_wave_container, 0, LV_PART_MAIN);
     lv_obj_clear_flag(static_wave_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flag(static_wave_container, LV_OBJ_FLAG_CLICKABLE, true);
+    lv_obj_add_event_cb(static_wave_container, overviewWaveformClick, LV_EVENT_ALL, NULL);
 
     // Static waveform canvas
     static_waveform_canvas = lv_canvas_create(static_wave_container);
-    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t *)overviewCanvasBuffer, chartWidth, overviewChartHeight, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_set_size(static_waveform_canvas, chartWidth, overviewChartHeight);
+    lv_canvas_set_buffer(static_waveform_canvas, (lv_color_t *)overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH, overviewChartHeight, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_set_size(static_waveform_canvas, PREVIEW_WAVEFORM_WIDTH, overviewChartHeight);
     lv_obj_center(static_waveform_canvas);
     lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_CLICKABLE);
+    
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     Serial.printf("path to anlz: %s\n", track->anlz_ex2_path);
@@ -614,15 +715,16 @@ void create_bottom_container(Track * track) {
     
     // Cue buttons container
     lv_obj_t *cue_container = lv_obj_create(bottom_container);
-    lv_obj_set_size(cue_container, SCREEN_WIDTH, 94);
+    lv_obj_set_size(cue_container, SCREEN_WIDTH, 90);
     lv_obj_set_pos(cue_container, 0, 65);
     lv_obj_set_style_bg_color(cue_container, lv_color_hex(0x1c1c1c), 0);
     lv_obj_set_style_bg_opa(cue_container, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(cue_container, 1, 0);
-    lv_obj_set_style_border_color(cue_container, lv_color_hex(0x444444), 0);
+    //lv_obj_set_style_border_width(cue_container, 1, 0);
+    //lv_obj_set_style_border_color(cue_container, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_pad_all(cue_container, 0, 0);
     lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_EVENT_BUBBLE);
 
     // "HOT CUE" label + flanking rules
     lv_obj_t *rule_left = lv_obj_create(cue_container);
@@ -635,8 +737,8 @@ void create_bottom_container(Track * track) {
     lv_obj_t *hclbl = lv_label_create(cue_container);
     lv_label_set_text(hclbl, "HOT CUE");
     lv_obj_set_style_text_color(hclbl, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(hclbl, &exo2_20, 0); // swap for your font
-    lv_obj_set_pos(hclbl, 325, 0);
+    lv_obj_set_style_text_font(hclbl, &exo2_18, 0); // swap for your font
+    lv_obj_set_pos(hclbl, 370, 0);
 
     lv_obj_t *rule_right = lv_obj_create(cue_container);
     lv_obj_set_size(rule_right, 310, 1);
@@ -701,6 +803,11 @@ void create_bottom_container(Track * track) {
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(bar, 0, 0);
         lv_obj_set_style_radius(bar, 2, 0);
+
+        lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_clear_flag(btn_label, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_clear_flag(glow, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_EVENT_BUBBLE);
     }    
 }
 
@@ -731,9 +838,10 @@ uint8_t findBestRefreshRate(uint16_t samplesPerWavepoint, uint8_t minHz = 30, ui
 void dj_ui_init(Track * track) {
     // Create main screen
     main_screen = lv_obj_create(NULL);
-    lv_obj_set_size(main_screen, SCREEN_WIDTH, SCREEN_HEIGHT);
+    lv_obj_set_size(main_screen, SCREEN_WIDTH-2, SCREEN_HEIGHT-1);
     lv_obj_set_style_bg_color(main_screen, COLOR_BG, 0);
     lv_obj_set_style_border_width(main_screen, 0, 0);
+   // lv_obj_set_style_border_color(main_screen, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_pad_all(main_screen, 0, 0);
     lv_obj_set_style_pad_row(main_screen, 0, 0);
     lv_obj_set_style_pad_column(main_screen, 0, 0);
@@ -754,7 +862,7 @@ void dj_ui_init(Track * track) {
     PreviousPhase = 0xFFFF;
     PreviousPositionDW = UINT32_MAX;
     bars = 0; 
-    RedrawWaveforms(500);
+    RedrawWaveforms(0);
 
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
@@ -775,18 +883,19 @@ void dj_ui_init(Track * track) {
       Serial.printf("Failed trying to open file: %s\n", full_path);
     }
     else{
-      Serial.printf("Opened audio file: %s\n", full_path);
-      is_playing = true;
-      playFile.seek(44);
-      audio.startI2SInterrupt();
-      
-      track_play_now = track->id;
-      pitch = 0;	
-	    play_enable = 0;
-      play_adr = 0;	
-      slip_play_adr = 0;
-      loop_active = 0;
-      LOOP_OUT = 0;
+        Serial.printf("Opened audio file: %s\n", full_path);
+        is_playing = true;
+        playFile.seek(44);
+        audio.startI2SInterrupt();
+        
+        track_play_now = track->id;
+        pitch = 0;	
+            play_enable = 0;
+        play_adr = 0;	
+        slip_play_adr = 0;
+        loop_active = 0;
+        LOOP_OUT = 0;
+        dSHOW=WAVEFORM;
     }
 }
 
@@ -861,7 +970,14 @@ FASTRUN void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, 
   }
 }
 
-void RedrawWaveforms(uint32_t position){
+
+static void set_digit(lv_obj_t *container, int index, const char *val) {
+    lv_obj_t *d = lv_obj_get_child(container, index);
+    if (strcmp(lv_label_get_text(d), val) == 0) return;
+    lv_label_set_text(d, val);
+}
+
+void  RedrawWaveforms(uint32_t position){
 
 	if(position>all_long)
 		{
@@ -883,19 +999,28 @@ void RedrawWaveforms(uint32_t position){
     if (clock_pos != prev_clock_pos) {
     prev_clock_pos = clock_pos;
 
-    char time_str[16];
-        uint32_t min10  = (clock_pos / 90000) % 10;
-        uint32_t min1   = (clock_pos / 9000) % 10;
-        uint32_t sec10  = (clock_pos / 1500) % 6;
-        uint32_t sec1   = (clock_pos / 150) % 10;
-        uint32_t frm10  = ((clock_pos / 2) % 75) / 10;
-        uint32_t frm1   = ((clock_pos / 2) % 75) % 10;
-        uint32_t hf     = (clock_pos % 2) * 5;
+    uint32_t min10 = (clock_pos / 90000) % 10;
+    uint32_t min1  = (clock_pos / 9000)  % 10;
+    uint32_t sec10 = (clock_pos / 1500)  % 6;
+    uint32_t sec1  = (clock_pos / 150)   % 10;
+    uint32_t frm10 = ((clock_pos / 2) % 75) / 10;
+    uint32_t frm1  = ((clock_pos / 2) % 75) % 10;
+    uint32_t hf    = (clock_pos % 2) * 5;
 
-        lv_snprintf(time_str, sizeof(time_str), "%s%lu%lu:%lu%lu:%lu%lu.%lu",
-                    REMAIN_ENABLE ? "-" : "",
-                    min10, min1, sec10, sec1, frm10, frm1, hf);
-        lv_label_set_text(time_label, time_str);
+    char buf[3];
+
+    set_digit(time_container, 0, REMAIN_ENABLE ? "-" : " ");
+
+    snprintf(buf, sizeof(buf), "%lu", min10);  set_digit(time_container, 1, buf);
+    snprintf(buf, sizeof(buf), "%lu", min1);   set_digit(time_container, 2, buf);
+    // index 3 is ':' — never changes
+    snprintf(buf, sizeof(buf), "%lu", sec10);  set_digit(time_container, 4, buf);
+    snprintf(buf, sizeof(buf), "%lu", sec1);   set_digit(time_container, 5, buf);
+    // index 6 is ':' — never changes
+    snprintf(buf, sizeof(buf), "%lu", frm10);  set_digit(time_container, 7, buf);
+    snprintf(buf, sizeof(buf), "%lu", frm1);   set_digit(time_container, 8, buf);
+    // index 9 is '.' — never changes
+    snprintf(buf, sizeof(buf), "%lu", hf);     set_digit(time_container, 10, buf);
     }
     /*
     if(needle_enable || (Tbuffer[23]&0x20))						//detecting touch on sensor or touch on jog 
@@ -916,7 +1041,7 @@ void RedrawWaveforms(uint32_t position){
 		}
 
     */
-   updateOverviewWaveform((position*799)/all_long);
+   updateOverviewWaveform((position*(PREVIEW_WAVEFORM_WIDTH-1))/all_long);
    position = position/dynamicWaveformZOOM;
 
    if(position != PreviousPositionDW ) { // ||forcibly_redraw==1)
@@ -934,69 +1059,7 @@ void RedrawWaveforms(uint32_t position){
 
 
 
-uint32_t nextLabelMs = 0;
-/*
-FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
-{
-  if (dynamicBufferReady == true) {
-    return;
-  }
-  
-  // Start time for stats
-  //appStats.start(DYNAMIC_RENDER);
-  
-  //Clear canvas
-  //memset(dynamicCanvasBuffer, 0, chartWidth * chartHeight * 2);
-  
-  uint32_t pos = (waveformOffset / baseSampPerWavePoint) / dynamicWaveformZOOM; 
-  //If zoom is bigger than 1, need to find the highest value in between each jump
-  //Serial.printf("Waveform offset: %d, pos: %d sample count: %d \n", waveformOffset, pos, sampleCount);
 
-  //Draw waveforms - expanded, interpolated
-  const uint16_t chartHeightHalf = chartHeight / 2;
-
-  for (uint16_t x = 0; x < chartWidth; x++) {
-    // Clear single line here, rather than memset whole canvas - no performance hit and later, this becomes loop color, etc
-    drawFastVLine16Bit(x, 0, chartHeight, 0x00, dynamicCanvasBuffer, chartWidth);
-
-    int64_t index = dynamicWaveformZOOM * (x + pos - (chartWidth / 2));
-    //if (index < 0 || index >= all_long) continue;
-    
-    //for (uint8_t i = 2; i > 0; i--) {
-     //   uint8_t sampleValue = (uint8_t)(dynamicWaveSampleData[i][index]);
-      //  drawFastVLine16Bit(x, (chartHeightHalf - (sampleValue >> 1)), sampleValue, waveformColors[i], dynamicCanvasBuffer, chartWidth);
-
-    //}
-    
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
-    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
-  }
-
-  
-
-  // Draw horizontal mid-canvas line
-  int midOffset = chartWidth * chartHeightHalf; 
-  memset((dynamicCanvasBuffer + midOffset), 0xFFFF, chartWidth * 2);
-
-  // Draw vertical mid-canvas play head line
-  drawFastVLine16Bit(chartWidth / 2, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
-  lv_obj_invalidate(daynamic_waveform_canvas);
-  //memcpy(lcdBuffer1+(800*158),dynamicCanvasBuffer,(800*164*2));
-  //arm_dcache_flush_delete((uint16_t*)dynamicCanvasBuffer, chartWidth * chartHeight * 2);
-  //PXP_process();
-
-  if (millis() > nextLabelMs) {
-    //lv_label_set_text_fmt(time_label, "%ld", play_adr);
-    nextLabelMs = millis() + 90;
-  }
-
-  //dynamicBufferReady = true;
- 
-  // Finish stats
-  //appStats.end(DYNAMIC_RENDER);
-}
-*/
 
 void ShowPhaseMeter(uint16_t phase)
 {
@@ -1066,8 +1129,7 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
       uint16_t x = previousPos + col;
 
       // Clear the full column to black
-      drawFastVLine16BitOverview(x, 0, overviewChartHeight, 0x0000,
-                                 overviewCanvasBuffer, chartWidth);
+      drawFastVLine16BitOverview(x, 0, overviewChartHeight, 0x0000,overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
 
       // Redraw stacked waveform: MID (bottom), HIGH (middle), LOW (top)
       uint8_t mid_h  = overViewWaveSampleData[0][x];
@@ -1077,23 +1139,23 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
       uint8_t base = 0;
 
       drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_h), mid_h,
-                                 waveformColors[0], overviewCanvasBuffer, chartWidth);
+                                 waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
       base += mid_h;
 
       drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_h), high_h,
-                                 waveformColors[1], overviewCanvasBuffer, chartWidth);
+                                 waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
       base += high_h;
 
       drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_h), low_h,
-                                 waveformColors[2], overviewCanvasBuffer, chartWidth);
+                                 waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
     }
   }
 
   // --- Draw new cursor (2px wide, white) ---
   drawFastVLine16BitOverview(Tpos,     0, overviewChartHeight, 0xFFFF,
-                             overviewCanvasBuffer, chartWidth);
+                             overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
   drawFastVLine16BitOverview(Tpos + 1, 0, overviewChartHeight, 0xFFFF,
-                             overviewCanvasBuffer, chartWidth);
+                             overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
 
     lv_obj_set_size(progress_line, Tpos, 3);
     previousPos = Tpos;
@@ -1133,9 +1195,10 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     // --- Determine background color (loop region, default black) ---
     uint16_t bgColor = 0x0000; // black
     if (CUE_ADR < LOOP_OUT) {
-      if (index >= 0 && (uint32_t)index >= CUE_ADR && (uint32_t)index < LOOP_OUT) {
-        bgColor = loop_active ? LOOP_ACTIVE_COLOR : LOOP_INACTIVE_COLOR;
+      if (index >= 0 && (uint32_t)index >= CUE_ADR && (uint32_t)index < LOOP_OUT) {	
+        bgColor = (loop_active || CUE_OPERATION == CUE_NEED_SET) ? LOOP_ACTIVE_COLOR : LOOP_INACTIVE_COLOR;
       }
+      drawFastVLine16Bit(x, 0, chartHeight, bgColor, dynamicCanvasBuffer, chartWidth);
     }
 
     // Clear column with background color
@@ -1218,8 +1281,8 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
   }
 
   // --- Draw horizontal center line ---
-  int midOffset = chartWidth * chartHeightHalf;
-  memset((dynamicCanvasBuffer + midOffset), 0xFF, chartWidth * 2); // white line
+  //int midOffset = chartWidth * chartHeightHalf;
+  //memset((dynamicCanvasBuffer + midOffset), 0xFF, chartWidth * 2); // white line
 
   // --- Draw vertical play head ---
   //uint16_t playHeadColor = RED_VERTICAL_LINE ? col_red : col_white;
@@ -1251,6 +1314,17 @@ FASTRUN void updatePlaybackPosition_new(uint16_t newX)
 
 void backButton(lv_event_t *e){
     Serial.println("Back button clicked, returning to browser");
+    lv_event_code_t code = lv_event_get_code(e);
+    /* Get the object that triggered the event */
+    lv_obj_t * obj = lv_event_get_target(e);
+
+    /* Get touch point */
+    lv_indev_t * indev = lv_indev_get_act();
+    if (indev != NULL) {
+        lv_point_t point;
+        lv_indev_get_point(indev, &point);
+        LV_LOG_USER("Touch at x=%d, y=%d on obj=%p", point.x, point.y, (void*)obj);
+    }
     create_dj_browser_ui();
     populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);

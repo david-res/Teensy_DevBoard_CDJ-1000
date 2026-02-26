@@ -90,9 +90,7 @@ Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initia
 
 void DMA2_Stream5_IRQHandler(void);
 
-void SEEK_AUDIOFRAME(uint32_t seek_adr);
-void CALL_CUE(void);
-void SET_CUE(uint32_t nf_adr);
+
 
 // Used in the I2S ISR
 volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
@@ -199,6 +197,8 @@ uint8_t keep_to_play = 0;
 uint8_t PLAY_BUTTON_pressed = 0;
 uint8_t CUE_BUTTON_pressed = 0;
 uint8_t JOG_MODE_BUTTON_pressed = 0;
+uint16_t JOG_MODE_BUTTON_hold_ticks = 0;
+uint8_t display_mode =0;
 uint8_t TEMPO_RESET_BUTTON_pressed = 0;
 uint8_t TEMPO_RANGE_BUTTON_pressed = 0;
 uint8_t TRACK_NEXT_BUTTON_pressed = 0;
@@ -232,15 +232,10 @@ uint8_t slip_mode = 0;
 uint8_t dynamicWaveformZOOM = 1;
 
 uint8_t CUE_OPERATION = 0;
-#define CUE_NEED_SET 1
-#define CUE_NEED_CALL 2
-#define MEMORY_NEED_NEXT_SET 3
-#define MEMORY_NEED_PREVIOUS_SET 4
-#define MEMORY_NEED_SET_PART2 5
 
 
-#define TRACK_LIST 0
-#define WAVEFORM 1
+
+
 uint8_t dSHOW = TRACK_LIST;
 
 uint8_t REMAIN_ENABLE = 1;
@@ -676,7 +671,7 @@ void setup()
   lv_indev_drv_register( &indev_drv );
 #endif  // LVGL_VERSION_MAJOR == 8 
 #if (LVGL_VERSION_MAJOR == 9)
-  disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
+  disp_drv = lv_display_create(SCREEN_WIDTH-1, SCREEN_HEIGHT-1);
   lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
 #if defined(TEENSY41)
   lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * lvglBufferHeight * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -932,14 +927,14 @@ FASTRUN void copyWaveformsToLCD()
 
     // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
     // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
-    draw2PxVerticalStrip(lcdBuffer[0], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
-    draw2PxVerticalStrip(lcdBuffer[0], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
+    //draw2PxVerticalStrip(lcdBuffer[0], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, PREVIEW_WAVEFORM_WIDTH);
+    //draw2PxVerticalStrip(lcdBuffer[0], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, PREVIEW_WAVEFORM_WIDTH);
 
 #if defined(USE_LCD_DISP) 
     // As this isn't updated per frame, it needs to be done in all LCD buffers in use. Fast, though, ~10uS per buffer
     if (LCD_BUFFER_COUNT == 2) {
-      draw2PxVerticalStrip(lcdBuffer[1], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, chartWidth);
-      draw2PxVerticalStrip(lcdBuffer[1], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, chartWidth);
+      draw2PxVerticalStrip(lcdBuffer[1], overviewCanvasBuffer + oldStaticBufferX, oldStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, chartWidth, PREVIEW_WAVEFORM_WIDTH);
+      draw2PxVerticalStrip(lcdBuffer[1], staticIndicatorBuffer, newStaticBufferX, bottomContainerPos + 1, overviewChartHeight - 3, 2, PREVIEW_WAVEFORM_WIDTH);
     }
 #endif // USE_LCD_DISP
 
@@ -974,9 +969,9 @@ FASTRUN void loop()
 
   if (lvgl_framePending == true) {
 
-      if (is_playing == true) {
+      //if (is_playing == true) {
         copyWaveformsToLCD();
-      }
+      //}
       
 
       appStats.start(LV_TIMER_HANDLER);
@@ -1107,11 +1102,11 @@ FASTRUN void loop()
 			{
 			if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
 				{
-				SET_CUE(BEATGRID[bars]);	
+				SET_CUE(BEATGRID[bars]);
 				}
 			else
 				{
-				SET_CUE(BEATGRID[bars-1]);		
+				SET_CUE(BEATGRID[bars-1]);			
 				}				
 			}
 		else
@@ -1690,14 +1685,34 @@ void DMA2_Stream5_IRQHandler(void){
 		else if((Rbuffer[14]&0x08) && LOOP_OUT_BUTTON_pressed==0)										///////////LOOP OUT button
 			{
 			if(lock_control==0)	
-				{	
 				if(loop_active==0 && CUE_ADR<play_adr/294)
+					{
+					if(QUANTIZE && dSHOW==WAVEFORM)
+						{
+						if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+							{
+							LOOP_OUT = BEATGRID[bars];								//next bar >> |
+							}
+						else
+							{
+							if(CUE_ADR==BEATGRID[bars-1])
+								{
+								LOOP_OUT = BEATGRID[bars];								//next bar >> |	
+								}
+							else	
+								{
+								LOOP_OUT = BEATGRID[bars-1];							//previous bar <<	|
+								}
+							CUE_OPERATION = CUE_NEED_CALL;		
+							}	
+						}
+					else
 						{
 						LOOP_OUT = play_adr/294;
 						CUE_OPERATION = CUE_NEED_CALL;	
 						}	
-						loop_active = 1;	
-				}
+					loop_active = 1;	
+					}
 			LOOP_OUT_BUTTON_pressed = 1;	
 			}
 		else if((Rbuffer[14]&0x08)==0 && LOOP_OUT_BUTTON_pressed==1)
@@ -2085,6 +2100,7 @@ void DMA2_Stream5_IRQHandler(void){
 					}	
 				else if((Rbuffer[18]&0x40) && QUANTIZE_BUTTON_pressed==0) 					///////////QUANTIZE Button
 					{
+						Serial.println("QUANTIZE Button Pressed");
 					if(QUANTIZE)
 						{
 						QUANTIZE = 0;	
@@ -2097,7 +2113,8 @@ void DMA2_Stream5_IRQHandler(void){
 					QUANTIZE_BUTTON_pressed = 1;	
 					}
 				else if((Rbuffer[18]&0x40)==0 && QUANTIZE_BUTTON_pressed==1)	
-					{		
+					{
+						Serial.println("QUANTIZE Button Released");		
 					QUANTIZE_BUTTON_pressed = 0;	
 					}
 				}
@@ -2152,7 +2169,7 @@ void DMA2_Stream5_IRQHandler(void){
 						{	
 						if(play_enable & play_adr<(all_long+100000))	
 							{
-							//SEEK_AUDIOFRAME(play_adr+100000);	
+							SEEK_AUDIOFRAME(play_adr+100000);	
 							}
 						else if(play_enable==0 & play_adr/294<(all_long+1))
 							{	
@@ -2171,7 +2188,7 @@ void DMA2_Stream5_IRQHandler(void){
 						{		
 						if(play_enable & play_adr>100000)	
 							{
-							//SEEK_AUDIOFRAME(play_adr-100000);
+							SEEK_AUDIOFRAME(play_adr-100000);
 							}
 						else if(play_enable==0 & play_adr>294)
 							{	
@@ -2246,7 +2263,8 @@ void DMA2_Stream5_IRQHandler(void){
 					}
 				}		
 			else if(dma_cnt==5)
-				{				
+				{			
+					/*
 				if((Rbuffer[17]&0x4) && JOG_MODE_BUTTON_pressed==0) 							///////////Jog Mode button
 					{
 					if(Tbuffer[19]&0x20)			//VINYL => CDJ
@@ -2266,6 +2284,47 @@ void DMA2_Stream5_IRQHandler(void){
 				else if((Rbuffer[17]&0x4)==0 && JOG_MODE_BUTTON_pressed==1)	
 					{
 					JOG_MODE_BUTTON_pressed = 0;	
+					}
+					*/
+
+					#define LONG_PRESS_THRESHOLD 200  // 500ms at 1kHz loop rate
+
+				if ((Rbuffer[17] & 0x4) && JOG_MODE_BUTTON_pressed == 0)           // Button just pressed
+					{
+					JOG_MODE_BUTTON_pressed = 1;
+					JOG_MODE_BUTTON_hold_ticks = 0;
+					}
+				else if ((Rbuffer[17] & 0x4) && JOG_MODE_BUTTON_pressed == 1)      // Button held
+					{
+					JOG_MODE_BUTTON_hold_ticks++;
+
+					if (JOG_MODE_BUTTON_hold_ticks == LONG_PRESS_THRESHOLD)         // Long press detected
+						{
+						display_mode ^= 1;
+						//Serial.print("Display mode: ");
+						//Serial.println(display_mode ? "ALT" : "DEFAULT");
+						Tbuffer[20] = display_mode? 0x01 : 0x00; // Set display mode in Tbuffer
+						}
+					}
+				else if ((Rbuffer[17] & 0x4) == 0 && JOG_MODE_BUTTON_pressed == 1) // Button released
+					{
+					if (JOG_MODE_BUTTON_hold_ticks < LONG_PRESS_THRESHOLD)          // Short press — jog mode toggle
+						{
+						if (Tbuffer[19] & 0x20)        // VINYL => CDJ
+							{
+							Tbuffer[19] &= 0xDF;
+							Tbuffer[19] |= 0x40;
+							Tbuffer[23] &= 0xE7;
+							}
+						else                           // CDJ => VINYL
+							{
+							Tbuffer[19] &= 0xBF;
+							Tbuffer[19] |= 0x20;
+							Tbuffer[23] |= 0x18;
+							}
+						}
+					JOG_MODE_BUTTON_pressed = 0;
+					JOG_MODE_BUTTON_hold_ticks = 0;
 					}
 				else if((Rbuffer[17]&0x20) && TEMPO_RESET_BUTTON_pressed==0) 							///////////TEMPO RESET Button
 					{

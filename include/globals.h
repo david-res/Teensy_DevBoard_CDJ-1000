@@ -92,12 +92,31 @@ extern volatile uint32_t all_long;
 //User defined params
 /////////////////////
 
+extern uint8_t Rbuffer[32];
+extern uint8_t Tbuffer[32];
+
+#define TRACK_LIST 0
+#define WAVEFORM 1
+extern uint8_t dSHOW;
+
+extern uint8_t CUE_OPERATION;
+#define CUE_NEED_SET 1
+#define CUE_NEED_CALL 2
+#define MEMORY_NEED_NEXT_SET 3
+#define MEMORY_NEED_PREVIOUS_SET 4
+#define MEMORY_NEED_SET_PART2 5
+
 extern int32_t BEATGRID[4096];    // beatgrid (0, 3, 7... )
 extern uint16_t BPMGRID[4096];				// bpmgrit BPM*100
 extern uint32_t hotCues[8];
 extern uint8_t GRID_OFFSET; // Default to 0 if not provided by parser
 extern uint16_t beatGridLenth0;
 extern uint8_t numCuePoints;
+
+
+extern void SEEK_AUDIOFRAME(uint32_t seek_adr);
+extern void CALL_CUE(void);
+extern void SET_CUE(uint32_t nf_adr);
 
 extern bool is_playing;
 extern uint32_t slip_play_adr;
@@ -143,12 +162,13 @@ const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
 const uint16_t middleContainerPos = 158;
 const uint16_t bottomContainerPos = 322;
+#define PREVIEW_WAVEFORM_WIDTH 720       // Output width for preview waveform
 
 // For static buffer indicator
 extern bool staticBufferReady;
 extern uint16_t oldStaticBufferX;
 extern uint16_t newStaticBufferX;
-extern uint16_t overviewCanvasBuffer[800 * overviewChartHeight];
+extern uint16_t overviewCanvasBuffer[PREVIEW_WAVEFORM_WIDTH * overviewChartHeight];
 
 
 // Parser instance

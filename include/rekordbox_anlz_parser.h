@@ -52,7 +52,7 @@
 #define MAX_BEAT_GRID_ENTRIES 4096
 
 // Waveform parameters
-#define PREVIEW_WAVEFORM_WIDTH 800       // Output width for preview waveform
+#define PREVIEW_WAVEFORM_WIDTH 720       // Output width for preview waveform
 #define PREVIEW_WAVEFORM_MAX_VALUE 64    // Max TOTAL height for stacked display (all bands combined)
 #define PREVIEW_WAVEFORM_MAX_INDIVIDUAL 21  // Max height for individual band
 #define DYNAMIC_WAVEFORM_MAX_VALUE 64   // Max height value for dynamic waveform
@@ -295,7 +295,7 @@ static void process_preview_waveform(const uint8_t* raw_data, uint8_t output[3][
     
     for (uint16_t i = 0; i < PREVIEW_WAVEFORM_WIDTH; i++) {
         // Calculate source position (1.5 samples per output)
-        uint16_t src_pos = (i * 3) / 2;  // i * 1.5
+        uint16_t src_pos = ((uint32_t)i * REKORDBOX_PREVIEW_SAMPLES) / PREVIEW_WAVEFORM_WIDTH;
         
         if (src_pos >= REKORDBOX_PREVIEW_SAMPLES) {
             src_pos = REKORDBOX_PREVIEW_SAMPLES - 1;
