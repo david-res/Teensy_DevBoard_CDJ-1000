@@ -1079,6 +1079,7 @@ FASTRUN void loop()
     } 
   }
 
+	/*  
   if(loop_active && CUE_ADR<LOOP_OUT && (play_adr/294)>=LOOP_OUT)					//return to cue for loop mode
 		{	
 		CALL_CUE();
@@ -1091,11 +1092,31 @@ FASTRUN void loop()
 		}
 	else if(ftp==15)	
 		{
-		offset_adress = 0;
+		offset_adress = 0;1
 		ftp = 0;		
 		}
+		*/
+	
+	if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/294) >= LOOP_OUT && (reverse==0))  // forward loop
+	{	
+		CALL_CUE();
+		ftp = 1;	
+	}
+	else if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/294) <= CUE_ADR && (reverse==1))  // reverse loop
+	{	
+		SEEK_AUDIOFRAME(LOOP_OUT*294);
+		ftp = 1;	
+	}
+	else if(ftp != 0 && ftp < 15)
+	{
+		ftp++;	
+	}
+	else if(ftp == 15)	
+	{
+		offset_adress = 0;
+		ftp = 0;		
+	}
 			
-		
 	if(CUE_OPERATION==CUE_NEED_SET)
 		{
 		if(QUANTIZE && dSHOW==WAVEFORM)				//add calculate bars in background process
