@@ -1164,8 +1164,8 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
   lv_obj_invalidate(static_waveform_canvas);
 }
 
-#define LOOP_INACTIVE_COLOR 0x0000 // Green
-#define LOOP_ACTIVE_COLOR 0xF800 // Red
+#define LOOP_INACTIVE_COLOR 0x3186 // Green
+#define LOOP_ACTIVE_COLOR 0x8280 // Red
 
 FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 {
