@@ -41,7 +41,7 @@ LV_FONT_DECLARE(exo2_32)
 #define SCREEN_HEIGHT 480
 
 // Color definitions
-#define COLOR_BG LV_COLOR_MAKE(0x1a, 0x1a, 0x1a)
+#define COLOR_BG LV_COLOR_MAKE(0x00, 0x00, 0x00)
 #define COLOR_TEXT_PRIMARY LV_COLOR_MAKE(0xff, 0xff, 0xff)
 #define COLOR_TEXT_SECONDARY LV_COLOR_MAKE(0xa0, 0xa0, 0xa0)
 #define COLOR_WAVEFORM_HIGH LV_COLOR_MAKE(0x40, 0x80, 0xff)
@@ -109,6 +109,7 @@ void drawSlope16Bit(uint16_t * buf, uint8_t p1, uint8_t p2, uint16_t x, uint16_t
 void RedrawWaveforms(uint32_t position);
 void updateDynamicWaveform(uint32_t waveformOffset);
 void updateOverviewWaveform(uint16_t Tpos);
+void updateTempoDisplay(uint8_t range, float adjustment_pct, float original_bpm);
 void ShowPhaseMeter(uint16_t phase);
 void backButton(lv_event_t *e);
 bool useOpa = false;
@@ -610,13 +611,81 @@ void create_top_container(Track * track) {
         x += (is_sep ? 10 : 18);
     }
 
+
+    // ── Tempo section (left) ──────────────────────────────────────────
+    // ── Main tempo container (max 200px, replacing original BPM position) ──
+    lv_obj_t *tempo_container = lv_obj_create(info_container);
+    lv_obj_set_size(tempo_container, 240, 60);
+    lv_obj_set_style_bg_opa(tempo_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tempo_container, 0, 0);
+    lv_obj_set_style_pad_all(tempo_container, 0, 0);
+    lv_obj_clear_flag(tempo_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(tempo_container, LV_ALIGN_TOP_RIGHT, -10, 0); // same position as old current_bpm_label
+
+    // ── BPM box (right side) ──────────────────────────────────────────
+    lv_obj_t *bpm_box = lv_obj_create(tempo_container);
+    lv_obj_set_size(bpm_box, 100, 55);
+    lv_obj_set_style_bg_color(bpm_box, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(bpm_box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(bpm_box, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_border_width(bpm_box, 2, 0);
+    lv_obj_set_style_radius(bpm_box, 3, 0);
+    lv_obj_set_style_pad_all(bpm_box, 0, 0);
+    lv_obj_clear_flag(bpm_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(bpm_box, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+    // "BPM" small label inside the box (top-left)
+    lv_obj_t *bpm_title = lv_label_create(bpm_box);
+    lv_label_set_text(bpm_title, "BPM");
+    lv_obj_set_style_text_color(bpm_title, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(bpm_title, &exo2_16, 0);
+    lv_obj_align(bpm_title, LV_ALIGN_TOP_LEFT, 5, 0);
+
+    // Current BPM large value
+    current_bpm_label = lv_label_create(bpm_box);
+    lv_label_set_text(current_bpm_label, "124.3");
+    lv_obj_set_style_text_color(current_bpm_label, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(current_bpm_label, &exo2_32, 0);
+    lv_obj_align(current_bpm_label, LV_ALIGN_BOTTOM_MID, 0, -3);
+    lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
+
+    // ── Tempo section (left side) ─────────────────────────────────────
+    // "TEMPO" small label
+    lv_obj_t *tempo_title = lv_label_create(tempo_container);
+    lv_label_set_text(tempo_title, "TEMPO");
+    lv_obj_set_style_text_color(tempo_title, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(tempo_title, &exo2_16, 0);
+    lv_obj_align(tempo_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    // Range label (boxed, sits right of "TEMPO")
+    tempo_range_label = lv_label_create(tempo_container);
+    lv_label_set_text(tempo_range_label, "+/-16");
+    lv_obj_set_style_text_color(tempo_range_label, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(tempo_range_label, &exo2_16, 0);
+    lv_obj_set_style_border_width(tempo_range_label, 1, 0);
+    lv_obj_set_style_border_color(tempo_range_label, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_pad_hor(tempo_range_label, 3, 0);
+    lv_obj_set_style_pad_ver(tempo_range_label, 2, 0);
+    lv_obj_set_style_radius(tempo_range_label, 2, 0);
+    lv_obj_align_to(tempo_range_label, tempo_title, LV_ALIGN_OUT_RIGHT_MID, 4, 4);
+
+    // Adjusted tempo value (e.g. "+ 0.25%")
+    adjusted_tempo_label = lv_label_create(tempo_container);
+    lv_label_set_text(adjusted_tempo_label, "+ 0.25%");
+    lv_obj_set_style_text_color(adjusted_tempo_label, COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(adjusted_tempo_label, &exo2_32, 0);
+    lv_obj_align(adjusted_tempo_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_clear_flag(adjusted_tempo_label, LV_OBJ_FLAG_SCROLLABLE);
+
     // BPM info (right section)
+    /*
     current_bpm_label = lv_label_create(info_container);
     lv_label_set_text(current_bpm_label, "125");
     lv_obj_set_style_text_color(current_bpm_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(current_bpm_label, &exo2_32, 0);
     lv_obj_align(current_bpm_label, LV_ALIGN_TOP_RIGHT, -10, 0);
     lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
+    */
 }
 
 
@@ -863,6 +932,8 @@ void dj_ui_init(Track * track) {
     PreviousPositionDW = UINT32_MAX;
     bars = 0; 
     RedrawWaveforms(0);
+    originalBPM = track->bpm;
+    updateTempoDisplay(tempo_range,pitch, originalBPM); 
 
     //PXP_overlay_buffer((uint16_t*)dynamicCanvasBuffer, 2, SCREEN_WIDTH, 164);
     //PXP_overlay_position(0, 158, 799, 321);
@@ -1054,11 +1125,54 @@ void  RedrawWaveforms(uint32_t position){
 				tempo_need_update = 2;		
 				}	
    } //
+   updateTempoDisplay(tempo_range, pitch, originalBPM); 
 
 }
 
 
+// Range: 0=±6%, 1=±10%, 2=±16%, 3=WIDE
+void updateTempoDisplay(uint8_t range, float adjustment_pct, float original_bpm)
+{
+    if(adjustment_pct==10000){
+        adjustment_pct = 0;
+    }
+    else if (adjustment_pct<10000){
+        adjustment_pct = 10000-adjustment_pct;
+    }
+    else if(adjustment_pct>10000){
+        adjustment_pct = adjustment_pct-10000;
+    }
+    // 1. Range label text + color
+    if (tempo_range_need_update > 0){
+        const char *range_str;
+        lv_color_t range_color;
+        switch (range) {
+            case 0: range_str = "+/-6%";   range_color = lv_color_make(255, 255, 255);   break; // green
+            case 1: range_str = "+/-10%";   range_color = lv_color_make(255, 255, 255);   break; // red
+            case 2: range_str = "+/-16%";   range_color = lv_color_make(255, 255, 255); break; // white
+            case 3: range_str = "WIDE";          range_color = lv_color_make(255, 0, 0);   break; // red
+            default: range_str = "?";            range_color = COLOR_TEXT_PRIMARY;          break;
+        }
+        lv_label_set_text(tempo_range_label, range_str);
+        lv_obj_set_style_text_color(tempo_range_label, range_color, 0);
+        lv_obj_set_style_border_color(tempo_range_label, range_color, 0);
+    }
 
+
+    if (tempo_need_update >0){
+        // 2. Adjustment label  e.g. "+ 0.25%"
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%+.2f%%", adjustment_pct);
+        lv_label_set_text(adjusted_tempo_label, buf);
+
+        // 3. Computed BPM  e.g. "124.3"
+        float adjusted_bpm = (original_bpm * (1.0f + adjustment_pct)); // Modulo to prevent overflow in extreme cases
+        //adjusted_bpm = fmod(adjusted_bpm, 10000.0f); // Keep one decimal place, wrap around at 1000 BPM to prevent overflow
+        snprintf(buf, sizeof(buf), "%.1f", adjusted_bpm);
+        lv_label_set_text(current_bpm_label, buf);
+        tempo_need_update = 0;
+    }
+}
 
 
 void ShowPhaseMeter(uint16_t phase)
@@ -1194,10 +1308,13 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
 
     // --- Determine background color (loop region, default black) ---
     uint16_t bgColor = 0x0000; // black
-    if (CUE_ADR < LOOP_OUT) {
+    if (CUE_ADR < LOOP_OUT || loop_pending) {
       if (index >= 0 && (uint32_t)index >= CUE_ADR && (uint32_t)index < LOOP_OUT) {	
         bgColor = (loop_active || CUE_OPERATION == CUE_NEED_SET) ? LOOP_ACTIVE_COLOR : LOOP_INACTIVE_COLOR;
       }
+      if(loop_pending && (index >= 0 && index < all_long) && (uint32_t)index >= CUE_ADR && x < playHeadX ){
+          bgColor = LOOP_ACTIVE_COLOR;
+    }
       drawFastVLine16Bit(x, 0, chartHeight, bgColor, dynamicCanvasBuffer, chartWidth);
     }
 

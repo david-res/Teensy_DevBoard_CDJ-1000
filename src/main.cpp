@@ -151,23 +151,26 @@ uint16_t LOG_TABLE[8] = {1200, 128, 72, 40, 18, 15, 9, 3};
 bool is_playing = false;
 uint32_t slip_play_adr = 0;                      //Playing adress for SLIP MODE in samples (44100 per second)
 uint8_t mem_offset_adress = 0;                   //address offset for calling CUE audio data (for memory)
- uint8_t play_enable = 0;
- uint8_t slip_play_enable = 0;
- uint32_t slip_position = 0;
- uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
- float SAMPLE_BUFFER;
- float T;
- uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
- uint8_t loop_active = 0;                 //loop flag
- uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
- uint8_t lock_control = 0;            
+uint8_t play_enable = 0;
+uint8_t slip_play_enable = 0;
+uint32_t slip_position = 0;
+uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
+float SAMPLE_BUFFER;
+float T;
+uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
+uint8_t loop_active = 0;                 //loop flag
+uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
+uint8_t loop_pending = 0;
+uint8_t loop_in_active_pressed = 0;
+uint8_t loop_out_active_pressed = 0;
+uint8_t lock_control = 0;            
 
 
- // For static buffer indicator
- bool staticBufferReady = false;
- uint16_t oldStaticBufferX = 0;
- uint16_t newStaticBufferX = 0;
- uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
+// For static buffer indicator
+bool staticBufferReady = false;
+uint16_t oldStaticBufferX = 0;
+uint16_t newStaticBufferX = 0;
+uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
 
 
  /* SPI transfer variables ---------------------------------------------------------*/
@@ -562,7 +565,7 @@ void setup()
 
   // Initialize Serial
   Serial.begin (115200);
-  while (!Serial) {};
+  //while (!Serial) {};
   delay(1000);
 
   if (CrashReport) {
@@ -671,7 +674,7 @@ void setup()
   lv_indev_drv_register( &indev_drv );
 #endif  // LVGL_VERSION_MAJOR == 8 
 #if (LVGL_VERSION_MAJOR == 9)
-  disp_drv = lv_display_create(SCREEN_WIDTH-1, SCREEN_HEIGHT-1);
+  disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
   lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
 #if defined(TEENSY41)
   lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * lvglBufferHeight * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -990,7 +993,7 @@ FASTRUN void loop()
     if(end_of_track == 0) {
 	  RedrawWaveforms(play_adr/294);
       
-      if (end_adr_valid_data < 128)
+      	if (end_adr_valid_data < 128)
 		{
 			appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data][0], 32768);
@@ -1240,6 +1243,112 @@ FASTRUN void SAI_IRQHandler(void)
   CrashReport.breadcrumb(2, 0);
 }
 
+
+#define BufSize 8096
+#define Overlap 100
+
+int Buf[BufSize];
+
+int WtrP = 0;
+float Rd_P = 0.0f;
+float Shift = 1.0f;
+float CrossFade = 1.0f;
+float a0h, a1h, a2h, b1h, b2h, hp_in_z1h, hp_in_z2h, hp_out_z1h, hp_out_z2h;
+
+int Do_HighPass (int inSample)
+{
+//	a0h = 0.9087554064944908f;
+//  a1h = -1.7990948352036205f;
+//  a2h = 0.9087554064944908f;
+//  b1h = -1.7990948352036205f;
+//  b2h = 0.8175108129889816f;
+	
+	a0h = 0.49865224695598137f;
+	a1h = 0.9973044939119627f;
+	a2h = 0.49865224695598137f;
+	b1h = 0.7278431635297481f;
+	b2h = 0.2667658242941773f;
+		
+
+	float inSampleF = (float)inSample;
+	float outSampleF =
+		a0h * inSampleF
+		+ a1h * hp_in_z1h
+		+ a2h * hp_in_z2h
+		- b1h * hp_out_z1h
+		- b2h * hp_out_z2h;
+		
+	hp_in_z2h = hp_in_z1h;
+	hp_in_z1h = inSampleF;
+	hp_out_z2h = hp_out_z1h;
+	hp_out_z1h = outSampleF;
+
+	return (int) outSampleF;
+}
+
+
+
+
+int Do_PitchShift(int Sample)
+{
+	int sum;
+  float share;
+    
+//sum up and do high-pass and notch
+  sum=Do_HighPass(Sample);
+  
+  //write to ringbuffer
+  Buf[WtrP] = sum;
+ 
+//read fractional readpointer and generate 0� and 180� read-pointer in integer
+  int RdPtr_Int = roundf(Rd_P);
+
+//frac share of RdPtr_Int1a. // -1>= share <1
+  share =  (float) Rd_P - RdPtr_Int;
+
+  int RdPtr_Int2 = 0;
+  if (RdPtr_Int >= BufSize/2) RdPtr_Int2 = RdPtr_Int - (BufSize/2);
+  else RdPtr_Int2 = RdPtr_Int + (BufSize/2);
+
+  //read the two samples...
+  float Rd0 = (float) Buf[RdPtr_Int];
+  float Rd1 = (float) Buf[RdPtr_Int2];
+
+  //Check if first readpointer starts overlap with write pointer?
+  // if yes -> do cross-fade to second read-pointer
+  if (Overlap >= (WtrP-RdPtr_Int) && (WtrP-RdPtr_Int) >= 0 && Shift!=1.0f) {
+    int rel = WtrP-RdPtr_Int;
+    CrossFade = ((float)rel)/(float)Overlap;
+
+  }
+  else if (WtrP-RdPtr_Int == 0) {
+    CrossFade = 0.0f;
+  }
+
+
+  //Check if second readpointer starts overlap with write pointer?
+  // if yes -> do cross-fade to first read-pointer
+  if (Overlap >= (WtrP-RdPtr_Int2) && (WtrP-RdPtr_Int2) >= 0 && Shift!=1.0f) {
+      int rel = WtrP-RdPtr_Int2;
+      CrossFade = 1.0f - ((float)rel)/(float)Overlap;
+    }
+  else if (WtrP-RdPtr_Int2 == 0) {
+    CrossFade = 1.0f;
+  }
+
+
+  //do cross-fading and sum up
+  sum = (Rd0*CrossFade + Rd1*(1.0f-CrossFade));
+
+  //increment fractional read-pointer and write-pointer
+  Rd_P += Shift;
+  WtrP++;
+  if (WtrP == BufSize) WtrP = 0;
+  if (roundf(Rd_P) >= BufSize) Rd_P = 0.0f;
+
+  return sum;
+}
+
 FASTRUN void advancePosition_rezo() {
   if(((play_adr+step_position+3)<=(294*all_long)))						//change all_long extract!
 			{
@@ -1353,6 +1462,7 @@ FASTRUN void advancePosition_rezo() {
 	SAMPLE_BUFFER = c0+T*(c1+T*(c2+T*c3));
 	SAMPLE_BUFFER = SAMPLE_BUFFER*0.90F;
 	PCM_2[0] = (int)SAMPLE_BUFFER;
+	int lSample = (int)PCM_2[0];
 
 	even1 = LR[1][2];
 	even1 = even1 + LR[1][1];
@@ -1378,6 +1488,16 @@ FASTRUN void advancePosition_rezo() {
 	SAMPLE_BUFFER = c0+T*(c1+T*(c2+T*c3));
 	SAMPLE_BUFFER = SAMPLE_BUFFER*0.90F;
 	PCM_2[1] = (int)SAMPLE_BUFFER;
+
+	int rSample = (int)PCM_2[1];
+	if((Rbuffer[12]&0x20) == 0 && (Tbuffer[19]&0x8)){ // Touch is disabled
+		int ret_lsample = Do_PitchShift(lSample);
+		int ret_rsample = Do_PitchShift(rSample);
+		PCM_2[0] = ret_lsample;
+		PCM_2[1] = ret_rsample;
+
+	}
+
 	
 	SAMPLE[3] = PCM_2[0]/256;
 	SAMPLE[2] = PCM_2[0]%256;
@@ -1683,6 +1803,7 @@ void DMA2_Stream5_IRQHandler(void){
 				}
 			CUE_BUTTON_pressed = 0;	
 			}
+	/*
 		else if((Rbuffer[14]&0x4) && REALTIME_CUE_BUTTON_pressed==0)										///////////REALTIME CUE button
 			{
 			if(lock_control==0)	
@@ -1763,8 +1884,104 @@ void DMA2_Stream5_IRQHandler(void){
 			{
 			RELOOP_BUTTON_pressed = 0;	 
 			}		
-			
-			
+	*/	
+
+			else if((Rbuffer[14]&0x4) && REALTIME_CUE_BUTTON_pressed==0)                       // LOOP IN button
+				{
+				if(lock_control==0)	
+					{	
+					if(loop_active)
+						{
+						loop_in_active_pressed = !loop_in_active_pressed;
+						}
+					else
+						{
+						if((play_enable==1) && (CUE_ADR!=(play_adr/294)))
+							{
+							LOOP_OUT = 0;	
+							CUE_OPERATION = CUE_NEED_SET;
+							loop_pending = 1;
+							}
+						}
+					}
+				REALTIME_CUE_BUTTON_pressed = 1;	
+				}
+			else if((Rbuffer[14]&0x4)==0 && REALTIME_CUE_BUTTON_pressed==1)
+				{
+				REALTIME_CUE_BUTTON_pressed = 0;	
+				}		
+
+			else if((Rbuffer[14]&0x08) && LOOP_OUT_BUTTON_pressed==0)                          // LOOP OUT button
+				{
+				if(lock_control==0)	
+					{
+					if(loop_active)
+						{
+						loop_out_active_pressed = !loop_out_active_pressed;
+						}
+					else if(CUE_ADR<play_adr/294)
+						{
+						if(QUANTIZE && dSHOW==WAVEFORM)
+							{
+							if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+								{
+								LOOP_OUT = BEATGRID[bars];
+								}
+							else
+								{
+								if(CUE_ADR==BEATGRID[bars-1])
+									{
+									LOOP_OUT = BEATGRID[bars];
+									}
+								else	
+									{
+									LOOP_OUT = BEATGRID[bars-1];
+									}
+								CUE_OPERATION = CUE_NEED_CALL;		
+								}	
+							}
+						else
+							{
+							LOOP_OUT = play_adr/294;
+							CUE_OPERATION = CUE_NEED_CALL;	
+							}
+						loop_pending = 0;
+						loop_active = 1;	
+						}
+					}
+				LOOP_OUT_BUTTON_pressed = 1;	
+				}
+			else if((Rbuffer[14]&0x08)==0 && LOOP_OUT_BUTTON_pressed==1)
+				{
+				LOOP_OUT_BUTTON_pressed = 0;	
+				}			
+
+			else if((Rbuffer[14]&0x10) && RELOOP_BUTTON_pressed==0)                            // RELOOP button
+				{
+				if(lock_control==0)	
+					{		
+					if(loop_active)
+						{
+						loop_active = 0;
+						loop_in_active_pressed = 0;    // clear toggle states
+						loop_out_active_pressed = 0;
+						}
+					else if(loop_active==0 && CUE_ADR<LOOP_OUT)
+						{
+						loop_active = 1;	
+						}
+					if(dSHOW==WAVEFORM)
+						{
+						//forcibly_redraw = 1;
+						}		
+					}	
+				RELOOP_BUTTON_pressed = 1;	
+				}
+			else if((Rbuffer[14]&0x10)==0 && RELOOP_BUTTON_pressed==1)
+				{
+				RELOOP_BUTTON_pressed = 0;	 
+				}
+						
 		if((Rbuffer[12]&0x2)==0 && REVERSE_SWITCH_pressed==0)					///////////reverse switch position
 			{
 			Tbuffer[17] |= 0x20;					//enable red led reverse
@@ -1830,7 +2047,7 @@ void DMA2_Stream5_IRQHandler(void){
 			}
 		
 		
-		if(((Rbuffer[12]&0x20)!=0 || (play_enable==0 && (CUE_ADR!=(play_adr/294))) || inertial_rotation) && (Tbuffer[19]&0x20))				/////////////(touch enable	|| play_enable==0) && Vinyl mode enable
+		if(((Rbuffer[12]&0x20)!=0 || (play_enable==0 && (CUE_ADR!=(play_adr/294))) || inertial_rotation) && (Tbuffer[19]&0x20 && !loop_out_active_pressed && !loop_in_active_pressed))				/////////////(touch enable	|| play_enable==0) && Vinyl mode enable
 			{
 			pitch_for_slip = potenciometer_tempo;	
 			
@@ -1915,7 +2132,7 @@ void DMA2_Stream5_IRQHandler(void){
 				}
 			Tbuffer[23] |= 0x20;				//touch enable circle on display		
 			}
-		else if((Rbuffer[12]&0xA0)==0)				///////////////////////touch disable and rotation disable
+		else if((Rbuffer[12]&0xA0)==0 && !loop_out_active_pressed && !loop_in_active_pressed)				///////////////////////touch disable and rotation disable
 			{			
 			pitch_for_slip = potenciometer_tempo;
 			if(JOG_PRESSED>0) //jog PRESSED -> UNPRESSED
@@ -1960,7 +2177,7 @@ void DMA2_Stream5_IRQHandler(void){
 				Tbuffer[23] &= 0xDF;				//disable touch circle on display
 				}	
 			}
-		else if((Rbuffer[12]&0x80) && play_enable)						//rotation detected			(pitch bend)	
+		else if((Rbuffer[12]&0x80) && play_enable && !loop_out_active_pressed && !loop_in_active_pressed)						//rotation detected			(pitch bend)	
 			{
 			if(end_of_track==0)
 				{
@@ -2024,6 +2241,37 @@ void DMA2_Stream5_IRQHandler(void){
 			else
 				{
 				pitch_for_slip = pitch;		
+				}
+			}
+
+			else if((Rbuffer[12]&0x80) && play_enable && (loop_out_active_pressed || loop_in_active_pressed))						//rotation stop detected			(pitch bend return)	
+			{
+
+				static uint16_t jog_pulse_prev = 0;		// accumulate fractional ticks to allow for slower jog speeds
+				if(loop_in_active_pressed || loop_out_active_pressed)
+    			{
+				uint16_t jog_pulse = 256*Rbuffer[8]+Rbuffer[9];
+
+				if(jog_pulse != jog_pulse_prev)
+					{
+					if(Rbuffer[12]&0x40)       // reverse
+						{
+						if(loop_in_active_pressed && (CUE_ADR<LOOP_OUT))
+							CUE_ADR++;
+						if(loop_out_active_pressed)
+							LOOP_OUT++;
+						
+						}
+					else                       // forward
+						{
+						if(loop_in_active_pressed && CUE_ADR > 0 )
+							CUE_ADR--;
+						if(loop_out_active_pressed && LOOP_OUT > 0 && (LOOP_OUT>CUE_ADR))
+							LOOP_OUT--;
+						}
+
+					jog_pulse_prev = jog_pulse;
+					}
 				}
 			}
 			
@@ -2250,7 +2498,7 @@ void DMA2_Stream5_IRQHandler(void){
 							Tbuffer[17] &= 0xFD;	
 							}	
 						}
-						
+					/*	
 					if(loop_active)
 						{
 						if(LOOP_LEDS_BLINK%4==0)	
@@ -2272,7 +2520,50 @@ void DMA2_Stream5_IRQHandler(void){
 							{
 							Tbuffer[17] &= 0xFB;	
 							}				
-						}				
+						}
+					*/
+				
+					if(loop_active)
+   					{
+					// Loop-in LED (bit 2)
+					if(loop_in_active_pressed)
+						Tbuffer[17] &= 0xFB;                   // solid off
+					else
+						{
+						uint8_t in_phase = loop_out_active_pressed ? LOOP_LEDS_BLINK%2 : LOOP_LEDS_BLINK%4;
+						if(in_phase == 0)
+							Tbuffer[17] |= 0x04;
+						else if(in_phase == 2)
+							Tbuffer[17] &= 0xFB;
+						}
+
+					// Loop-out LED (bit 3)
+					if(loop_out_active_pressed)
+						Tbuffer[17] &= 0xF7;                   // solid off
+					else
+						{
+						uint8_t out_phase = loop_in_active_pressed ? LOOP_LEDS_BLINK%2 : LOOP_LEDS_BLINK%4;
+						if(out_phase == 0)
+							Tbuffer[17] |= 0x08;
+						else if(out_phase == 2)
+							Tbuffer[17] &= 0xF7;
+						}
+					}
+				else if(loop_pending)
+					{
+					if(LOOP_LEDS_BLINK%4 == 0)
+						Tbuffer[17] |= 0x04;
+					else if(LOOP_LEDS_BLINK%4 == 2)
+						Tbuffer[17] &= 0xFB;
+					}
+				else
+					{
+					if(TIM_REALTIME_CUE_LED)	
+						Tbuffer[17] |= 0x0C;
+					else
+						Tbuffer[17] &= 0xFB;				
+					}
+					///Reloop LED (mk3 only)
 					if(loop_active || CUE_ADR<LOOP_OUT)
 						{
 						Tbuffer[17] |= 0x10;							//RELOOP EXIT LED ON

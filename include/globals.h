@@ -130,6 +130,9 @@ extern float T;
 extern uint8_t QUANTIZE;
 extern uint8_t loop_active;
 extern uint32_t LOOP_OUT;
+extern uint8_t loop_pending;
+extern uint8_t loop_in_active_pressed;
+extern uint8_t loop_out_active_pressed;
 extern uint8_t lock_control;
 extern volatile bool dynamicBufferReady;
 extern uint32_t CUE_ADR;
@@ -138,7 +141,9 @@ extern uint16_t bars;
 extern uint8_t REMAIN_ENABLE;
 extern uint8_t dynamicWaveformZOOM;
 extern uint16_t originalBPM;
+extern uint8_t tempo_range;
 extern uint8_t tempo_need_update;
+extern uint8_t tempo_range_need_update;
 
 
 extern uint8_t displayRefreshRate;

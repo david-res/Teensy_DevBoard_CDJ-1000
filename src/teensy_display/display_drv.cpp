@@ -40,7 +40,7 @@ FLASHMEM bool disp_init(uint8_t displayRefreshRate)
     tft.setBitDepth(16);
 #endif    
     disp_setRefreshRate(displayRefreshRate);
-    disp_setBrightness(80);
+    disp_setBrightness(255);
     
 
 #if defined(SSD1963) && defined(USE_TEAR)
@@ -65,7 +65,7 @@ FLASHMEM void disp_setBrightness(uint8_t brightness)
 #if defined(SSD1963) 
     uint8_t br = (float)(2.55 * (float)brightness);
     tft.setBacklight(br);
-    analogWriteFrequency(TFT_BL,3000); //1kHz for backlight PWM
+    analogWriteFrequency(TFT_BL,1000); //1kHz for backlight PWM
     analogWrite(TFT_BL, br);
 #endif 
 }

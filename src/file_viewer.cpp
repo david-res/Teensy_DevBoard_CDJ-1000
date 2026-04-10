@@ -60,12 +60,12 @@ void create_dj_browser_ui()
     Serial.println("Creating main container...");
     static lv_style_t fileScreen_style;
     filesScreen = lv_obj_create(NULL);
-    lv_obj_set_size(filesScreen, 799, 479);
+    lv_obj_set_size(filesScreen, 800, 480);
     lv_obj_align(filesScreen, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_flex_flow(filesScreen, LV_FLEX_FLOW_ROW);  // <- ROW not COLUMN!
     lv_obj_set_style_opa(filesScreen, LV_OPA_TRANSP, LV_PART_SCROLLBAR);
     lv_obj_set_scroll_dir(filesScreen, LV_DIR_HOR);
-    lv_style_set_border_width(&fileScreen_style, 1);
+    lv_style_set_border_width(&fileScreen_style, 0);
     lv_style_set_border_color(&fileScreen_style, lv_color_hex(0xFFFFFF));
     //lv_style_set_bg_color(&fileScreen_style, COLOR_BG_MAIN);
     lv_obj_add_style(filesScreen, &fileScreen_style, 0);
