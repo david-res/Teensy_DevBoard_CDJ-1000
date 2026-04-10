@@ -52,6 +52,32 @@ lv_obj_t *filesScreen;
 static lv_obj_t *g_track_list;
 static lv_obj_t *g_playlist_list;
 
+EXTMEM static Track       g_loaded_tracks[20];
+EXTMEM static Track*      g_track_ptrs[20];   // pointer array for populate_track_list
+EXTMEM static PlaylistInfo g_playlist_info[10];
+static uint16_t           g_playlist_count = 0;
+
+
+// ---- Call this once after parser.parse() ----
+void init_playlists() {
+    g_playlist_count = rbParser->getPlaylistInfoList(g_playlist_info, MAX_PLAYLISTS);
+    Serial.printf("Found %d playlists\n", g_playlist_count);
+}
+
+// ---- Playlist click callback ----
+static void playlist_item_cb(lv_event_t* e) {
+    uint32_t pl_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+
+    uint16_t count = rbParser->getTracksForPlaylist(pl_id, g_loaded_tracks, MAX_TRACKS);
+
+    // Build pointer array
+    for (uint16_t i = 0; i < count; i++) {
+        g_track_ptrs[i] = &g_loaded_tracks[i];
+    }
+
+    populate_track_list(g_track_ptrs, count);
+}
+
 // ========== Main UI Creation ==========
 void create_dj_browser_ui()
 {
@@ -156,14 +182,11 @@ static void create_playlist_panel(lv_obj_t *parent)
     lv_obj_set_style_pad_all(g_playlist_list, 0, 0);
     lv_obj_set_style_pad_gap(g_playlist_list, 0, 0);
 
-    // Add sample playlists
-    const char *playlists[] = {
-        "Bass",
-        "Beats"
-    };
+    init_playlists();
+    lv_obj_clean(g_playlist_list);
 
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *btn = lv_button_create(g_playlist_list);
+    for (uint16_t i = 0; i < g_playlist_count; i++) {
+        lv_obj_t* btn = lv_button_create(g_playlist_list);
         lv_obj_set_width(btn, LV_PCT(100));
         lv_obj_set_height(btn, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(btn, COLOR_BG_SIDEBAR, LV_STATE_DEFAULT);
@@ -172,10 +195,15 @@ static void create_playlist_panel(lv_obj_t *parent)
         lv_obj_set_style_radius(btn, 0, 0);
         lv_obj_set_style_pad_ver(btn, 12, 0);
         lv_obj_set_style_pad_hor(btn, 12, 0);
-        lv_obj_add_event_cb(btn, playlist_item_cb, LV_EVENT_CLICKED, (void*)playlists[i]);
-        
-        lv_obj_t *label = lv_label_create(btn);
-        lv_label_set_text(label, playlists[i]);
+
+        // Pass the playlist ID as user data (not the name pointer —
+        // the name lives in EXTMEM and stays valid, but the ID is safer
+        // as it uniquely identifies the playlist across rebuilds)
+        lv_obj_add_event_cb(btn, playlist_item_cb, LV_EVENT_CLICKED,
+                            (void*)(uintptr_t)g_playlist_info[i].id);
+
+        lv_obj_t* label = lv_label_create(btn);
+        lv_label_set_text(label, g_playlist_info[i].name);
         lv_obj_set_style_text_color(label, COLOR_WHITE, 0);
     }
 }
@@ -316,11 +344,11 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     //Serial.println("  >> Creating key label...");
     // Key
     lv_obj_t *lbl_key = lv_label_create(top_row);
-    lv_label_set_text(lbl_key, rbParser.getKeyName(track->key_id));
+    lv_label_set_text(lbl_key, rbParser->getKeyName(track->key_id));
     lv_obj_set_width(lbl_key, 40);  // Match header
     lv_obj_set_style_text_align(lbl_key, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(lbl_key, &exo2_16, 0);
-    const char* keyName = rbParser.getKeyName(track->key_id);
+    const char* keyName = rbParser->getKeyName(track->key_id);
     const char* keyColor = getKeyColor(keyName);
     lv_obj_set_style_text_color(lbl_key, lv_color_hex(strtol(keyColor + 1, nullptr, 16)), 0);
     lv_label_set_text(lbl_key, keyName);
@@ -433,13 +461,7 @@ static void sidebar_btn_cb(lv_event_t *e)
     Serial.printf("Sidebar clicked: %s\n", label);
 }
 
-static void playlist_item_cb(lv_event_t *e)
-{
-    const char *playlist = (const char*)lv_event_get_user_data(e);
-    // Handle playlist selection
-    // Example: Filter and display tracks from this playlist
-    Serial.printf("Playlist selected: %s\n", playlist);
-}
+
 
 static void track_item_cb(lv_event_t *e)
 {

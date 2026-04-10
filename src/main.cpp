@@ -82,7 +82,7 @@ eLCDIF_t4 lcd;
 uint32_t play_count = 0;
 uint32_t targetFrequency = CPU_SPEED_MHZ;
 
-RekordboxParser rbParser;          // Create it here
+RekordboxParser* rbParser = nullptr;       // Create it here
 int16_t track_count = 0;
 Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initialized to nullptr	
 
@@ -277,10 +277,9 @@ eLCDIF_t4_config lcd_config = {480, 16, 4, 16, 800, 8, 4, 8, 30, 24, 1, 1};
 
 uint8_t displayRefreshRate = 60;
 
-//const char* dbName = "Engine Library/Database2/p.db";
 
 const uint16_t lvglBufferHeight = 120;
-EXTMEM_NOCACHE uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * (SCREEN_HEIGHT/10)] __attribute__((aligned(64)));
 //EXTMEM uint16_t tempDisplayBuf[SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
 //lv_display_t * disp;
 
@@ -591,7 +590,7 @@ void setup()
 
   // Init buffers
   memset(PCM, 0, sizeof(PCM));
-  memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
+  ///memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
   memset(staticIndicatorBuffer, 0xFF, overviewChartHeight * 2 * 2); // White is easy - if marker color hi/li bytes differ, use a loop to fill color
 
 #ifdef USE_REM_DISP
@@ -611,42 +610,7 @@ void setup()
  //ledTimer.begin(ledTIMER, 1000); //1ms
 #endif
 
-#if defined(USE_LCD_DISP)
-  // Init touch screen
-  if (ctp.begin(20)) {
-    Serial.println("FT5316 touch controller initialized");
-  }
 
-  // Init LCD, PXP
-#if defined(RDI_DEVELOPMENTS_REV3)
-  lcd.begin(lcd_config, BUS_16BIT, WORD_16BIT, PIXEL_16BIT);
-#else
-  lcd.begin(BUS_16BIT, WORD_16BIT, lcd_config);
-#endif
-  #ifndef USE_PXP
-  lcd.onCompleteCallback(lcdCallback);
-  #endif
-  lcd.setCurrentBufferAddress(lcdBuffer[LCD_BUFFER_COUNT - 1]);
-  lcd.setNextBufferAddress(lcdBuffer[0]);
-
-  #ifdef USE_PXP
-  PXP_init();
-  PXP_input_format(PXP_RGB565, 0, 0, 0);
-  PXP_overlay_format(PXP_RGB565, 0, 0, 0);
-  PXP_output_format(PXP_RGB565, 0, 0, 0);
-  PXP_output_buffer((uint16_t*)lcdBuffer1, 2, SCREEN_WIDTH, SCREEN_HEIGHT);
-  PXP_callback(pxpCallback);
-  //PXP_enable_repeat(true);
-  #endif
-
-#if !defined(RDI_DEVELOPMENTS_REV3)
-  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_05 = 5; // Set mux to GPIO mode
-  GPIO6_GDIR |= (1 << 21); // Set as output
-  GPIO6_DR_SET = (1 << 21);
-  Serial.println("LCD ON");
-#endif
-
-#endif // USE_LCD_DISP
 
   lv_init();
 #if (LVGL_VERSION_MAJOR == 8)
@@ -677,7 +641,7 @@ void setup()
   disp_drv = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
   lv_display_set_color_format(disp_drv, LV_COLOR_FORMAT_RGB565);
 #if defined(TEENSY41)
-  lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * lvglBufferHeight * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp_drv, lcdBuffer[0], NULL, SCREEN_WIDTH * (SCREEN_HEIGHT/10)*2, LV_DISPLAY_RENDER_MODE_PARTIAL);
 #endif
 #if defined(USE_LCD_DISP)
   lv_display_set_buffers(disp_drv, lcdBuffer[0], LCD_BUFFER_COUNT == 2 ? lcdBuffer[1] : NULL, SCREEN_WIDTH * SCREEN_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
@@ -697,11 +661,7 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
-#if defined(USE_BEAT_NUMBERS)
-  // Create in memory rendered
-  LV_FONT_DECLARE(roboto_regular_14_4bpp)
-  prerender_digit_buffers(&roboto_regular_14_4bpp, lv_color_white(), lv_color_black());
-#endif  
+
 
   Serial.println("Initializing Audio");
   audio.begin(&SAI_IRQHandler);
@@ -740,21 +700,19 @@ void setup()
 
   
   
- 	
-
-	if (!rbParser.parse("/PIONEER/rekordbox/export.pdb")) {
-		Serial.println("Parsing failed!");
-		while (1) delay(100);
-	}
-
-	track_count = rbParser.getTrackCount();
+ 	rbParser = new RekordboxParser();
+  	rbParser->setArena((uint8_t*)PCM, sizeof(PCM));
+	Serial.printf("size of PCM buffer: %d bytes\n", sizeof(PCM));
+  	rbParser->parse("/PIONEER/rekordbox/export.pdb");
+	track_count = rbParser->getTrackCount();
 	Serial.printf("Total tracks parsed: %d\n", track_count);
 	// Allocate array of pointers
+	/*
     all_tracks = new Track*[track_count];
 
 		// Fill the array with pointers to tracks
 	for (uint16_t i = 0; i < track_count; i++) {
-		all_tracks[i] = (Track*)rbParser.getTrack(i);
+		all_tracks[i] = (Track*)rbParser->getTrack(i);
 		if (!all_tracks[i]) {
 			Serial.printf("Track %d is null!\n", i);
 		}
@@ -767,12 +725,13 @@ void setup()
 						all_tracks[i]->id,
 						all_tracks[i]->title,
 						all_tracks[i]->artist,
-						rbParser.getKeyName(all_tracks[i]->key_id));
+						rbParser->getKeyName(all_tracks[i]->key_id));
 		}
 	}
-	
+		*/
+	Serial.println("Finished loading tracks from rekordbox db");
 	create_dj_browser_ui();
-	populate_track_list(all_tracks, track_count);
+	//populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 
   	

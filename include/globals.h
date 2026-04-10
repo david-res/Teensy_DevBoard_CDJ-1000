@@ -82,7 +82,7 @@ extern volatile uint32_t play_adr;
 extern volatile uint32_t baseSampPerWavePoint;
 extern volatile uint32_t all_long;
 
-//extern EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2];
+extern volatile uint16_t PCM[206][8192][2];
 
 //extern volatile uint16_t start_adr_valid_data;
 //extern volatile uint16_t end_adr_valid_data;
@@ -153,7 +153,7 @@ extern uint8_t displayRefreshRate;
 //#define SKIP_LVGL_RENDER_CANVAS //If defined, sets canvas to hidden and does 'manual' flush
 #define BUFFER_MEM DMAMEM //DMAMEM //EXTMEM //<blank for ITCM>
 
-extern uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH * SCREEN_HEIGHT] __attribute__((aligned(64)));
+extern uint16_t lcdBuffer[LCD_BUFFER_COUNT][SCREEN_WIDTH *  (SCREEN_HEIGHT/10)] __attribute__((aligned(64)));
 
 extern uint16_t dynamicCanvasBuffer[800 * 164];
 
@@ -177,7 +177,7 @@ extern uint16_t overviewCanvasBuffer[PREVIEW_WAVEFORM_WIDTH * overviewChartHeigh
 
 
 // Parser instance
-extern RekordboxParser rbParser;
+extern RekordboxParser * rbParser;
 extern Track** all_tracks;
 extern int16_t track_count;
 

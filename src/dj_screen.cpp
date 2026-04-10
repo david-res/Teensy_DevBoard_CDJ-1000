@@ -527,10 +527,10 @@ void create_top_container(Track * track) {
 
     // Key label (below BPM)
     key_label = lv_label_create(title_bpm_container);
-    lv_label_set_text(key_label, rbParser.getKeyName(track->key_id));
+    lv_label_set_text(key_label, rbParser->getKeyName(track->key_id));
     lv_obj_set_style_text_font(key_label, &exo2_20, 0);
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
-    const char* keyName = rbParser.getKeyName(track->key_id);
+    const char* keyName = rbParser->getKeyName(track->key_id);
     const char* keyColor = getKeyColor(keyName);
     lv_obj_set_style_text_color(key_label, lv_color_hex(strtol(keyColor + 1, nullptr, 16)), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
@@ -1442,7 +1442,12 @@ void backButton(lv_event_t *e){
         lv_indev_get_point(indev, &point);
         LV_LOG_USER("Touch at x=%d, y=%d on obj=%p", point.x, point.y, (void*)obj);
     }
+    play_enable = 0;
+    audio.stopI2SInterrupt();
+    memset(PCM, 0, sizeof(PCM)); // Clear audio buffer
+    rbParser->parse("/PIONEER/rekordbox/export.pdb");
+    audio.stopI2SInterrupt();
     create_dj_browser_ui();
-    populate_track_list(all_tracks, track_count);
+    //populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 }
