@@ -60,7 +60,8 @@ static uint16_t           g_playlist_count = 0;
 
 // ---- Call this once after parser.parse() ----
 void init_playlists() {
-    g_playlist_count = rbParser->getPlaylistInfoList(g_playlist_info, MAX_PLAYLISTS);
+    // Same call as before — unchanged
+    g_playlist_count = rbParser->getPlaylistInfoList(g_playlist_info, RB_MAX_PLAYLISTS);
     Serial.printf("Found %d playlists\n", g_playlist_count);
 }
 
@@ -68,13 +69,15 @@ void init_playlists() {
 static void playlist_item_cb(lv_event_t* e) {
     uint32_t pl_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
 
-    uint16_t count = rbParser->getTracksForPlaylist(pl_id, g_loaded_tracks, MAX_TRACKS);
+    // Load tracks into arena — replaces previous playlist's tracks
+    uint16_t count = rbParser->getTracksForPlaylist(pl_id);
 
-    // Build pointer array
+    // Build Track** pointer array pointing into arena tracks
     for (uint16_t i = 0; i < count; i++) {
-        g_track_ptrs[i] = &g_loaded_tracks[i];
+        g_track_ptrs[i] = (Track*)rbParser->getTrack(i);  // const_cast safe — we own the arena
     }
 
+    // Same call as before — unchanged
     populate_track_list(g_track_ptrs, count);
 }
 

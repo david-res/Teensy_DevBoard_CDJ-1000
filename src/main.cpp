@@ -701,10 +701,7 @@ void setup()
   
   
  	rbParser = new RekordboxParser();
-  	rbParser->setArena((uint8_t*)PCM, sizeof(PCM));
-	Serial.printf("size of PCM buffer: %d bytes\n", sizeof(PCM));
-  	rbParser->parse("/PIONEER/rekordbox/export.pdb");
-	track_count = rbParser->getTrackCount();
+  	rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
 	Serial.printf("Total tracks parsed: %d\n", track_count);
 	// Allocate array of pointers
 	/*

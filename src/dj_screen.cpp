@@ -1444,8 +1444,8 @@ void backButton(lv_event_t *e){
     }
     play_enable = 0;
     audio.stopI2SInterrupt();
-    memset(PCM, 0, sizeof(PCM)); // Clear audio buffer
-    rbParser->parse("/PIONEER/rekordbox/export.pdb");
+    memset((uint16_t*)PCM, 0, sizeof(PCM)); // Clear audio buffer
+    rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
     audio.stopI2SInterrupt();
     create_dj_browser_ui();
     //populate_track_list(all_tracks, track_count);
