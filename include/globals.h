@@ -70,7 +70,7 @@ extern volatile uint32_t position;
 extern volatile uint8_t reverse;
 extern volatile uint8_t end_of_track;
 extern uint16_t track_play_now;
-//extern volatile uint32_t step_position
+//extern volatile uint32_t step_position 
 //extern volatile uint32_t sdram_adr
 //extern volatile uint8_t offset_adress;
 //extern volatile int16_t LR[2][4];

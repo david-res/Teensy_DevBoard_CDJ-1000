@@ -181,13 +181,14 @@ static void create_playlist_panel(lv_obj_t *parent)
     lv_obj_set_style_radius(g_playlist_list, 0, 0);
     lv_obj_set_style_pad_all(g_playlist_list, 0, 0);
     lv_obj_set_style_pad_gap(g_playlist_list, 0, 0);
+    lv_obj_add_flag(g_playlist_list, LV_OBJ_FLAG_SCROLLABLE);
 
     init_playlists();
     lv_obj_clean(g_playlist_list);
 
     for (uint16_t i = 0; i < g_playlist_count; i++) {
         lv_obj_t* btn = lv_button_create(g_playlist_list);
-        lv_obj_set_width(btn, LV_PCT(100));
+        lv_obj_set_width(btn, LV_PCT(80));
         lv_obj_set_height(btn, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(btn, COLOR_BG_SIDEBAR, LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(btn, COLOR_TRACK_HOVER, LV_STATE_PRESSED);
@@ -204,8 +205,11 @@ static void create_playlist_panel(lv_obj_t *parent)
 
         lv_obj_t* label = lv_label_create(btn);
         lv_label_set_text(label, g_playlist_info[i].name);
+        lv_obj_set_width(label, LV_PCT(100));
         lv_obj_set_style_text_color(label, COLOR_WHITE, 0);
+        
     }
+    g_playlist_count=0;
 }
 
 // ========== Track List Panel ==========
