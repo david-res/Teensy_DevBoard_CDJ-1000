@@ -30,7 +30,7 @@
 #define REKORDBOX_PARSER_H
 
 #include <Arduino.h>
-#include <SD.h>
+#include <FS.h>
 
 // ============================================================================
 // Tunables — adjust to your library size
@@ -87,8 +87,13 @@ class RekordboxParser {
 public:
     RekordboxParser();
 
+    // Supply the filesystem before calling begin().
+    // Pass myFS.mscFS (from USBFilesystem) or SD.sdfs, or any FS& you like.
+    void setFS(FS& fs) { _fs = &fs; }
+
     // Open the PDB and populate the arena with the playlist list.
     // 'arena' must point to at least RB_ARENA_BYTES of EXTMEM.
+    // setFS() must be called before begin().
     // File stays open for subsequent on-demand reads.
     bool begin(const char* filename, uint8_t* arena, uint32_t arena_size);
 
@@ -119,6 +124,7 @@ public:
 
 private:
     // ── File ────────────────────────────────────────────────────────────────
+    FS*          _fs;           // set via setFS() — not owned
     mutable File _file;
     uint8_t _buf[RB_PAGE_SIZE];   // page read buffer — internal RAM (fast)
 
@@ -165,6 +171,7 @@ private:
 // ============================================================================
 
 inline RekordboxParser::RekordboxParser() {
+    _fs                 = nullptr;
     _arena              = nullptr;
     _arena_size         = 0;
     _playlist_info      = nullptr;
@@ -333,7 +340,8 @@ inline bool RekordboxParser::begin(const char* filename, uint8_t* arena, uint32_
     Serial.printf("  Total: %u / %u bytes used\n", needed, arena_size);
 
     // ── Open file and parse startup data ────────────────────────────────────
-    _file = SD.open(filename, FILE_READ);
+    if (!_fs) { Serial.println("RB: no filesystem set — call setFS() first"); return false; }
+    _file = _fs->open(filename, FILE_READ);
     if (!_file) { Serial.println("RB: file open failed"); return false; }
 
     if (!readPage(0)) { Serial.println("RB: page 0 failed"); return false; }

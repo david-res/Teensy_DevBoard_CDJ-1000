@@ -49,13 +49,42 @@ void clear_track_list();
 
 // ========== Global References ==========
 lv_obj_t *filesScreen;
+static lv_obj_t *p_panel;
+static lv_obj_t *t_panel;
 static lv_obj_t *g_track_list;
 static lv_obj_t *g_playlist_list;
+lv_obj_t * usb_status_label;
 
 EXTMEM static Track       g_loaded_tracks[20];
 EXTMEM static Track*      g_track_ptrs[20];   // pointer array for populate_track_list
 EXTMEM static PlaylistInfo g_playlist_info[10];
 static uint16_t           g_playlist_count = 0;
+
+USBFilesystem rekordboxDrive(myusb);  // drive with the PDB file
+RekordboxParser* rbParser = nullptr;       // Create it here
+bool usb_was_connected = false;
+
+lv_timer_t* usb_poll_timer;
+static void usb_poll_cb(lv_timer_t* timer) {
+    if (rekordboxDrive && !usb_was_connected) {
+        usb_was_connected = true;
+        Serial.println("Rekordbox drive connected");
+        //on_usb_connected();
+        if(lv_obj_is_valid(usb_status_label)){
+            lv_obj_delete(usb_status_label);  // Remove "No USB" label
+        }
+        rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
+        create_playlist_panel(filesScreen);
+        create_track_list_panel(filesScreen);
+
+    } else if (!rekordboxDrive && usb_was_connected) {
+        usb_was_connected = false;
+        Serial.println("Rekordbox drive disconnected");
+        rbParser->close();
+        lv_obj_delete(p_panel);
+        lv_obj_delete(t_panel);
+    }
+}
 
 
 // ---- Call this once after parser.parse() ----
@@ -85,6 +114,7 @@ static void playlist_item_cb(lv_event_t* e) {
 void create_dj_browser_ui()
 {
     // Create main container with flex row layout
+
     
     Serial.println("Creating main container...");
     static lv_style_t fileScreen_style;
@@ -105,8 +135,18 @@ void create_dj_browser_ui()
     // Create three columns
     Serial.println("Creating sidebar...");
     create_sidebar(filesScreen);
-    create_playlist_panel(filesScreen);
-    create_track_list_panel(filesScreen);
+    //create_playlist_panel(filesScreen);
+    rbParser = new RekordboxParser();
+	rbParser->setFS(rekordboxDrive);
+  	//rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
+    lv_timer_create(usb_poll_cb, 500, NULL);  // Poll USB every 500ms
+
+    usb_status_label = lv_label_create(filesScreen); // Placeholder label while waiting for USB connection   
+    lv_label_set_text(usb_status_label, "No USB device detected..");
+    lv_obj_set_style_text_font(usb_status_label, &exo2_32, 0);
+    lv_obj_set_flex_align(usb_status_label, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    //create_track_list_panel(filesScreen);
 }
 
 // ========== Sidebar Creation ==========
@@ -124,10 +164,10 @@ static void create_sidebar(lv_obj_t *parent)
     lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_SCROLLABLE);
 
     // Helper function to create sidebar button
-    const char *icons[] = {"SD", "USB", "⚙", "🔍", "⭐"};
-    const char *labels[] = {"SD Card", "USB", "Settings", "Search", "Favorites"};
+    const char *icons[] = {LV_SYMBOL_LIST, LV_SYMBOL_SETTINGS};
+    const char *labels[] = {"Playlists", "Settings"};
     
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 2; i++) {
         lv_obj_t *btn = lv_button_create(sidebar);
         lv_obj_set_size(btn, 64, 64);
         lv_obj_set_style_bg_color(btn, COLOR_BG_TRACK, LV_STATE_DEFAULT);
@@ -138,9 +178,9 @@ static void create_sidebar(lv_obj_t *parent)
         lv_obj_add_event_cb(btn, sidebar_btn_cb, LV_EVENT_CLICKED, (void*)labels[i]);
 
         lv_obj_t *label = lv_label_create(btn);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
         lv_label_set_text(label, icons[i]);
         lv_obj_center(label);
-        lv_obj_set_style_text_font(label, &exo2_24, 0);
         lv_obj_set_style_text_color(label, COLOR_WHITE, 0);
     }
 }
@@ -148,18 +188,18 @@ static void create_sidebar(lv_obj_t *parent)
 // ========== Playlist Panel ==========
 static void create_playlist_panel(lv_obj_t *parent)
 {
-    lv_obj_t *panel = lv_obj_create(parent);
-    lv_obj_set_size(panel, PLAYLIST_WIDTH, LV_PCT(100));
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(panel, 0, 0);
-    lv_obj_set_style_bg_color(panel, COLOR_BG_SIDEBAR, 0);
-    lv_obj_set_style_border_width(panel, 0, 0);
-    lv_obj_set_style_border_side(panel, LV_BORDER_SIDE_RIGHT, 0);
-    lv_obj_set_style_border_color(panel, COLOR_BORDER, 0);
-    lv_obj_set_style_radius(panel, 0, 0);
+    p_panel = lv_obj_create(parent);
+    lv_obj_set_size(p_panel, PLAYLIST_WIDTH, LV_PCT(100));
+    lv_obj_set_flex_flow(p_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(p_panel, 0, 0);
+    lv_obj_set_style_bg_color(p_panel, COLOR_BG_SIDEBAR, 0);
+    lv_obj_set_style_border_width(p_panel, 0, 0);
+    lv_obj_set_style_border_side(p_panel, LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_color(p_panel, COLOR_BORDER, 0);
+    lv_obj_set_style_radius(p_panel, 0, 0);
 
     // Header
-    lv_obj_t *header = lv_obj_create(panel);
+    lv_obj_t *header = lv_obj_create(p_panel);
     lv_obj_set_size(header, LV_PCT(100), HEADER_HEIGHT);
     lv_obj_set_style_bg_color(header, COLOR_BG_SIDEBAR, 0);
     lv_obj_set_style_border_width(header, 0, 0);
@@ -176,7 +216,7 @@ static void create_playlist_panel(lv_obj_t *parent)
     lv_obj_set_style_text_font(header_label, &exo2_16, 0);
 
     // Playlist list (simple obj with flex, not lv_list in v9)
-    g_playlist_list = lv_obj_create(panel);
+    g_playlist_list = lv_obj_create(p_panel);
     lv_obj_set_size(g_playlist_list, LV_PCT(100), LV_PCT(100));
     lv_obj_set_flex_flow(g_playlist_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_bg_color(g_playlist_list, COLOR_BG_SIDEBAR, 0);
@@ -208,8 +248,10 @@ static void create_playlist_panel(lv_obj_t *parent)
 
         lv_obj_t* label = lv_label_create(btn);
         lv_label_set_text(label, g_playlist_info[i].name);
+    
         lv_obj_set_width(label, LV_PCT(100));
         lv_obj_set_style_text_color(label, COLOR_WHITE, 0);
+        lv_obj_set_style_text_font(label, &exo2_18, 0);
         
     }
     g_playlist_count=0;
@@ -218,16 +260,16 @@ static void create_playlist_panel(lv_obj_t *parent)
 // ========== Track List Panel ==========
 static void create_track_list_panel(lv_obj_t *parent)
 {
-    lv_obj_t *panel = lv_obj_create(parent);
-    lv_obj_set_size(panel, TRACK_LIST_WIDTH, LV_PCT(100));
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(panel, 0, 0);
-    lv_obj_set_style_bg_color(panel, COLOR_BG_MAIN, 0);
-    lv_obj_set_style_border_width(panel, 0, 0);
-    lv_obj_set_style_radius(panel, 0, 0);
+    t_panel = lv_obj_create(parent);
+    lv_obj_set_size(t_panel, TRACK_LIST_WIDTH, LV_PCT(100));
+    lv_obj_set_flex_flow(t_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(t_panel, 0, 0);
+    lv_obj_set_style_bg_color(t_panel, COLOR_BG_MAIN, 0);
+    lv_obj_set_style_border_width(t_panel, 0, 0);
+    lv_obj_set_style_radius(t_panel, 0, 0);
 
     // Header with column titles
-    lv_obj_t *header = lv_obj_create(panel);
+    lv_obj_t *header = lv_obj_create(t_panel);
     lv_obj_set_size(header, LV_PCT(100), HEADER_HEIGHT);
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -250,7 +292,7 @@ static void create_track_list_panel(lv_obj_t *parent)
     lv_obj_set_style_text_font(col_label, &exo2_24, 0);
 
     // Track list (scrollable)
-    g_track_list = lv_obj_create(panel);
+    g_track_list = lv_obj_create(t_panel);
     lv_obj_set_size(g_track_list, LV_PCT(100), LV_PCT(100));
     lv_obj_set_flex_flow(g_track_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(g_track_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);

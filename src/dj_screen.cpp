@@ -4,11 +4,8 @@
 #include "globals.h"
 #include "Arduino.h"
 #include "lv_utils.h"
-#include "SD.h"
+#include "USBHost_t36.h"
 #include "file_viewer.h"
-#include "T4_PXP.h"
-#include <SDRAM_t4.h>
-#include "DMAChannel.h"
 #include "rekordbox_anlz_api.h"
 #if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
@@ -923,6 +920,7 @@ void dj_ui_init(Track * track) {
   
     // Create all containers
     Serial.printf("anlz path: %s\n", track->anlz_path);
+    anlz_setFS(rekordboxDrive);
     loadTrackData(track->anlz_path);
     create_top_container(track);
     create_middle_container(track);

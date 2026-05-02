@@ -1,11 +1,11 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <SD.h>
+#include "USBHost_t36.h"
 #include "globals.h"
 #include "stats/app_stats.h"
 #include "file_viewer.h"
 #include "dj_screen.h"
-#include <SDRAM_t4.h>
 #include "utils/changeSDSpeed.h"
 #include "lv_utils.h"
 #include "clockspeed/beermat_clockspeed.h"
@@ -66,9 +66,9 @@ void g_process_serial_rx (uint16_t x);
 //For stats
 AppStats appStats = AppStats();
 
-//SdFat sd;
-FsFile perfDB;
-FsFile metaDB;
+USBHost myusb;
+USBDrive myDrive(myusb);
+
 
 i2s_sync audio;
 
@@ -82,7 +82,7 @@ eLCDIF_t4 lcd;
 uint32_t play_count = 0;
 uint32_t targetFrequency = CPU_SPEED_MHZ;
 
-RekordboxParser* rbParser = nullptr;       // Create it here
+
 int16_t track_count = 0;
 Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initialized to nullptr	
 
@@ -125,7 +125,7 @@ uint8_t	ftp = 0;										/////temp!
 
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
-EXTMEM_NOCACHE_PCM volatile uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
+EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
 
 // Make volatile as critical to buffer management
 volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
@@ -551,17 +551,6 @@ FLASHMEM void errorHalt(const char* message)
 
 void setup()
 {
-#if defined(USE_LCD_DISP)
-  // Turn off backlight
-  pinMode(BACKLIGHT_PIN, OUTPUT);
-  analogWriteFrequency(BACKLIGHT_PIN, 200);
-  analogWrite(BACKLIGHT_PIN, 0);
-#endif  
-
-#if defined(RDI_DEVELOPMENTS_REV3)
-  Battery.init();
-#endif
-
   // Initialize Serial
   Serial.begin (115200);
   //while (!Serial) {};
@@ -574,29 +563,12 @@ void setup()
   // Report on configuration
   reportAppConfig();
 
-  // Start SDcard
-#if defined(RDI_DEVELOPMENTS_REV3)
-  bool sdCardResult = sd_io2.begin(SdioConfig(FIFO_SDIO | USE_SDIO2));
-#else
-  bool sdCardResult = SD.begin(BUILTIN_SDCARD);
-#endif
-
-  if (sdCardResult == true) {
-    setSDCardClock(SD_CARD_SPEED, MACRO_EXISTS(RDI_DEVELOPMENTS_REV3));
-  } else {
-    errorHalt("sd.begin() failed");
-  }
-  Serial.println("SD Card initialized");
+  myusb.begin();
 
   // Init buffers
   memset(PCM, 0, sizeof(PCM));
   ///memset(lcdBuffer, 3333, SCREEN_WIDTH * SCREEN_HEIGHT * LCD_BUFFER_COUNT * 2);
   memset(staticIndicatorBuffer, 0xFF, overviewChartHeight * 2 * 2); // White is easy - if marker color hi/li bytes differ, use a loop to fill color
-
-#ifdef USE_REM_DISP
-  remoteDisplay.init(SCREEN_WIDTH , SCREEN_HEIGHT);
-  remoteDisplay.registerRefreshCallback(refreshDisplayCallback);
-#endif
 
 #if defined(TEENSY41)
   // Init touch screen
@@ -699,10 +671,7 @@ void setup()
 #else  
 
   
-  
- 	rbParser = new RekordboxParser();
-  	rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
-	Serial.printf("Total tracks parsed: %d\n", track_count);
+
 	// Allocate array of pointers
 	/*
     all_tracks = new Track*[track_count];
@@ -906,6 +875,8 @@ FASTRUN void copyWaveformsToLCD()
 
 FASTRUN void loop()
 {
+
+	myusb.Task();
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
   uint32_t snapshot_play_adr = play_adr;
 

@@ -5,6 +5,12 @@
 #include "stats/app_stats.h"
 #include "i2s_sync.h"
 #include "RekordboxParser.h"
+#include "USBHost_t36.h"
+
+extern USBHost myusb;
+extern USBDrive myDrive;
+extern USBFilesystem rekordboxDrive;  // drive with the PDB file
+//USBFilesystem audioDrive(myusb);      // drive with the audio files
 
 
 ///////////////
@@ -82,7 +88,7 @@ extern volatile uint32_t play_adr;
 extern volatile uint32_t baseSampPerWavePoint;
 extern volatile uint32_t all_long;
 
-extern volatile uint16_t PCM[206][8192][2];
+extern uint16_t PCM[206][8192][2];
 
 //extern volatile uint16_t start_adr_valid_data;
 //extern volatile uint16_t end_adr_valid_data;
