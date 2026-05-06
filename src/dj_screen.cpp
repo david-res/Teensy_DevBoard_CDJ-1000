@@ -22,8 +22,9 @@ IntervalTimer irqTimer;
 extern void SAI_IRQHandler();
 #endif
 
-
+//USBFilesystem rekordboxDrive(myusb);      // drive with the audio files
 FILE_TYPE playFile;
+extern FS* _fs;   // defined wherever you call setFS()
 
 
 LV_FONT_DECLARE(exo2_16)
@@ -946,7 +947,7 @@ void dj_ui_init(Track * track) {
 #if defined(RDI_DEVELOPMENTS_REV3)
     playFile.open(full_path, FILE_READ);
 #else
-    playFile = SD.open(track->audio_path, FILE_READ);
+    playFile = rekordboxDrive.open(track->audio_path, FILE_READ);
 #endif
     if (!playFile) {
       Serial.printf("Failed trying to open file: %s\n", full_path);
@@ -1123,6 +1124,7 @@ void  RedrawWaveforms(uint32_t position){
 				tempo_need_update = 2;		
 				}	
    } //
+
    updateTempoDisplay(tempo_range, pitch, originalBPM); 
 
 }
@@ -1131,14 +1133,22 @@ void  RedrawWaveforms(uint32_t position){
 // Range: 0=±6%, 1=±10%, 2=±16%, 3=WIDE
 void updateTempoDisplay(uint8_t range, float adjustment_pct, float original_bpm)
 {
+    
+    float adjusted_bpm = original_bpm/100; // Default to original BPM if no adjustment
+    char sign; // Default to space for no change
     if(adjustment_pct==10000){
         adjustment_pct = 0;
+        sign = ' ';
     }
     else if (adjustment_pct<10000){
         adjustment_pct = 10000-adjustment_pct;
+        adjusted_bpm = (original_bpm/100) - (original_bpm * (adjustment_pct / 10000.0f)) / 100.0f;
+        sign = '-';
     }
     else if(adjustment_pct>10000){
         adjustment_pct = adjustment_pct-10000;
+        adjusted_bpm = (original_bpm/100) + (original_bpm * (adjustment_pct / 10000.0f)) / 100.0f;
+        sign = '+';
     }
     // 1. Range label text + color
     if (tempo_range_need_update > 0){
@@ -1159,13 +1169,14 @@ void updateTempoDisplay(uint8_t range, float adjustment_pct, float original_bpm)
 
     if (tempo_need_update >0){
         // 2. Adjustment label  e.g. "+ 0.25%"
+        
         char buf[16];
-        snprintf(buf, sizeof(buf), "%+.2f%%", adjustment_pct);
+        snprintf(buf, sizeof(buf), "%c%.2f%%", sign, ((adjustment_pct / 10000.0f) * 100));
         lv_label_set_text(adjusted_tempo_label, buf);
 
         // 3. Computed BPM  e.g. "124.3"
-        float adjusted_bpm = (original_bpm * (1.0f + adjustment_pct)); // Modulo to prevent overflow in extreme cases
-        //adjusted_bpm = fmod(adjusted_bpm, 10000.0f); // Keep one decimal place, wrap around at 1000 BPM to prevent overflow
+                //adjusted_bpm = fmod(adjusted_bpm, 10000.0f); // Keep one decimal place, wrap around at 1000 BPM to prevent overflow
+
         snprintf(buf, sizeof(buf), "%.1f", adjusted_bpm);
         lv_label_set_text(current_bpm_label, buf);
         tempo_need_update = 0;

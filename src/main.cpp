@@ -10,7 +10,9 @@
 #include "lv_utils.h"
 #include "clockspeed/beermat_clockspeed.h"
 #include "PacketsSerial.h"
+#include "T4_DMA_SPI_SLAVE.h"
 #include "rekordbox_anlz_api.h"
+
 
 #if defined(USE_LCD_DISP)
 #include "eLCDIF_t4.h"
@@ -89,23 +91,22 @@ Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initia
 
 
 void DMA2_Stream5_IRQHandler(void);
+void CheckTXCRC();
+uint8_t CheckRXCRC(void);
 
 
 
 // Used in the I2S ISR
 volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
 volatile uint32_t position = 0;
+uint32_t slip_position= 0;
 volatile uint8_t reverse = 0;
 volatile uint8_t end_of_track = 0;                        //end track flag
 volatile uint32_t step_position = 0;
 volatile uint32_t sdram_adr = 0;
 volatile uint8_t offset_adress = 0;                       //address offset for calling CUE audio data (for work)
-volatile int16_t LR[2][4] __attribute__((aligned(32)));
-volatile uint16_t PCM_2[2] __attribute__((aligned(32)));
-volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
-float c0, c1, c2, c3, r0, r1, r2, r3;
-int32_t even1, even2, odd1, odd2;
-static float COEF[8] = {			//////optimal 2x
+
+float COEF[8] = {			//////optimal 2x
 0.45868970870461956,
 0.04131401926395584,
 0.48068024766578432,
@@ -126,11 +127,12 @@ uint8_t	ftp = 0;										/////temp!
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
 EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
+//---128--- | A (8) | B (8)...| G (8)
 
 // Make volatile as critical to buffer management
-volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
-volatile uint32_t end_adr_valid_data = 0;                 //filling adress in memory ()
-volatile uint8_t filling_step = 0;
+ volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
+ volatile uint32_t end_adr_valid_data = 0;                 //filling adress in memory ()
+ volatile uint8_t filling_step = 0;
 
 uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE 
 #define NO_CHANGE	0
@@ -153,8 +155,8 @@ uint32_t slip_play_adr = 0;                      //Playing adress for SLIP MODE 
 uint8_t mem_offset_adress = 0;                   //address offset for calling CUE audio data (for memory)
 uint8_t play_enable = 0;
 uint8_t slip_play_enable = 0;
-uint32_t slip_position = 0;
 uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
+volatile uint16_t previous_pitch = 0;
 float SAMPLE_BUFFER;
 float T;
 uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
@@ -163,7 +165,19 @@ uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
 uint8_t loop_pending = 0;
 uint8_t loop_in_active_pressed = 0;
 uint8_t loop_out_active_pressed = 0;
-uint8_t lock_control = 0;            
+uint8_t lock_control = 0;           
+
+ float firR[2]; //input samples	
+ float firL[2]; //input samples
+ float deckout[2];	
+
+/* Catmull-Rom coefficients and interpolation state */
+ float   c0, c1, c2, c3;
+ float   r0, r1, r2, r3;
+ float c0l, c1l, c2l, c3l, r0l, r1l, r2l, r3l;
+ float c0r, c1r, c2r, c3r, r0r, r1r, r2r, r3r;
+ int32_t even1, even2, odd1, odd2;
+float TRIM, PRETRIM;
 
 
 // For static buffer indicator
@@ -177,9 +191,9 @@ uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
 EventResponder spiEventResponder; // EventResponder for async transfer
 #define SPI_CS_PIN 10
 bool SPI_xferInProgress = false;
-uint8_t Tbuffer[32] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
+uint8_t Tbuffer[512] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
 uint8_t load_animation_enable = 0;
-uint8_t Rbuffer[32]={0};
+uint8_t Rbuffer[512]={0};
 uint16_t zi = 0;
 uint8_t a = 0;
 uint8_t dma_cnt = 0;
@@ -235,6 +249,12 @@ uint8_t slip_mode = 0;
 uint8_t dynamicWaveformZOOM = 1;
 
 uint8_t CUE_OPERATION = 0;
+
+ 
+     volatile int16_t  LR[2][4]  __attribute__((aligned(32))) = {0};
+     volatile uint16_t PCM_2[2]  __attribute__((aligned(32))) = {0};
+     volatile uint8_t  SAMPLE[4] __attribute__((aligned(4)))  = {0,0,0,0};
+ 
 
 
 
@@ -521,6 +541,8 @@ void errorLogCallback(void *pArg, int iErrCode, const char *zMsg)
 LV_FONT_DECLARE(exo2_16)
 LV_FONT_DECLARE(exo2_18)
 
+
+
 FLASHMEM void reportAppConfig() {
   Serial.println("\n======================== App Settings ==========================");
   Serial.printf("COMPILED: " SER_CYAN "%s %s" SER_RESET " with GCC " SER_CYAN "%d.%d.%d" SER_RESET ", C++ vers: " SER_CYAN "%ld" SER_RESET "\n", __DATE__, __TIME__, __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __cplusplus);
@@ -575,11 +597,18 @@ void setup()
   if (ctp.begin(20)) {
     Serial.println("FT5316 touch controller initialized");
   }
+	#ifdef MK1
+	OurSerial1WireT4toT4dataExch.begin(MasterAddress, &DMA_Serial7, 2000000UL);
+	OurSerial1WireT4toT4dataExch.PacketSerialRole = MASTER;
+	OurSerial1WireT4toT4dataExch.OurSerial->set_process_serial_rx_call(g_process_serial_rx);
+	//ledTimer.begin(ledTIMER, 1000); //1ms
+	#elif defined(MK3)
+	SPI_SLAVE.begin(SPI_MODE3, MSBFIRST, MODE_4WIRE);
+	SPI_SLAVE.auto_repeat = 0;
+	SPI_SLAVE.setOnComplete(DMA2_Stream5_IRQHandler);
+	SPI_SLAVE.prepare_for_slave_transfer(Tbuffer, Rbuffer, 27);
+	#endif
 
- OurSerial1WireT4toT4dataExch.begin(MasterAddress, &DMA_Serial7, 2000000UL);
- OurSerial1WireT4toT4dataExch.PacketSerialRole = MASTER;
- OurSerial1WireT4toT4dataExch.OurSerial->set_process_serial_rx_call(g_process_serial_rx);
- //ledTimer.begin(ledTIMER, 1000); //1ms
 #endif
 
 
@@ -635,95 +664,43 @@ void setup()
 
 
 
-  Serial.println("Initializing Audio");
+  Serial.println("Initializing Audio");      // <-- add before startI2SInterrupt
   audio.begin(&SAI_IRQHandler);
   
-  /*
-  lv_obj_t * btn = lv_btn_create(lv_scr_act());
-  lv_obj_set_size(btn, 120, 50);
-  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
 
-  lv_obj_t * label = lv_label_create(btn);z=
-  lv_label_set_text(label, "Play");
-  lv_obj_set_style_text_font(label, &exo2_18, 0);
-  lv_obj_center(label);
-  */
 
-  //readWaveFormBlob();
 
-#if defined(RDI_DEVELOPMENTS_DB5)
-  //////////////////////////
-  // Directly start the song
-  //////////////////////////
-  if (db_open() == false) {
-    errorHalt("Failed to initialize database");
-  }
 
-  int16_t first_id = db_get_first_track_id();
-  Track * track = db_get_track_by_id(first_id);
-  load_dj_screen_with_track(track);
-  
-  // Free after use
-  db_free_track(track);
-  //////////////////////////////
-  // End directly start the song
-  //////////////////////////////
-#else  
-
-  
-
-	// Allocate array of pointers
-	/*
-    all_tracks = new Track*[track_count];
-
-		// Fill the array with pointers to tracks
-	for (uint16_t i = 0; i < track_count; i++) {
-		all_tracks[i] = (Track*)rbParser->getTrack(i);
-		if (!all_tracks[i]) {
-			Serial.printf("Track %d is null!\n", i);
-		}
-	}
-
-	// Use the tracks
-	for (uint16_t i = 0; i < track_count; i++) {
-		if (all_tracks[i]) {
-			Serial.printf("Track %d: %s - %s %s\n", 
-						all_tracks[i]->id,
-						all_tracks[i]->title,
-						all_tracks[i]->artist,
-						rbParser->getKeyName(all_tracks[i]->key_id));
-		}
-	}
-		*/
-	Serial.println("Finished loading tracks from rekordbox db");
-	create_dj_browser_ui();
-	//populate_track_list(all_tracks, track_count);
-	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
-
-  	
-	
-#endif
-
-#if defined(USE_LCD_DISP)
-  // Setup complete, turn on LCD
-  analogWrite(BACKLIGHT_PIN, 200);
-  lcd.runLCD(); // Turn on the LCDIF when the 1st frame is ready to be displayed
-#endif // USE_LCD_DISP
-#if defined(TEENSY41)
   if (disp_init(displayRefreshRate) == false) {
     errorHalt("Failed to initialize display");
   }
-#endif
-#if !defined(USE_LCD_DISP)
-#if defined(SSD1963) && defined(USE_TEAR)
+
+
   attachInterrupt(digitalPinToInterrupt(TFT_TEAR), lcdCallback, CHANGE);
-#else    
-  lcdTimer.priority(128);
-  lcdTimer.begin(lcdCallback, 17 * 1000); 
-  Serial.printf("Enabled LCD Interval Timer\n"); 
-#endif 
-#endif
+ 
+  //lcdTimer.priority(128);
+  //lcdTimer.begin(lcdCallback, 17 * 1000); 
+  //Serial.printf("Enabled LCD Interval Timer\n");
+  Serial.println("Finished loading tracks from rekordbox db");
+	LV_IMG_DECLARE(teensy_dj_400px)
+	lv_obj_t* bootScreen = lv_obj_create(NULL);
+	lv_obj_set_size(bootScreen, SCREEN_WIDTH, SCREEN_HEIGHT);
+	lv_obj_set_style_bg_color(bootScreen, lv_color_make(0,0,0), 0);
+	lv_obj_t* logo = lv_img_create(bootScreen);
+	lv_img_set_src(logo, &teensy_dj_400px);
+	lv_obj_set_align(logo, LV_ALIGN_CENTER);
+	lv_scr_load_anim(bootScreen, LV_SCR_LOAD_ANIM_FADE_IN, 3000, 500, true);
+	
+	create_dj_browser_ui();
+	//populate_track_list(all_tracks, track_count);
+	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_FADE_IN, 500, 3500, true); 
+	disp_setBrightness(255);
+
+
+#ifdef MK1
 serialTimer.begin(serialTimerISR, 1000); //1ms
+#endif
+
 ledTimer.begin(ledTIMER, 1000); //1ms
 }
 
@@ -880,6 +857,7 @@ FASTRUN void loop()
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
   uint32_t snapshot_play_adr = play_adr;
 
+  #ifdef MK1
 
   if (OurSerial1WireT4toT4dataExch.flag_new_packet_received){
     OurSerial1WireT4toT4dataExch.mmemcpydw ((uint32_t*)Rbuffer, OurSerial1WireT4toT4dataExch.PZDreceive);
@@ -889,6 +867,8 @@ FASTRUN void loop()
     OurSerial1WireT4toT4dataExch.mmemcpydw (OurSerial1WireT4toT4dataExch.PZDsend, (uint32_t*)Tbuffer);
 	
  }
+ #endif
+
   
   // Stats
   if (appStats.readyToReport() == true) {
@@ -989,6 +969,7 @@ FASTRUN void loop()
 			{
 				filling_step = 6;
 			}
+			 
 		}
     } else {
       audio.stopI2SInterrupt();
@@ -1005,8 +986,10 @@ FASTRUN void loop()
       end_adr_valid_data = 0;
       filling_step = 0;
       playFile.seek(44);
+	        // flush PV state
       audio.startI2SInterrupt();
     } 
+
   }
 
 	/*  
@@ -1144,137 +1127,38 @@ FASTRUN void loop()
   appStats.end(MAIN_LOOP);
 }
 
+	
+
 FASTRUN void SAI_IRQHandler(void)
 {
-  CrashReport.breadcrumb(2, 1);
-  appStats.start(ISR_I2S);
 
-#if !defined(IRQ_FROM_INT_TIMER)
   //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
   uint16_t right = (SAMPLE[3] << 8) | SAMPLE[2];
+  
 
   __DSB();  // completes when all explicit memory accesses before this instruction complete
   
   I2S_TDR0_REG = (uint32_t)left << 16;
   I2S_TDR0_REG = (uint32_t)right << 16;
-#endif
+
   
   //advancePosition_claude_optimized();
   advancePosition_rezo();
+	
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
-  appStats.end(ISR_I2S);
-  CrashReport.breadcrumb(2, 0);
-}
 
-
-#define BufSize 8096
-#define Overlap 100
-
-int Buf[BufSize];
-
-int WtrP = 0;
-float Rd_P = 0.0f;
-float Shift = 1.0f;
-float CrossFade = 1.0f;
-float a0h, a1h, a2h, b1h, b2h, hp_in_z1h, hp_in_z2h, hp_out_z1h, hp_out_z2h;
-
-int Do_HighPass (int inSample)
-{
-//	a0h = 0.9087554064944908f;
-//  a1h = -1.7990948352036205f;
-//  a2h = 0.9087554064944908f;
-//  b1h = -1.7990948352036205f;
-//  b2h = 0.8175108129889816f;
-	
-	a0h = 0.49865224695598137f;
-	a1h = 0.9973044939119627f;
-	a2h = 0.49865224695598137f;
-	b1h = 0.7278431635297481f;
-	b2h = 0.2667658242941773f;
-		
-
-	float inSampleF = (float)inSample;
-	float outSampleF =
-		a0h * inSampleF
-		+ a1h * hp_in_z1h
-		+ a2h * hp_in_z2h
-		- b1h * hp_out_z1h
-		- b2h * hp_out_z2h;
-		
-	hp_in_z2h = hp_in_z1h;
-	hp_in_z1h = inSampleF;
-	hp_out_z2h = hp_out_z1h;
-	hp_out_z1h = outSampleF;
-
-	return (int) outSampleF;
 }
 
 
 
 
-int Do_PitchShift(int Sample)
-{
-	int sum;
-  float share;
-    
-//sum up and do high-pass and notch
-  sum=Do_HighPass(Sample);
-  
-  //write to ringbuffer
-  Buf[WtrP] = sum;
- 
-//read fractional readpointer and generate 0� and 180� read-pointer in integer
-  int RdPtr_Int = roundf(Rd_P);
-
-//frac share of RdPtr_Int1a. // -1>= share <1
-  share =  (float) Rd_P - RdPtr_Int;
-
-  int RdPtr_Int2 = 0;
-  if (RdPtr_Int >= BufSize/2) RdPtr_Int2 = RdPtr_Int - (BufSize/2);
-  else RdPtr_Int2 = RdPtr_Int + (BufSize/2);
-
-  //read the two samples...
-  float Rd0 = (float) Buf[RdPtr_Int];
-  float Rd1 = (float) Buf[RdPtr_Int2];
-
-  //Check if first readpointer starts overlap with write pointer?
-  // if yes -> do cross-fade to second read-pointer
-  if (Overlap >= (WtrP-RdPtr_Int) && (WtrP-RdPtr_Int) >= 0 && Shift!=1.0f) {
-    int rel = WtrP-RdPtr_Int;
-    CrossFade = ((float)rel)/(float)Overlap;
-
-  }
-  else if (WtrP-RdPtr_Int == 0) {
-    CrossFade = 0.0f;
-  }
 
 
-  //Check if second readpointer starts overlap with write pointer?
-  // if yes -> do cross-fade to first read-pointer
-  if (Overlap >= (WtrP-RdPtr_Int2) && (WtrP-RdPtr_Int2) >= 0 && Shift!=1.0f) {
-      int rel = WtrP-RdPtr_Int2;
-      CrossFade = 1.0f - ((float)rel)/(float)Overlap;
-    }
-  else if (WtrP-RdPtr_Int2 == 0) {
-    CrossFade = 1.0f;
-  }
 
-
-  //do cross-fading and sum up
-  sum = (Rd0*CrossFade + Rd1*(1.0f-CrossFade));
-
-  //increment fractional read-pointer and write-pointer
-  Rd_P += Shift;
-  WtrP++;
-  if (WtrP == BufSize) WtrP = 0;
-  if (roundf(Rd_P) >= BufSize) Rd_P = 0.0f;
-
-  return sum;
-}
 
 FASTRUN void advancePosition_rezo() {
   if(((play_adr+step_position+3)<=(294*all_long)))						//change all_long extract!
@@ -1287,11 +1171,11 @@ FASTRUN void advancePosition_rezo() {
 			}			
 		
 		
-	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_play_adr+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 		{
-		slip_position+= pitch_for_slip;
-		slip_play_adr+=slip_position/10000;	
-		slip_position = slip_position%10000;	
+		slip_play_adr+= pitch_for_slip;
+		slip_play_adr+=slip_play_adr/10000;	
+		slip_play_adr = slip_play_adr%10000;	
 		}
 		
 	position+= pitch;
@@ -1389,7 +1273,6 @@ FASTRUN void advancePosition_rezo() {
 	SAMPLE_BUFFER = c0+T*(c1+T*(c2+T*c3));
 	SAMPLE_BUFFER = SAMPLE_BUFFER*0.90F;
 	PCM_2[0] = (int)SAMPLE_BUFFER;
-	int lSample = (int)PCM_2[0];
 
 	even1 = LR[1][2];
 	even1 = even1 + LR[1][1];
@@ -1416,14 +1299,6 @@ FASTRUN void advancePosition_rezo() {
 	SAMPLE_BUFFER = SAMPLE_BUFFER*0.90F;
 	PCM_2[1] = (int)SAMPLE_BUFFER;
 
-	int rSample = (int)PCM_2[1];
-	if((Rbuffer[12]&0x20) == 0 && (Tbuffer[19]&0x8)){ // Touch is disabled
-		int ret_lsample = Do_PitchShift(lSample);
-		int ret_rsample = Do_PitchShift(rSample);
-		PCM_2[0] = ret_lsample;
-		PCM_2[1] = ret_rsample;
-
-	}
 
 	
 	SAMPLE[3] = PCM_2[0]/256;
@@ -1460,11 +1335,11 @@ FASTRUN void advancePosition_claude_optimized()
 	}
 
 #if defined (TEENSY41)
-if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_play_adr+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 		{
-		slip_position+= pitch_for_slip;
-		slip_play_adr+=slip_position/10000;	
-		slip_position = slip_position%10000;	
+		slip_play_adr+= pitch_for_slip;
+		slip_play_adr+=slip_play_adr/10000;	
+		slip_play_adr = slip_play_adr%10000;	
 		}	
 #endif
   
@@ -1621,6 +1496,7 @@ void DMA2_Stream5_IRQHandler(void){
 
 		uint32_t ptch;
 		uint8_t acc_t;
+		if(CheckRXCRC() == 0) return;
 		
 		if((Rbuffer[14]&0x1) && PLAY_BUTTON_pressed==0)										///////////PLAY button
 			{
@@ -2661,7 +2537,8 @@ void DMA2_Stream5_IRQHandler(void){
 						{
 						if(slip_mode==1 && keep_slip==0 && (Tbuffer[17]&0x20))
 							{
-							keep_slip = 1;				
+							keep_slip = 1;
+							 			
 							}
 						else
 							{	
@@ -2673,6 +2550,7 @@ void DMA2_Stream5_IRQHandler(void){
 								{
 								slip_play_enable = 0;	
 								Tbuffer[19] &= 0xF7;
+						
 								}									
 							}							
 						}	
@@ -2702,104 +2580,93 @@ void DMA2_Stream5_IRQHandler(void){
 				}
 			else				//////////////////////////////////////////TEMPO CALCULATION
 				{	
-				// Average the 5 samples
-				previous_adc_pitch = previous_adc_pitch/5;  // Now 0-1023 range
-				previous_adc_DD = previous_adc_DD/5;        // Now 0-1023 range
-				
-				// Update center with hysteresis (±16 ADC units = ~1.6% of full scale)
-				if(previous_adc_pitch>(pitch_center+16) || (16+previous_adc_pitch)<pitch_center)
-				{
-					pitch_center = previous_adc_pitch;
-				}
-				
-				// Update DD with hysteresis
-				if(previous_adc_DD>DD+16 || 16+previous_adc_DD<DD)
-				{
-					DD = previous_adc_DD;
-				}
-				
-				// Deadband: ±32 units (~3% of full scale)
-				if(((pitch_center+32)>DD) && ((pitch_center-32)<DD))	
-				{
+				previous_adc_pitch = previous_adc_pitch/5;
+				previous_adc_DD = previous_adc_DD/5;
+				if(previous_adc_pitch>(pitch_center+64) || (64+previous_adc_pitch)<pitch_center)		//
+					{																																									//
+					pitch_center = previous_adc_pitch;																								//
+					}																																									//
+				if(previous_adc_DD>DD+64 || 64+previous_adc_DD<DD)																	/////fluctuating filter with hysteresis
+					{																																									//
+					DD = previous_adc_DD;																															//
+					}																																									//
+				if(((pitch_center+128)>DD) && ((pitch_center-128)<DD))	
+					{
 					potenciometer_tempo = 10000;	
-				}
-				else if((pitch_center+32)<=DD)  // Fader above center (pitch increase)
-				{
-					int deviation = DD - pitch_center - 32;  // Max ~480 if center is 512
-					
-					if(tempo_range==0)  // 6% range (±600)
+					}
+				else if((pitch_center+128)<=DD)					/////pitch>0%
 					{
-						potenciometer_tempo = (600 * deviation) / 480;
-						if(potenciometer_tempo>600)
+					if(tempo_range==0)										//	6%
 						{
+						potenciometer_tempo = 2*((DD - pitch_center - 128)/108);
+						if(potenciometer_tempo>600)
+							{
 							potenciometer_tempo = 600;	
+							}	
 						}	
-					}	
-					else if(tempo_range==1)  // 10% range (±1000)
-					{
-						potenciometer_tempo = (1000 * deviation) / 480;
+					else if(tempo_range==1)										//	10%	
+						{
+						potenciometer_tempo = 5*((DD - pitch_center - 128)/162);
 						if(potenciometer_tempo>1000)
-						{
+							{
 							potenciometer_tempo = 1000;	
-						}
-					}	
-					else if(tempo_range==2)  // 16% range (±1600)
-					{
-						potenciometer_tempo = (1600 * deviation) / 480;
+							}
+						}	
+					else if(tempo_range==2)										//	16%	
+						{
+						potenciometer_tempo = 5*((DD - pitch_center - 128)/101);
 						if(potenciometer_tempo>1600)
-						{
+							{
 							potenciometer_tempo = 1600;	
-						}
-					}	
-					else  // WIDE range (±10000)
-					{
-						potenciometer_tempo = (10000 * deviation) / 480;
-						if(potenciometer_tempo>10000)
+							}
+						}	
+					else																		//	WIDE	
 						{
+						potenciometer_tempo = 50*((DD - pitch_center - 128)/162);
+						if(potenciometer_tempo>10000)
+							{
 							potenciometer_tempo = 10000;	
-						}
-					}	
+							}
+						}	
 					potenciometer_tempo = 10000 + potenciometer_tempo;	
-				}
-				else if((pitch_center-32)>=DD)  // Fader below center (pitch decrease)
-				{
-					int deviation = pitch_center - 32 - DD;  // Max ~480 if center is 512
-					
-					if(tempo_range==0)  // 6%
-					{	
-						potenciometer_tempo = (600 * deviation) / 480;
+					}
+				else if((pitch_center-128)>=DD)				/////pitch<0%
+					{
+					if(tempo_range==0)										//	6%	
+						{	
+						potenciometer_tempo = 2*((pitch_center - 128 - DD)/108);
 						if(potenciometer_tempo>600)
-						{
+							{
 							potenciometer_tempo = 600;	
-						}
-					}	
-					else if(tempo_range==1)  // 10%
-					{	
-						potenciometer_tempo = (1000 * deviation) / 480;
+							}
+						}	
+					else if(tempo_range==1)										//	10%	
+						{	
+						potenciometer_tempo = 5*((pitch_center - 128 - DD)/162);
 						if(potenciometer_tempo>1000)
-						{
+							{
 							potenciometer_tempo = 1000;	
+							}
 						}
-					}
-					else if(tempo_range==2)  // 16%
-					{	
-						potenciometer_tempo = (1600 * deviation) / 480;
+					else if(tempo_range==2)										//	16%	
+						{	
+						potenciometer_tempo = 5*((pitch_center - 128 - DD)/101);
 						if(potenciometer_tempo>1600)
-						{
+							{
 							potenciometer_tempo = 1600;	
-						}
-					}	
-					else  // WIDE
-					{	
-						potenciometer_tempo = (10000 * deviation) / 480;
+							}
+						}	
+					else																			//	WIDE
+						{	
+						potenciometer_tempo = 50*((pitch_center - 128 - DD)/162);
 						if(potenciometer_tempo>10000)
-						{
+							{
 							potenciometer_tempo = 10000;	
+							}
 						}
-					}
 					potenciometer_tempo = 10000 - potenciometer_tempo;	
-				}				
-			}
+					}				
+				}
 			if(previous_potenciometer_tempo != potenciometer_tempo)
 				{
 				previous_potenciometer_tempo = potenciometer_tempo;	
@@ -2807,9 +2674,9 @@ void DMA2_Stream5_IRQHandler(void){
 				}
 			previous_adc_DD = 0;
 			previous_adc_pitch = 0;	
+			}
+				
 			
-		}
-					
 		if(load_animation_enable)
 			{
 			//Tbuffer[21] = 0;					//disable red cue marker
@@ -2842,6 +2709,26 @@ void DMA2_Stream5_IRQHandler(void){
 			zi = ((play_adr/588)%135)+1;		
 			Tbuffer[25] = zi;
 			}
+
+			
+			CheckTXCRC();
+			/*
+			Serial.printf ("\nRECEIVED ");
+			
+			for (int i=0; i<27; i++)
+			{
+				Serial.printf ("%02x ", Rbuffer[i]);
+			}
+			Serial.printf ("\nSENT     ");
+			for (int i=0; i<27; i++)
+			{
+				Serial.printf ("%d ", Tbuffer[i]);
+			}
+			Serial.printf ("\n");
+			*/
+	
+			SPI_SLAVE.prepare_for_slave_transfer(Tbuffer, Rbuffer, 27);
+			SPI_SLAVE.flag_transaction_completed = 0;
 }	
 
 	
@@ -3025,5 +2912,38 @@ void serialTimerISR()
 {
 	OurSerial1WireT4toT4dataExch.go_send_PZDsendBuffer (MasterAddress, SlaveAddress);
 }
+
+
+//////////////////////////////////////
+//Function Checksum for TX package	
+//
+void CheckTXCRC()
+	{
+	uint8_t sdata = 141;
+	uint8_t bt = 17;
+	while(bt<26)
+		{
+		sdata+=Tbuffer[bt];	
+		bt++;	
+		}
+	Tbuffer[26] = sdata;
+	return;	
+	}
+	
+	
+//////////////////////////////////////
+//Function Checksum for RX package	
+//
+uint8_t CheckRXCRC(void)
+	{
+	if(Rbuffer[0]==1 &&	Rbuffer[1]==16 && Rbuffer[25]==0 && Rbuffer[26]==0)
+		{
+		return 1;	
+		}
+	else
+		{
+		return 0;	
+		}
+	}
 
 #endif

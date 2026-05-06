@@ -40,7 +40,7 @@ FLASHMEM bool disp_init(uint8_t displayRefreshRate)
     tft.setBitDepth(16);
 #endif    
     disp_setRefreshRate(displayRefreshRate);
-    disp_setBrightness(255);
+    disp_setBrightness(0);
     
 
 #if defined(SSD1963) && defined(USE_TEAR)

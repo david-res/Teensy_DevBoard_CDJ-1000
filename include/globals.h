@@ -97,9 +97,11 @@ extern uint16_t PCM[206][8192][2];
 /////////////////////
 //User defined params
 /////////////////////
+#define MK3
 
-extern uint8_t Rbuffer[32];
-extern uint8_t Tbuffer[32];
+
+extern uint8_t Rbuffer[512];
+extern uint8_t Tbuffer[512];
 
 #define TRACK_LIST 0
 #define WAVEFORM 1
