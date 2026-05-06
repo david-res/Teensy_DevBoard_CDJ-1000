@@ -99,14 +99,17 @@ uint8_t CheckRXCRC(void);
 // Used in the I2S ISR
 volatile uint16_t pitch = 10000;                          // 10000 = 100% step 0,01%            
 volatile uint32_t position = 0;
-uint32_t slip_position= 0;
 volatile uint8_t reverse = 0;
 volatile uint8_t end_of_track = 0;                        //end track flag
 volatile uint32_t step_position = 0;
 volatile uint32_t sdram_adr = 0;
 volatile uint8_t offset_adress = 0;                       //address offset for calling CUE audio data (for work)
-
-float COEF[8] = {			//////optimal 2x
+volatile int16_t LR[2][4] __attribute__((aligned(32)));
+volatile uint16_t PCM_2[2] __attribute__((aligned(32)));
+volatile uint8_t SAMPLE[4] __attribute__((aligned(4))) = {0,0,0,0};
+float c0, c1, c2, c3, r0, r1, r2, r3;
+int32_t even1, even2, odd1, odd2;
+static float COEF[8] = {			//////optimal 2x
 0.45868970870461956,
 0.04131401926395584,
 0.48068024766578432,
@@ -127,12 +130,11 @@ uint8_t	ftp = 0;										/////temp!
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
 EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
-//---128--- | A (8) | B (8)...| G (8)
 
 // Make volatile as critical to buffer management
- volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
- volatile uint32_t end_adr_valid_data = 0;                 //filling adress in memory ()
- volatile uint8_t filling_step = 0;
+volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory
+volatile uint32_t end_adr_valid_data = 0;                 //filling adress in memory ()
+volatile uint8_t filling_step = 0;
 
 uint8_t change_speed = 0;							//flag for RELEASE/START or TOUCH/BREAKE 
 #define NO_CHANGE	0
@@ -155,8 +157,8 @@ uint32_t slip_play_adr = 0;                      //Playing adress for SLIP MODE 
 uint8_t mem_offset_adress = 0;                   //address offset for calling CUE audio data (for memory)
 uint8_t play_enable = 0;
 uint8_t slip_play_enable = 0;
+uint32_t slip_position = 0;
 uint16_t pitch_for_slip = 10000;         // 10000 = 100% step 0,01%    
-volatile uint16_t previous_pitch = 0;
 float SAMPLE_BUFFER;
 float T;
 uint8_t QUANTIZE = 1;                    //QUANTIZE ENABLE
@@ -165,19 +167,7 @@ uint32_t LOOP_OUT = 0;                   //adr LOOP OUT in frames 150
 uint8_t loop_pending = 0;
 uint8_t loop_in_active_pressed = 0;
 uint8_t loop_out_active_pressed = 0;
-uint8_t lock_control = 0;           
-
- float firR[2]; //input samples	
- float firL[2]; //input samples
- float deckout[2];	
-
-/* Catmull-Rom coefficients and interpolation state */
- float   c0, c1, c2, c3;
- float   r0, r1, r2, r3;
- float c0l, c1l, c2l, c3l, r0l, r1l, r2l, r3l;
- float c0r, c1r, c2r, c3r, r0r, r1r, r2r, r3r;
- int32_t even1, even2, odd1, odd2;
-float TRIM, PRETRIM;
+uint8_t lock_control = 0;            
 
 
 // For static buffer indicator
@@ -187,13 +177,9 @@ uint16_t newStaticBufferX = 0;
 uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
 
 
- /* SPI transfer variables ---------------------------------------------------------*/
-EventResponder spiEventResponder; // EventResponder for async transfer
-#define SPI_CS_PIN 10
-bool SPI_xferInProgress = false;
-uint8_t Tbuffer[512] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
+uint8_t Tbuffer[32] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
 uint8_t load_animation_enable = 0;
-uint8_t Rbuffer[512]={0};
+uint8_t Rbuffer[32]={0};
 uint16_t zi = 0;
 uint8_t a = 0;
 uint8_t dma_cnt = 0;
@@ -247,21 +233,12 @@ uint8_t need_call_to_cue = 0;
 uint8_t keep_slip = 0;
 uint8_t slip_mode = 0;
 uint8_t dynamicWaveformZOOM = 1;
-
 uint8_t CUE_OPERATION = 0;
-
- 
-     volatile int16_t  LR[2][4]  __attribute__((aligned(32))) = {0};
-     volatile uint16_t PCM_2[2]  __attribute__((aligned(32))) = {0};
-     volatile uint8_t  SAMPLE[4] __attribute__((aligned(4)))  = {0,0,0,0};
- 
-
-
 
 
 uint8_t dSHOW = TRACK_LIST;
-
 uint8_t REMAIN_ENABLE = 1;
+
 
 void ledTIMER();
 IntervalTimer ledTimer;
@@ -1132,7 +1109,7 @@ FASTRUN void loop()
 FASTRUN void SAI_IRQHandler(void)
 {
 
-  //I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
+  I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
   uint16_t right = (SAMPLE[3] << 8) | SAMPLE[2];
@@ -1146,10 +1123,11 @@ FASTRUN void SAI_IRQHandler(void)
   
   //advancePosition_claude_optimized();
   advancePosition_rezo();
+  //Serial.printf("play_adr: %ld, position: %ld, step_position: %ld, end_of_track: %d\n", play_adr, position, step_position, end_of_track);
 	
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
-  //I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
+  I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
 
 }
 
@@ -1171,11 +1149,11 @@ FASTRUN void advancePosition_rezo() {
 			}			
 		
 		
-	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_play_adr+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 		{
-		slip_play_adr+= pitch_for_slip;
-		slip_play_adr+=slip_play_adr/10000;	
-		slip_play_adr = slip_play_adr%10000;	
+		slip_position+= pitch_for_slip;
+		slip_play_adr+=slip_position/10000;	
+		slip_position = slip_position%10000;	
 		}
 		
 	position+= pitch;
@@ -1298,8 +1276,6 @@ FASTRUN void advancePosition_rezo() {
 	SAMPLE_BUFFER = c0+T*(c1+T*(c2+T*c3));
 	SAMPLE_BUFFER = SAMPLE_BUFFER*0.90F;
 	PCM_2[1] = (int)SAMPLE_BUFFER;
-
-
 	
 	SAMPLE[3] = PCM_2[0]/256;
 	SAMPLE[2] = PCM_2[0]%256;

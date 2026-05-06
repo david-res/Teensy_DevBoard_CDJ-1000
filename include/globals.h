@@ -100,8 +100,8 @@ extern uint16_t PCM[206][8192][2];
 #define MK3
 
 
-extern uint8_t Rbuffer[512];
-extern uint8_t Tbuffer[512];
+extern uint8_t Rbuffer[32];
+extern uint8_t Tbuffer[32];
 
 #define TRACK_LIST 0
 #define WAVEFORM 1
