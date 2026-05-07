@@ -109,6 +109,7 @@ void updateDynamicWaveform(uint32_t waveformOffset);
 void updateOverviewWaveform(uint16_t Tpos);
 void updateTempoDisplay(uint8_t range, float adjustment_pct, float original_bpm);
 void ShowPhaseMeter(uint16_t phase);
+void  onCueButtonPressed(lv_event_t* e);
 void backButton(lv_event_t *e);
 bool useOpa = false;
 
@@ -165,6 +166,9 @@ uint8_t Prev10f = 0xFF;
 uint8_t Prev1f = 0xFF;
 uint8_t PrevHf = 0xFF;
 
+// Access hot cues anywhere via: g_track->hot_cues[i]
+AnlzData* g_track = nullptr;
+
 
 
 
@@ -181,61 +185,66 @@ uint8_t PrevHf = 0xFF;
 #endif
 
 
-void loadTrackData(const char* dat_filepath) {
-    BeatGridEntry* beat_grid = NULL;
+void loadTrackData(Track* track) {
+    if (!track) return;
+
+    // ── Free previous track data ──────────────────────────────────────────────
+    if (g_track) {
+        anlz_free(g_track);
+        free(g_track);
+        g_track = nullptr;
+    }
+
+    g_track = (AnlzData*)malloc(sizeof(AnlzData));
+    if (!g_track) {
+        Serial.println("ERROR: cannot allocate AnlzData");
+        return;
+    }
+    anlz_init(g_track);
+
+    // ── Beat grid ─────────────────────────────────────────────────────────────
+    GRID_OFFSET = 0;
+
+    BeatGridEntry* beat_grid = nullptr;
     uint32_t num_beats;
     uint16_t original_bpm;
-    uint8_t grid_offset;
-    GRID_OFFSET = 0; // Default to 0 if not provided by parser
-    
-    // Extract beat grid and BPM data
-    uint16_t err = extractBeatGrid(dat_filepath, &beat_grid, &num_beats, 
+    uint8_t  grid_offset;
+
+    uint16_t err = extractBeatGrid(track->anlz_path, &beat_grid, &num_beats,
                                    &original_bpm, &grid_offset);
-    
-    if (err == 0) {
-        // Store grid offset
-        GRID_OFFSET = grid_offset;
-        
-        // Store beat grid length (limit to array size)
+    if (err == ANLZ_OK) {
+        GRID_OFFSET   = grid_offset;
         beatGridLenth = (num_beats > 4096) ? 4096 : num_beats;
-        
-        // Copy beat positions and BPM values
+
         for (uint32_t i = 0; i < beatGridLenth; i++) {
-            BEATGRID[i] = beat_grid[i].position;  // Beat position in samples/frames
-            BPMGRID[i] = beat_grid[i].bpm;        // BPM * 100
+            BEATGRID[i] = beat_grid[i].position;
+            BPMGRID[i]  = beat_grid[i].bpm;
         }
-        
-        Serial.printf("Loaded %d beats, BPM: %.2f, Grid offset: %d\n", 
-                      beatGridLenth, original_bpm/100.0, GRID_OFFSET);
-        
-        // Free the allocated beat grid
+
+        Serial.printf("Loaded %u beats, BPM: %.2f, Grid offset: %u\n",
+                      beatGridLenth, original_bpm / 100.0f, GRID_OFFSET);
         free(beat_grid);
     } else {
-        Serial.printf("Error loading beat grid: %d\n", err);
+        Serial.printf("Error loading beat grid: %u\n", err);
     }
-    
-    // Extract hot cues
-    CuePoint hot_cues[3];
-    uint8_t num_hot_cues;
-    
-    err = extractHotCues(dat_filepath, hot_cues, &num_hot_cues);
-    
-    if (err == 0) {
-        // Clear hot cue array first
+
+    // ── Hot cues from .EXT ────────────────────────────────────────────────────
+    err = extractExtCues(track->anlz_ext_path, g_track);
+
+    if (err == ANLZ_OK) {
+        for (int i = 0; i < 8; i++)
+            hotCues[i] = 0xFFFFFFFF;
+
+        numCuePoints = 0;
         for (int i = 0; i < 8; i++) {
-            hotCues[i] = 0xFFFFFFFF;  // Or 0, depending on your "empty" value
-        }
-        
-        // Copy hot cues (only first 3 positions for A, B, C)
-        for (int i = 0; i < num_hot_cues && i < 3; i++) {
-            if (hot_cues[i].type & 0x2) {  // Is active?
-                hotCues[i] = hot_cues[i].start_pos;
+            if (g_track->hot_cues[i].active) {
+                hotCues[i] = g_track->hot_cues[i].time_ms;
+                numCuePoints++;
             }
         }
-        numCuePoints = num_hot_cues;
-        Serial.printf("Loaded %d hot cues\n", num_hot_cues);
+        Serial.printf("Loaded %u hot cues\n", numCuePoints);
     } else {
-        Serial.printf("Error loading hot cues: %d\n", err);
+        Serial.printf("Error loading hot cues from EXT: %u\n", err);
     }
 }
 
@@ -834,40 +843,68 @@ void create_bottom_container(Track * track) {
 
     // Create 8 cue buttons (A-H)
     for (int i = 0; i < 8; i++) {
+        bool has_cue = g_track && g_track->hot_cues[i].active;
+
+        // ── Color ─────────────────────────────────────────────────────────────
+        uint32_t hex_color;
+        if (has_cue) {
+            CuePoint& c = g_track->hot_cues[i];
+            if (c.color_r || c.color_g || c.color_b) {
+                hex_color = ((uint32_t)c.color_r << 16)
+                        | ((uint32_t)c.color_g << 8)
+                        | c.color_b;
+            } else {
+                hex_color = 0x00E800;  // default rekordbox green
+            }
+        } else {
+            hex_color = 0x444444;  // inactive grey
+        }
+
+        // ── Button base ───────────────────────────────────────────────────────
         cue_buttons[i] = lv_obj_create(cue_container);
         lv_obj_set_size(cue_buttons[i], btn_w, btn_h);
         lv_obj_set_pos(cue_buttons[i], start_x + i * (btn_w + gap), start_y);
-        lv_obj_set_style_bg_color(cue_buttons[i], lv_color_hex(0x2a2a2a), 0);
+        lv_obj_set_style_bg_color(cue_buttons[i], lv_color_hex(has_cue ? 0x1a1a1a : 0x111111), 0);
         lv_obj_set_style_bg_opa(cue_buttons[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(cue_buttons[i], lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_color(cue_buttons[i], lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_border_width(cue_buttons[i], 1, 0);
+        lv_obj_set_style_border_opa(cue_buttons[i], has_cue ? LV_OPA_COVER : LV_OPA_30, 0);
         lv_obj_set_style_radius(cue_buttons[i], 5, 0);
         lv_obj_set_style_pad_all(cue_buttons[i], 0, 0);
         lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_SCROLLABLE);
 
-        // Letter label — top left, colored
-        lv_obj_t *btn_label = lv_label_create(cue_buttons[i]);
+        // ── Clickability ──────────────────────────────────────────────────────
+        if (has_cue) {
+            lv_obj_add_flag(cue_buttons[i], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(cue_buttons[i], onCueButtonPressed, LV_EVENT_PRESSED, (void*)(intptr_t)i);
+        } else {
+            lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_CLICKABLE);
+        }
+
+        // ── Letter label ──────────────────────────────────────────────────────
+        lv_obj_t* btn_label = lv_label_create(cue_buttons[i]);
         char btn_text[2] = {'A' + i, '\0'};
         lv_label_set_text(btn_label, btn_text);
-        lv_obj_set_style_text_color(btn_label, lv_color_hex(cue_hex_colors[i]), 0);
+        lv_obj_set_style_text_color(btn_label, lv_color_hex(hex_color), 0);
+        lv_obj_set_style_text_opa(btn_label, has_cue ? LV_OPA_COVER : LV_OPA_30, 0);
         lv_obj_set_style_text_font(btn_label, &exo2_20, 0);
         lv_obj_set_pos(btn_label, 6, 5);
 
-        // Glow behind bar
-        lv_obj_t *glow = lv_obj_create(cue_buttons[i]);
+        // ── Glow ──────────────────────────────────────────────────────────────
+        lv_obj_t* glow = lv_obj_create(cue_buttons[i]);
         lv_obj_set_size(glow, btn_w - 10, 8);
         lv_obj_set_pos(glow, 5, btn_h - 14);
-        lv_obj_set_style_bg_color(glow, lv_color_hex(cue_hex_colors[i]), 0);
-        lv_obj_set_style_bg_opa(glow, LV_OPA_20, 0);
+        lv_obj_set_style_bg_color(glow, lv_color_hex(hex_color), 0);
+        lv_obj_set_style_bg_opa(glow, has_cue ? LV_OPA_20 : LV_OPA_0, 0);
         lv_obj_set_style_border_width(glow, 0, 0);
         lv_obj_set_style_radius(glow, 3, 0);
 
-        // Colored underline bar
-        lv_obj_t *bar = lv_obj_create(cue_buttons[i]);
+        // ── Underline bar ─────────────────────────────────────────────────────
+        lv_obj_t* bar = lv_obj_create(cue_buttons[i]);
         lv_obj_set_size(bar, btn_w - 14, 4);
         lv_obj_set_pos(bar, 7, btn_h - 12);
-        lv_obj_set_style_bg_color(bar, lv_color_hex(cue_hex_colors[i]), 0);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(hex_color), 0);
+        lv_obj_set_style_bg_opa(bar, has_cue ? LV_OPA_COVER : LV_OPA_20, 0);
         lv_obj_set_style_border_width(bar, 0, 0);
         lv_obj_set_style_radius(bar, 2, 0);
 
@@ -875,7 +912,7 @@ void create_bottom_container(Track * track) {
         lv_obj_clear_flag(btn_label, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_clear_flag(glow, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_clear_flag(bar, LV_OBJ_FLAG_EVENT_BUBBLE);
-    }    
+    }
 }
 
 uint8_t findBestRefreshRate(uint16_t samplesPerWavepoint, uint8_t minHz = 30, uint8_t maxHz = 68) {
@@ -922,7 +959,20 @@ void dj_ui_init(Track * track) {
     // Create all containers
     Serial.printf("anlz path: %s\n", track->anlz_path);
     anlz_setFS(rekordboxDrive);
-    loadTrackData(track->anlz_path);
+    loadTrackData(track);
+    // Add this temporarily after loadTrackData() to debug:
+Serial.printf("g_track is %s\n", g_track ? "valid" : "NULL");
+if (g_track) {
+    for (int i = 0; i < 8; i++) {
+        Serial.printf("  hot_cues[%d]: active=%u, time_ms=%u, rgb=#%02x%02x%02x\n",
+            i,
+            g_track->hot_cues[i].active,
+            g_track->hot_cues[i].time_ms,
+            g_track->hot_cues[i].color_r,
+            g_track->hot_cues[i].color_g,
+            g_track->hot_cues[i].color_b);
+    }
+}
     create_top_container(track);
     create_middle_container(track);
     Serial.println("Creating bottom container...");
@@ -1435,6 +1485,15 @@ FASTRUN void updatePlaybackPosition_new(uint16_t newX)
   }
 
   return;
+}
+
+
+void onCueButtonPressed(lv_event_t* e) {
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!g_track || !g_track->hot_cues[i].active) return;
+    Serial.printf("Cue button %d pressed, jumping to %u ms\n", i, (g_track->hot_cues[i].time_ms * 44100) / 1000);
+    SEEK_AUDIOFRAME((g_track->hot_cues[i].time_ms * 44100) / 1000);
+    //position = (g_track->hot_cues[i].time_ms * 44100) / 1000;
 }
 
 

@@ -107,30 +107,46 @@ uint16_t extractBeatGrid(const char* filepath, BeatGridEntry** beat_grid, uint32
     return error;
 }
 
-uint16_t extractHotCues(const char* filepath, CuePoint hot_cues[3], uint8_t* num_hot_cues) {
-    ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_DAT);
+uint16_t extractExtCues(const char* filepath, AnlzData* data) {
+    ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
     File file = ANLZ_FILE_OPEN(filepath);
-    if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_DAT;
+    if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
 
     uint32_t file_size = ANLZ_FILE_SIZE(file);
     uint8_t* buffer = (uint8_t*)malloc(file_size);
-    if (!buffer) { ANLZ_FILE_CLOSE(file); return ANLZ_ERR_DATA_NOT_READ; }
+    if (!buffer) { ANLZ_FILE_CLOSE(file); return ANLZ_ERR_CANNOT_READ_EXT; }
 
     uint32_t bytes_read = ANLZ_FILE_READ_DATA(file, buffer, file_size);
     ANLZ_FILE_CLOSE(file);
-    if (bytes_read != file_size) { free(buffer); return ANLZ_ERR_DATA_NOT_READ; }
+    if (bytes_read != file_size) { free(buffer); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    uint16_t error = anlz_parse_ext_cues(buffer, file_size, data);
+    free(buffer);
+    return error;
+}
+
+uint16_t extractHotCues(const char* filepath, CuePoint hot_cues[8], uint8_t* num_hot_cues) {
+    ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
+    File file = ANLZ_FILE_OPEN(filepath);
+    if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
+
+    uint32_t file_size = ANLZ_FILE_SIZE(file);
+    uint8_t* buffer = (uint8_t*)malloc(file_size);
+    if (!buffer) { ANLZ_FILE_CLOSE(file); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    uint32_t bytes_read = ANLZ_FILE_READ_DATA(file, buffer, file_size);
+    ANLZ_FILE_CLOSE(file);
+    if (bytes_read != file_size) { free(buffer); return ANLZ_ERR_CANNOT_READ_EXT; }
 
     AnlzData temp_data;
     anlz_init(&temp_data);
-    uint16_t error = anlz_parse_dat(buffer, file_size, &temp_data);
+    uint16_t error = anlz_parse_ext_cues(buffer, file_size, &temp_data);
     free(buffer);
 
     if (error == ANLZ_OK) {
         memcpy(hot_cues, temp_data.hot_cues, sizeof(temp_data.hot_cues));
         *num_hot_cues = temp_data.hot_cue_count;
     }
-
-    anlz_free(&temp_data);
     return error;
 }
 

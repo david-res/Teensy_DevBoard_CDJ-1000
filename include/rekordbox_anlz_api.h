@@ -17,8 +17,18 @@ uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3
 uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform, uint32_t* num_entries);
 uint16_t extractBeatGrid(const char* filepath, BeatGridEntry** beat_grid, uint32_t* num_entries,
                          uint16_t* original_bpm, uint8_t* grid_offset);
-uint16_t extractHotCues(const char* filepath, CuePoint hot_cues[3], uint8_t* num_hot_cues);
-uint16_t extractMemoryCues(const char* filepath, CuePoint memory_cues[8], uint8_t* num_memory_cues);
+
+// Extract hot cues from the .EXT file (PCO2/PCP2, nxs2 format).
+// hot_cues[8] is indexed 0-7 = A-H; check .active before using each slot.
+uint16_t extractHotCues(const char* ext_filepath, CuePoint hot_cues[8], uint8_t* num_hot_cues);
+
+// Extract memory cues from the .EXT file.
+uint16_t extractMemoryCues(const char* ext_filepath, CuePoint memory_cues[8], uint8_t* num_memory_cues);
+
+// Full cue extraction: parses both hot cues and memory cues from .EXT in one pass.
+// Preferred over calling extractHotCues + extractMemoryCues separately.
+uint16_t extractExtCues(const char* ext_filepath, AnlzData* data);
+
 uint16_t extractAudioPath(const char* filepath, char* audio_path, uint16_t max_len);
 uint16_t extractTrackInfo(const char* filepath, AnlzData* data);
 

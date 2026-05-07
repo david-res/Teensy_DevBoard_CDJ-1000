@@ -22,9 +22,6 @@
     // + Dynamic waveform: variable (num_entries × 3 bytes)
     //   Example: 3min track = ~33,500 entries × 3 = 100KB
     //
-    // For Teensy 4.1 (1MB RAM): Should handle full tracks fine
-    // For Teensy 4.0 (512KB RAM): May need to limit dynamic waveform size
-    // For Teensy 3.6 (256KB RAM): Consider streaming or partial loading
 #else
     #define ANLZ_PATH_SIZE 256
 #endif
@@ -91,9 +88,13 @@ typedef enum {
 
 // Cue point structure
 typedef struct {
-    uint8_t type;           // Bit 0: 0=cue, 1=loop; Bit 1: 0=inactive, 1=active
-    uint32_t start_pos;     // Start position in frames (1/150s)
-    uint32_t end_pos;       // End position in frames (for loops, 0xFFFF if not a loop)
+    uint8_t  active;        // 1 = slot has a cue set, 0 = empty
+    uint8_t  type;          // 1 = simple cue, 2 = loop
+    uint32_t time_ms;       // Position in milliseconds (use this for seeking)
+    uint32_t loop_end_ms;   // Loop end position in ms (only valid when type == 2)
+    uint8_t  color_r;       // RGB color for LVGL button tint
+    uint8_t  color_g;
+    uint8_t  color_b;
 } CuePoint;
 
 // Beat grid entry
@@ -128,9 +129,10 @@ typedef struct {
     uint8_t* dynamic_waveform;
     uint32_t dynamic_waveform_entries;  // Number of entries (size = entries * 3)
     
-    // Cue points (fixed arrays for up to 8 cues)
-    CuePoint hot_cues[3];           // Hot cues A, B, C
-    CuePoint memory_cues[8];        // Memory cue points
+    // Cue points — slots 0-7 map to hot cues A-H
+    // Always populate from PCO2 in the .EXT file (call anlz_parse_ext_cues)
+    CuePoint hot_cues[8];
+    CuePoint memory_cues[8];
     uint8_t hot_cue_count;
     uint8_t memory_cue_count;
     
@@ -171,6 +173,17 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
  * @return Error code (0 = success)
  */
 uint16_t anlz_parse_ext(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
+
+/**
+ * Parse hot cues and memory cues from ANLZ .EXT file (PCO2/PCP2 tags).
+ * Always call this instead of relying on the .DAT parser for cues —
+ * the .EXT file contains the full nxs2 cue data including colors and 8-slot support.
+ * @param file_data Pointer to .EXT file data buffer
+ * @param file_size Size of the file data
+ * @param data Pointer to AnlzData structure to populate
+ * @return Error code (0 = success)
+ */
+uint16_t anlz_parse_ext_cues(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
 
 /**
  * Parse PWV6 preview waveform from .2EX file (CORRECTED)
@@ -549,7 +562,7 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
         uint32_t cue_data_pos = pos + cue_header_size;
         
         if (cue_type == 1) {  // Hot Cues
-            data->hot_cue_count = (num_cues > 3) ? 3 : num_cues;
+            data->hot_cue_count = (num_cues > 8) ? 8 : num_cues;
             Serial.printf("Parsing %u hot cues...\n", num_cues);
             
             for (uint16_t i = 0; i < num_cues; i++) {
@@ -567,51 +580,31 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
                 }
                 
                 uint32_t entry_header_size = read_be32(&file_data[cue_data_pos + 4]);
-                uint32_t entry_size = read_be32(&file_data[cue_data_pos + 8]);
-                
-                uint8_t hot_cue_num;
-                if (is_nxs2) {
-                    hot_cue_num = file_data[cue_data_pos + 12];  // PCO2: single byte
-                } else {
-                    // PCOB: 4-byte value at bytes 12-15
-                    uint32_t hot_cue_32 = read_be32(&file_data[cue_data_pos + 12]);
-                    hot_cue_num = (uint8_t)hot_cue_32;
-                }
+                uint32_t entry_size        = read_be32(&file_data[cue_data_pos + 8]);
+                // hot_cue is a 4-byte big-endian field at bytes 12-15
+                uint32_t hot_cue_num       = read_be32(&file_data[cue_data_pos + 12]);
                 
                 Serial.printf("  Hot Cue entry %u: hot_cue_num=%u, entry_size=%u\n", i, hot_cue_num, entry_size);
                 
-                if (hot_cue_num > 0 && hot_cue_num <= 3) {
-                    uint8_t idx = hot_cue_num - 1;
+                // hot_cue_num 1=A, 2=B … 8=H; 0 = memory point (skip here)
+                if (hot_cue_num >= 1 && hot_cue_num <= 8) {
+                    uint8_t idx = hot_cue_num - 1;  // 0-based array index
                     
-                    uint32_t entry_data = cue_data_pos + entry_header_size;
-                    uint8_t cue_point_type;
-                    uint32_t time_ms;
-                    uint32_t loop_time_ms = 0;
+                    uint32_t entry_data    = cue_data_pos + entry_header_size;
+                    uint8_t  cue_point_type = file_data[entry_data];       // +0x10: 1=cue 2=loop
+                    uint32_t time_ms        = read_be32(&file_data[entry_data + 4]);  // +0x14
+                    uint32_t loop_time_ms   = read_be32(&file_data[entry_data + 8]);  // +0x18
+
+                    data->hot_cues[idx].active      = 1;
+                    data->hot_cues[idx].type        = cue_point_type;
+                    data->hot_cues[idx].time_ms     = time_ms;
+                    data->hot_cues[idx].loop_end_ms = (cue_point_type == 2) ? loop_time_ms : 0;
+
+                    // Color: at offset 0x2c from entry start (comment starts there; len_comment=0 for DAT)
+                    // DAT/PCPT entries don't carry RGB — leave color zeroed (caller sets default)
                     
-                    if (is_nxs2) {
-                        // PCO2/PCP2 format
-                        cue_point_type = file_data[entry_data];
-                        time_ms = read_be32(&file_data[entry_data + 4]);
-                        loop_time_ms = read_be32(&file_data[entry_data + 8]);
-                    } else {
-                        // PCOB/PCPT format
-                        cue_point_type = file_data[entry_data];
-                        time_ms = read_be32(&file_data[entry_data + 4]);
-                        loop_time_ms = read_be32(&file_data[entry_data + 8]);
-                    }
-                    
-                    data->hot_cues[idx].start_pos = ms_to_frames(time_ms);
-                    data->hot_cues[idx].type = 2;  // Mark as active
-                    
-                    Serial.printf("    start=%u ms (%u frames), type=%u\n", 
-                                  time_ms, data->hot_cues[idx].start_pos, cue_point_type);
-                    
-                    if (cue_point_type == 2) {  // Loop
-                        data->hot_cues[idx].type |= 0x1;  // Mark as loop
-                        data->hot_cues[idx].end_pos = ms_to_frames(loop_time_ms);
-                        Serial.printf("    Loop end=%u ms (%u frames)\n", 
-                                      loop_time_ms, data->hot_cues[idx].end_pos);
-                    }
+                    Serial.printf("    slot=%u (%c), time=%u ms, type=%u\n",
+                                  hot_cue_num, 'A' + idx, time_ms, cue_point_type);
                 }
                 
                 cue_data_pos += entry_size;
@@ -638,16 +631,13 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
                 uint32_t time_ms = read_be32(&file_data[entry_data + 4]);
                 uint32_t loop_time_ms = read_be32(&file_data[entry_data + 8]);
                 
-                data->memory_cues[i].start_pos = ms_to_frames(time_ms);
-                data->memory_cues[i].type = 2;  // Mark as active
+                data->memory_cues[i].active      = 1;
+                data->memory_cues[i].type        = cue_point_type;
+                data->memory_cues[i].time_ms     = time_ms;
+                data->memory_cues[i].loop_end_ms = (cue_point_type == 2) ? loop_time_ms : 0;
                 
-                Serial.printf("  Memory Cue %u: start=%u ms (%u frames)\n", 
-                              i, time_ms, data->memory_cues[i].start_pos);
+                Serial.printf("  Memory Cue %u: start=%u ms\n", i, time_ms);
                 
-                if (cue_point_type == 2) {
-                    data->memory_cues[i].type |= 0x1;
-                    data->memory_cues[i].end_pos = ms_to_frames(loop_time_ms);
-                }
                 
                 cue_data_pos += entry_size;
             }
@@ -723,16 +713,13 @@ uint16_t anlz_parse_dat(const uint8_t* file_data, uint32_t file_size, AnlzData* 
             uint32_t time_ms = read_be32(&file_data[entry_data + 4]);
             uint32_t loop_time_ms = read_be32(&file_data[entry_data + 8]);
             
-            data->memory_cues[i].start_pos = ms_to_frames(time_ms);
-            data->memory_cues[i].type = 2;
-            
-            Serial.printf("  Memory Cue %u: start=%u ms (%u frames)\n", 
-                          i, time_ms, data->memory_cues[i].start_pos);
-            
-            if (cue_point_type == 2) {
-                data->memory_cues[i].type |= 0x1;
-                data->memory_cues[i].end_pos = ms_to_frames(loop_time_ms);
-            }
+                data->memory_cues[i].active      = 1;
+                data->memory_cues[i].type        = cue_point_type;
+                data->memory_cues[i].time_ms     = time_ms;
+                data->memory_cues[i].loop_end_ms = (cue_point_type == 2) ? loop_time_ms : 0;
+
+                Serial.printf("  Memory Cue %u: start=%u ms\n", i, time_ms);
+                
             
             cue_data_pos += entry_size;
         }
@@ -917,6 +904,132 @@ uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzDa
     
     // PWV7 not found
     return ANLZ_ERR_EXT_PWV3_INVALID;
+}
+
+// ── anlz_parse_ext_cues ──────────────────────────────────────────────────────
+// Parses PCO2 (hot cues) and the second PCO2 (memory cues) from the .EXT file.
+// This is the authoritative source for cue data on nxs2 hardware:
+//   - Supports all 8 hot cue slots (A-H)
+//   - Carries per-cue RGB color
+//   - Has comments (ignored here, extend if needed)
+//
+// Call AFTER anlz_parse_dat() so audio_path / beat grid are already populated.
+// The function overwrites hot_cues[] and memory_cues[] entirely.
+uint16_t anlz_parse_ext_cues(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+    if (!file_data || !data || file_size < 12) return ANLZ_ERR_EXT_PWV3_INVALID;
+
+    uint32_t header_file_size = read_be32(&file_data[8]);
+    if (header_file_size != file_size) return ANLZ_ERR_EXT_SIZE_MISMATCH;
+
+    // Clear existing cue data
+    memset(data->hot_cues,    0, sizeof(data->hot_cues));
+    memset(data->memory_cues, 0, sizeof(data->memory_cues));
+    data->hot_cue_count    = 0;
+    data->memory_cue_count = 0;
+
+    // Walk all tags in the file
+    uint32_t pos = read_be32(&file_data[4]);
+    int pco2_found = 0;
+
+    while (pos + 12 < file_size && pco2_found < 2) {
+        uint32_t tag      = read_be32(&file_data[pos]);
+        uint32_t tag_size = read_be32(&file_data[pos + 8]);
+
+        if (tag != TAG_PCO2) {
+            if (tag_size == 0 || pos + tag_size > file_size) break;
+            pos += tag_size;
+            continue;
+        }
+
+        // ── Found a PCO2 ──────────────────────────────────────────────────
+        pco2_found++;
+        uint32_t cue_header_size = read_be32(&file_data[pos + 4]);
+        uint32_t cue_type        = read_be32(&file_data[pos + 12]);  // 0=memory 1=hot
+        uint16_t num_cues        = read_be16(&file_data[pos + 16]);
+
+        Serial.printf("EXT PCO2 #%d: type=%u (%s), count=%u\n",
+                      pco2_found, cue_type,
+                      cue_type == 1 ? "hot cues" : "memory cues", num_cues);
+
+        uint32_t entry_pos = pos + cue_header_size;
+        uint32_t end_pos   = pos + tag_size;
+        uint8_t  parsed    = 0;
+
+        for (uint16_t i = 0; i < num_cues && entry_pos + 12 < end_pos; i++) {
+            if (read_be32(&file_data[entry_pos]) != TAG_PCP2) break;
+
+            uint32_t entry_header = read_be32(&file_data[entry_pos + 4]);   // always 0x10
+            uint32_t entry_size   = read_be32(&file_data[entry_pos + 8]);
+            uint32_t slot         = read_be32(&file_data[entry_pos + 12]);  // 1-8 for hot, 0 for mem
+
+            // PCP2 data fields (relative to entry_pos):
+            //  +0x10  type        (1=cue, 2=loop)
+            //  +0x11  unknown[3]  (always 0x00 0x03 0xe8)
+            //  +0x14  time_ms     (4 bytes BE)
+            //  +0x18  loop_end_ms (4 bytes BE)
+            //  +0x1c  color_id    (1 byte, 0 = use RGB below)
+            //  +0x1d  unknown[7]
+            //  +0x24  lnumerator  (2 bytes)
+            //  +0x26  ldenominator(2 bytes)
+            //  +0x28  len_comment (4 bytes)
+            //  +0x2c  comment     (len_comment bytes, UTF-16-BE)
+            //  +0x2c+len_comment  color_code(1) R(1) G(1) B(1)
+
+            uint32_t d         = entry_pos + entry_header;  // points to +0x10
+            uint8_t  cpt       = file_data[d];
+            uint32_t time_ms   = read_be32(&file_data[d + 4]);
+            uint32_t loop_ms   = read_be32(&file_data[d + 8]);
+            uint32_t len_comment = 0;
+            uint8_t  cr = 0, cg = 0, cb = 0;
+
+            // len_comment is at d+0x18 (= entry_pos + 0x10 + 0x18 = entry_pos + 0x28)
+            if (entry_pos + 0x2c <= end_pos)
+                len_comment = read_be32(&file_data[d + 0x18]);
+
+            // Color follows comment at entry_pos + 0x2c + len_comment
+            // (comment field starts at byte 0x2c of the entry; color immediately after)
+            uint32_t color_off = entry_pos + 0x2c + len_comment;  // absolute offset
+            if (color_off + 4 <= entry_pos + entry_size && color_off + 4 <= end_pos) {
+                // color_off+0: color_code (ignore, use RGB)
+                cr = file_data[color_off + 1];
+                cg = file_data[color_off + 2];
+                cb = file_data[color_off + 3];
+            }
+
+            if (cue_type == 1 && slot >= 1 && slot <= 8) {
+                uint8_t idx = slot - 1;
+                data->hot_cues[idx].active      = 1;
+                data->hot_cues[idx].type        = cpt;
+                data->hot_cues[idx].time_ms     = time_ms;
+                data->hot_cues[idx].loop_end_ms = (cpt == 2) ? loop_ms : 0;
+                data->hot_cues[idx].color_r     = cr;
+                data->hot_cues[idx].color_g     = cg;
+                data->hot_cues[idx].color_b     = cb;
+                parsed++;
+                Serial.printf("  Hot cue %c: time=%u ms, rgb=#%02x%02x%02x\n",
+                              'A' + idx, time_ms, cr, cg, cb);
+            } else if (cue_type == 0 && parsed < 8) {
+                uint8_t idx = parsed;
+                data->memory_cues[idx].active      = 1;
+                data->memory_cues[idx].type        = cpt;
+                data->memory_cues[idx].time_ms     = time_ms;
+                data->memory_cues[idx].loop_end_ms = (cpt == 2) ? loop_ms : 0;
+                parsed++;
+                Serial.printf("  Memory cue %u: time=%u ms\n", idx, time_ms);
+            }
+
+            entry_pos += entry_size;
+        }
+
+        if (cue_type == 1) data->hot_cue_count    = parsed;
+        else               data->memory_cue_count  = parsed;
+
+        pos += tag_size;
+    }
+
+    Serial.printf("EXT cues: %u hot, %u memory\n",
+                  data->hot_cue_count, data->memory_cue_count);
+    return ANLZ_OK;
 }
 
 #endif // REKORDBOX_PARSER_IMPLEMENTATION

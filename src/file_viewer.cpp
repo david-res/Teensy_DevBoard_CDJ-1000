@@ -141,10 +141,18 @@ void create_dj_browser_ui()
   	//rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
     lv_timer_create(usb_poll_cb, 500, NULL);  // Poll USB every 500ms
 
-    usb_status_label = lv_label_create(filesScreen); // Placeholder label while waiting for USB connection   
-    lv_label_set_text(usb_status_label, "No USB device detected..");
-    lv_obj_set_style_text_font(usb_status_label, &exo2_32, 0);
-    lv_obj_set_flex_align(usb_status_label, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    if(rekordboxDrive) {
+        usb_was_connected = true;
+        rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
+        create_playlist_panel(filesScreen);
+        create_track_list_panel(filesScreen);
+    }
+    else{
+        usb_status_label = lv_label_create(filesScreen); // Placeholder label while waiting for USB connection   
+        lv_label_set_text(usb_status_label, "No USB device detected..");
+        lv_obj_set_style_text_font(usb_status_label, &exo2_32, 0);
+        lv_obj_set_flex_align(usb_status_label, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    }
 
     //create_track_list_panel(filesScreen);
 }
