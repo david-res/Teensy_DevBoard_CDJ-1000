@@ -266,51 +266,116 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
     uint8_t* waveform = NULL;
     uint32_t entries = 0;
 
-
-    uint16_t err = extractDynamicWaveform(filepath, &waveform, &entries);
-    
-    if (err != ANLZ_OK) {
-        Serial.printf("Failed to load dynamic waveform: error %d\n", err);
-        return false;
-    }
-    Serial.printf("Dynamic waveform extracted successfully: %d entries\n", entries);
-    
-    dynamicWaveformEntries = entries;
-    all_long = entries;
-    
-    Serial.printf("Allocating waveform in %s\n", WAVEFORM_LOCATION);
-    
-    // Allocate separate band buffers in EXTMEM
-    for (int i = 0; i < 3; i++) {
-      Serial.printf("Allocating band %d buffer for %d entries\n", i, entries);
-        dynamicWaveSampleData[i] = (uint8_t*)WAVEFORM_MALLOC(entries);
-        if (dynamicWaveSampleData[i] == NULL) {
-            Serial.printf("Out of %s for band %d\n", WAVEFORM_LOCATION, i);
-            // Cleanup
-            for (int j = 0; j < i; j++) {
-                WAVEFORM_FREE(dynamicWaveSampleData[j]);
-                dynamicWaveSampleData[j] = NULL;
-            }
-            free(waveform);
-            dynamicWaveformEntries = 0;
+    if (waveformType == WAVEFORM_3BAND) {
+        Serial.println("Loading 3Band waveform...");
+        uint16_t err = extractDynamicWaveform3Band(filepath, &waveform, &entries);
+        
+        if (err != ANLZ_OK) {
+            Serial.printf("Failed to load dynamic waveform: error %d\n", err);
             return false;
         }
+        Serial.printf("Dynamic waveform extracted successfully: %d entries\n", entries);
+        
+        dynamicWaveformEntries = entries;
+        all_long = entries;
+        
+        Serial.printf("Allocating waveform in %s\n", WAVEFORM_LOCATION);
+        
+        // Allocate separate band buffers in EXTMEM
+        for (int i = 0; i < 3; i++) {
+        Serial.printf("Allocating band %d buffer for %d entries\n", i, entries);
+            dynamicWaveSampleData[i] = (uint8_t*)WAVEFORM_MALLOC(entries);
+            if (dynamicWaveSampleData[i] == NULL) {
+                Serial.printf("Out of %s for band %d\n", WAVEFORM_LOCATION, i);
+                // Cleanup
+                for (int j = 0; j < i; j++) {
+                    WAVEFORM_FREE(dynamicWaveSampleData[j]);
+                    dynamicWaveSampleData[j] = NULL;
+                }
+                free(waveform);
+                dynamicWaveformEntries = 0;
+                return false;
+            }
+        }
+        Serial.println("Waveform allocated successfully");
+        // De-interleave to LOW-MID-HIGH order
+        for (uint32_t i = 0; i < entries; i++) {
+            dynamicWaveSampleData[0][i] = waveform[i * 3 + 0];  // LOW
+            dynamicWaveSampleData[1][i] = waveform[i * 3 + 1];  // MID
+            dynamicWaveSampleData[2][i] = waveform[i * 3 + 2];  // HIGH
+        }
+        
+        Serial.println("Waveform de-interleaved successfully");
+        free(waveform);
+        
+        Serial.printf("Dynamic waveform loaded in %s: %d entries, %d KB\n", 
+                    WAVEFORM_LOCATION, entries, (entries * 3) / 1024);
+        
+        return true;
     }
-    Serial.println("Waveform allocated successfully");
-    // De-interleave to LOW-MID-HIGH order
-    for (uint32_t i = 0; i < entries; i++) {
-        dynamicWaveSampleData[0][i] = waveform[i * 3 + 0];  // LOW
-        dynamicWaveSampleData[1][i] = waveform[i * 3 + 1];  // MID
-        dynamicWaveSampleData[2][i] = waveform[i * 3 + 2];  // HIGH
-    }
-    
+    if (waveformType == WAVEFORM_RGB) {
+         Serial.println("Loading RGB waveform...");
+        uint16_t err = extractDynamicWaveformRGB(filepath, &waveform, &entries);
+        
+        if (err != ANLZ_OK) {
+            Serial.printf("Failed to load dynamic waveform: error %d\n", err);
+            return false;
+        }
+        Serial.printf("Dynamic waveform extracted successfully: %d entries\n", entries);
+        
+        dynamicWaveformEntries = entries;
+        all_long = entries;
+
+        // Allocate separate band buffers in EXTMEM
+        for (int i = 0; i < 3; i++) {
+        Serial.printf("Allocating band %d buffer for %d entries\n", i, entries);
+            dynamicWaveSampleData[i] = (uint8_t*)WAVEFORM_MALLOC(entries);
+            if (dynamicWaveSampleData[i] == NULL) {
+                Serial.printf("Out of %s for band %d\n", WAVEFORM_LOCATION, i);
+                // Cleanup
+                for (int j = 0; j < i; j++) {
+                    WAVEFORM_FREE(dynamicWaveSampleData[j]);
+                    dynamicWaveSampleData[j] = NULL;
+                }
+                free(waveform);
+                dynamicWaveformEntries = 0;
+                return false;
+            }
+        }
+        Serial.println("Waveform allocated successfully");
+        // De-interleave to LOW-MID-HIGH order
+        for (uint32_t i = 0; i < entries; i++) {
+            // Reconstruct big-endian uint16 from raw bytes
+            uint16_t entry = ((uint16_t)waveform[i*2] << 8) | waveform[i*2 + 1];
+
+            // Unpack RGB333
+            uint8_t r3 = (entry >> 13) & 0x07;
+            uint8_t g3 = (entry >> 10) & 0x07;
+            uint8_t b3 = (entry >>  7) & 0x07;
+            uint8_t height = (entry >> 2) & 0x1F;
+
+            // Expand RGB333 → RGB565
+            // R: 3→5 bits  (r3 << 2) fills top, duplicate top bits to fill bottom
+            // G: 3→6 bits  (g3 << 3)
+            // B: 3→5 bits  (b3 << 2)
+            uint8_t r5 = (r3 << 2) | (r3 >> 1);  // 0-7 → 0-31
+            uint8_t g6 = (g3 << 3) | g3;          // 0-7 → 0-63
+            uint8_t b5 = (b3 << 2) | (b3 >> 1);  // 0-7 → 0-31
+
+            // Pack into RGB565 uint16
+            uint16_t rgb565 = ((uint16_t)r5 << 11) | ((uint16_t)g6 << 5) | b5;
+
+            dynamicWaveSampleData[0][i] = (uint8_t)(rgb565 >> 8);   // high byte
+            dynamicWaveSampleData[1][i] = (uint8_t)(rgb565 & 0xFF); // low byte
+            dynamicWaveSampleData[2][i] = map(height, 0,31,1, 127);
+            Serial.printf("Entry %u: RGB333=(%u,%u,%u) Height=%u → RGB565=0x%04X\n", i, r3, g3, b3, height, rgb565);
+        }
     Serial.println("Waveform de-interleaved successfully");
     free(waveform);
-    
-    Serial.printf("Dynamic waveform loaded in %s: %d entries, %d KB\n", 
-                  WAVEFORM_LOCATION, entries, (entries * 3) / 1024);
-    
     return true;
+
+    }
+    return false;
 }
 
 FLASHMEM void drawOverviewCanvas()
@@ -723,10 +788,17 @@ void create_middle_container(Track * track) {
     // Create canvas buffer (16-bit RGB565)
     lv_canvas_set_buffer(daynamic_waveform_canvas, dynamicCanvasBuffer, chartWidth, chartHeight, LV_IMG_CF_TRUE_COLOR);
 
-    String correctedPath = String(track->anlz_ex2_path);
+    String correctedPath;
+    if (waveformType == WAVEFORM_RGB) {
+        correctedPath = String(track->anlz_ext_path);
+    }
+    if (waveformType == WAVEFORM_3BAND) {
+         correctedPath = String(track->anlz_ex2_path);
+    }
     if (correctedPath.startsWith("Y/")) {
         correctedPath = correctedPath.substring(2);  // Remove "Y/"
     }
+    Serial.printf("Loading dynamic waveform from: %s\n", correctedPath.c_str());
 
     loadDynamicWaveformForTrack(correctedPath.c_str());
 
@@ -776,7 +848,7 @@ void create_bottom_container(Track * track) {
     }
     
     
-    uint16_t err = extractPreviewWaveform(correctedPath.c_str(), overViewWaveSampleData);
+    uint16_t err = extractPreviewWaveform3Band(correctedPath.c_str(), overViewWaveSampleData);
     //uint16_t err = extractPreviewWaveform(track->anlz_ex2_path, overViewWaveSampleData);
     if (err == ANLZ_OK) {
         Serial.println("Preview loaded!");
@@ -1443,11 +1515,19 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
             beatX++;
             }
             if(adr<=all_long){
+                if (waveformType == WAVEFORM_3BAND){
             // --- Draw 3 waveform bands (back to front so band 0 is on top) --
-                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
-                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
-                drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
-            }
+                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
+                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
+                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
+                }
+
+                if (waveformType == WAVEFORM_RGB) {
+                    uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
+                    uint8_t  height = dynamicWaveSampleData[2][index] ;  // scale 0-31 → 0-chartHeightHalf
+                    drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
+                }
+                            }
 
             // --- Track bar position at play head ---
             if (x == playHeadX) {

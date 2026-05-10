@@ -238,6 +238,7 @@ uint8_t CUE_OPERATION = 0;
 
 uint8_t dSHOW = TRACK_LIST;
 uint8_t REMAIN_ENABLE = 1;
+uint8_t waveformType = WAVEFORM_RGB;
 
 
 void ledTIMER();
@@ -1472,7 +1473,7 @@ void DMA2_Stream5_IRQHandler(void){
 
 		uint32_t ptch;
 		uint8_t acc_t;
-		if(CheckRXCRC() == 0) return;
+		if(CheckRXCRC() == 1) {
 		
 		if((Rbuffer[14]&0x1) && PLAY_BUTTON_pressed==0)										///////////PLAY button
 			{
@@ -2686,7 +2687,7 @@ void DMA2_Stream5_IRQHandler(void){
 			Tbuffer[25] = zi;
 			}
 
-			
+		}
 			CheckTXCRC();
 			/*
 			Serial.printf ("\nRECEIVED ");

@@ -193,7 +193,7 @@ uint16_t anlz_parse_ext_cues(const uint8_t* file_data, uint32_t file_size, AnlzD
  * @param data Pointer to AnlzData structure to update
  * @return Error code (0 = success)
  */
-uint16_t anlz_parse_preview(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
+uint16_t anlz_parse_preview_3band(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
 
 /**
  * Parse PWV7 high-resolution waveform from .2EX file (NEW)
@@ -203,7 +203,7 @@ uint16_t anlz_parse_preview(const uint8_t* file_data, uint32_t file_size, AnlzDa
  * @param data Pointer to AnlzData structure to update
  * @return Error code (0 = success)
  */
-uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
+uint16_t anlz_parse_dynamic_3band(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
 
 /**
  * Read 32-bit big-endian value
@@ -216,6 +216,9 @@ static inline uint32_t read_be32(const uint8_t* data) {
            ((uint32_t)data[2] << 8) |
            ((uint32_t)data[3]);
 }
+
+uint16_t anlz_parse_preview_rgb(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
+uint16_t anlz_parse_dynamic_rgb(const uint8_t* file_data, uint32_t file_size, AnlzData* data);
 
 /**
  * Read 16-bit big-endian value
@@ -302,7 +305,7 @@ static inline int verify_tag(const uint8_t* data, uint32_t pos, uint32_t expecte
  * - Individual values: 0-50 → 0-21 (so max stacked = 63, fits in 64)
  * - This prevents overflow when stacking all three bands
  */
-static void process_preview_waveform(const uint8_t* raw_data, uint8_t output[3][PREVIEW_WAVEFORM_WIDTH]) {
+static void process_preview_waveform_3band(const uint8_t* raw_data, uint8_t output[3][PREVIEW_WAVEFORM_WIDTH]) {
     // Downsample from 1200 to 800 samples
     // Each output sample represents 1.5 input samples
     
@@ -325,6 +328,37 @@ static void process_preview_waveform(const uint8_t* raw_data, uint8_t output[3][
         output[0][i] = scale_waveform_value(mid, PREVIEW_WAVEFORM_MAX_INDIVIDUAL, REKORDBOX_INDIVIDUAL_MAX);
         output[1][i] = scale_waveform_value(high, PREVIEW_WAVEFORM_MAX_INDIVIDUAL, REKORDBOX_INDIVIDUAL_MAX);
         output[2][i] = scale_waveform_value(low, PREVIEW_WAVEFORM_MAX_INDIVIDUAL, REKORDBOX_INDIVIDUAL_MAX);
+    }
+}
+
+static void process_preview_waveform_rgb(const uint8_t* raw_data, uint8_t output[3][PREVIEW_WAVEFORM_WIDTH]) {
+    // Downsample from 1200 to 800 samples
+    // Each output sample covers a 1.5-sample window — average the colors within it
+
+    for (uint16_t i = 0; i < PREVIEW_WAVEFORM_WIDTH; i++) {
+        // Fractional source window: [src_start, src_end)
+        uint32_t src_start = ((uint32_t)i       * REKORDBOX_PREVIEW_SAMPLES) / PREVIEW_WAVEFORM_WIDTH;
+        uint32_t src_end   = ((uint32_t)(i + 1) * REKORDBOX_PREVIEW_SAMPLES) / PREVIEW_WAVEFORM_WIDTH;
+
+        if (src_end > REKORDBOX_PREVIEW_SAMPLES) src_end = REKORDBOX_PREVIEW_SAMPLES;
+        if (src_end <= src_start) src_end = src_start + 1;  // always at least one sample
+
+        // Accumulate R, G, B across the window
+        uint32_t r_sum = 0, g_sum = 0, b_sum = 0;
+        uint32_t count = src_end - src_start;
+
+        for (uint32_t s = src_start; s < src_end; s++) {
+            // PWV4 entry: 6 bytes [r_lo, b_lo, g_lo, r_hi, b_hi, g_hi]
+            uint32_t offset = s * 6;
+            // Combine lo (0-7) and hi (0-31) into a 0-255 value
+            r_sum += (raw_data[offset + 3] << 3) | (raw_data[offset + 0] & 0x07);
+            g_sum += (raw_data[offset + 5] << 3) | (raw_data[offset + 2] & 0x07);
+            b_sum += (raw_data[offset + 4] << 3) | (raw_data[offset + 1] & 0x07);
+        }
+
+        output[0][i] = (uint8_t)(r_sum / count);
+        output[1][i] = (uint8_t)(g_sum / count);
+        output[2][i] = (uint8_t)(b_sum / count);
     }
 }
 
@@ -767,7 +801,7 @@ uint16_t anlz_parse_ext(const uint8_t* file_data, uint32_t file_size, AnlzData* 
     return ANLZ_OK;
 }
 
-uint16_t anlz_parse_preview(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+uint16_t anlz_parse_preview_3band(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
     // Parse PWV6 from .2EX file
     // PWV6 has 1200 entries × 3 bytes [mid, high, low]
     // Header is 20 bytes (not 14 as documented)
@@ -810,7 +844,7 @@ uint16_t anlz_parse_preview(const uint8_t* file_data, uint32_t file_size, AnlzDa
             }
             
             // Process the preview waveform
-            process_preview_waveform(&file_data[pwv6_data_start], data->preview_waveform);
+            process_preview_waveform_3band(&file_data[pwv6_data_start], data->preview_waveform);
             
             return ANLZ_OK;
         }
@@ -827,7 +861,7 @@ uint16_t anlz_parse_preview(const uint8_t* file_data, uint32_t file_size, AnlzDa
     return ANLZ_ERR_EXT_PWV3_INVALID;
 }
 
-uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+uint16_t anlz_parse_dynamic_3band(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
     // Parse PWV7 from .2EX file
     // PWV7 has variable entries × 3 bytes [mid, high, low]
     // Header is 24 bytes (not 14 as documented)
@@ -905,6 +939,98 @@ uint16_t anlz_parse_dynamic(const uint8_t* file_data, uint32_t file_size, AnlzDa
     // PWV7 not found
     return ANLZ_ERR_EXT_PWV3_INVALID;
 }
+
+
+
+uint16_t anlz_parse_preview_rgb(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+    // Parse PWV4 from .EXT file
+    // PWV4 has 1200 entries × 6 bytes
+
+    if (!file_data || !data || file_size < 12) return ANLZ_ERR_EXT_PWV3_INVALID;
+
+    uint32_t header_file_size = read_be32(&file_data[8]);
+    if (header_file_size != file_size) return ANLZ_ERR_EXT_SIZE_MISMATCH;
+
+    uint32_t pos = read_be32(&file_data[4]);
+
+    for (int i = 0; i < 20 && pos < file_size - 12; i++) {
+        if (verify_tag(file_data, pos, TAG_PWV4)) {
+            uint32_t pwv4_header_size = read_be32(&file_data[pos + 4]);
+            uint32_t pwv4_entry_bytes = read_be32(&file_data[pos + 12]);
+            uint32_t pwv4_num_entries = read_be32(&file_data[pos + 16]);
+
+            if (pwv4_entry_bytes != 6 || pwv4_num_entries != 1200) {
+                return ANLZ_ERR_CANNOT_READ_EXT;
+            }
+
+            uint32_t pwv4_data_start = pos + pwv4_header_size;
+            uint32_t pwv4_data_bytes = 1200 * 6;
+
+            if (pwv4_data_start + pwv4_data_bytes > file_size) {
+                return ANLZ_ERR_CANNOT_READ_EXT;
+            }
+
+            // Downsample 1200 → 800 with color averaging into preview_waveform[3][800]
+            process_preview_waveform_rgb(&file_data[pwv4_data_start], data->preview_waveform);
+
+            Serial.printf("PWV4: %u entries → %u columns (RGB)\n",
+                          pwv4_num_entries, PREVIEW_WAVEFORM_WIDTH);
+            return ANLZ_OK;
+        }
+
+        uint32_t tag_size = read_be32(&file_data[pos + 8]);
+        if (tag_size == 0 || tag_size > file_size) break;
+        pos += tag_size;
+    }
+
+    return ANLZ_ERR_EXT_PWV3_INVALID;
+}
+
+uint16_t anlz_parse_dynamic_rgb(const uint8_t* file_data, uint32_t file_size, AnlzData* data) {
+    if (!file_data || !data || file_size < 12) return ANLZ_ERR_EXT_PWV3_INVALID;
+
+    uint32_t header_file_size = read_be32(&file_data[8]);
+    if (header_file_size != file_size) return ANLZ_ERR_EXT_SIZE_MISMATCH;
+
+    uint32_t pos = read_be32(&file_data[4]);
+
+    for (int i = 0; i < 20 && pos < file_size - 24; i++) {
+        if (verify_tag(file_data, pos, TAG_PWV5)) {
+            uint32_t pwv5_header_size = read_be32(&file_data[pos + 4]);
+            uint32_t pwv5_entry_bytes = read_be32(&file_data[pos + 12]);
+            uint32_t pwv5_num_entries = read_be32(&file_data[pos + 16]);
+
+            if (pwv5_entry_bytes != 2) return ANLZ_ERR_CANNOT_READ_EXT;
+
+            uint32_t pwv5_data_start = pos + pwv5_header_size;
+            uint32_t pwv5_data_bytes = pwv5_num_entries * 2;
+
+            if (pwv5_data_start + pwv5_data_bytes > file_size) return ANLZ_ERR_CANNOT_READ_EXT;
+
+            if (data->dynamic_waveform) {
+                free(data->dynamic_waveform);
+                data->dynamic_waveform = nullptr;
+            }
+
+            data->dynamic_waveform = (uint8_t*)malloc(pwv5_data_bytes);
+            if (!data->dynamic_waveform) return ANLZ_ERR_CANNOT_READ_EXT;
+
+            data->dynamic_waveform_entries = pwv5_num_entries;
+
+            memcpy(data->dynamic_waveform, &file_data[pwv5_data_start], pwv5_data_bytes);
+
+            return ANLZ_OK;
+        }
+
+        uint32_t tag_size = read_be32(&file_data[pos + 8]);
+        if (tag_size == 0 || tag_size > file_size) break;
+        pos += tag_size;
+    }
+
+    return ANLZ_ERR_EXT_PWV3_INVALID;
+}
+
+
 
 // ── anlz_parse_ext_cues ──────────────────────────────────────────────────────
 // Parses PCO2 (hot cues) and the second PCO2 (memory cues) from the .EXT file.

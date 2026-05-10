@@ -25,7 +25,7 @@ void anlz_setFS(FS& fs) {
 
 // ── Implementations ──────────────────────────────────────────────────────────
 
-uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]) {
+uint16_t extractPreviewWaveform3Band(const char* filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]) {
     ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
     File file = ANLZ_FILE_OPEN(filepath);
     if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
@@ -40,7 +40,7 @@ uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3
 
     AnlzData temp_data;
     anlz_init(&temp_data);
-    uint16_t error = anlz_parse_preview(buffer, file_size, &temp_data);
+    uint16_t error = anlz_parse_preview_3band(buffer, file_size, &temp_data);
     free(buffer);
 
     if (error == ANLZ_OK)
@@ -49,7 +49,7 @@ uint16_t extractPreviewWaveform(const char* filepath, uint8_t preview_waveform[3
     return error;
 }
 
-uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform, uint32_t* num_entries) {
+uint16_t extractDynamicWaveform3Band(const char* filepath, uint8_t** dynamic_waveform, uint32_t* num_entries) {
     ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
     File file = ANLZ_FILE_OPEN(filepath);
     if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
@@ -67,7 +67,7 @@ uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform
 
     AnlzData temp_data;
     anlz_init(&temp_data);
-    uint16_t error = anlz_parse_dynamic(buffer, file_size, &temp_data);
+    uint16_t error = anlz_parse_dynamic_3band(buffer, file_size, &temp_data);
     free(buffer);
 
     if (error == ANLZ_OK) {
@@ -77,6 +77,65 @@ uint16_t extractDynamicWaveform(const char* filepath, uint8_t** dynamic_waveform
 
     return error;
 }
+
+uint16_t extractPreviewWaveformRGB(const char* filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]) {
+    ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
+    File file = ANLZ_FILE_OPEN(filepath);
+    if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
+
+    uint32_t file_size = ANLZ_FILE_SIZE(file);
+    uint8_t* buffer = (uint8_t*)malloc(file_size);
+    if (!buffer) { ANLZ_FILE_CLOSE(file); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    uint32_t bytes_read = ANLZ_FILE_READ_DATA(file, buffer, file_size);
+    ANLZ_FILE_CLOSE(file);
+    if (bytes_read != file_size) { free(buffer); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    AnlzData temp_data;
+    anlz_init(&temp_data);
+    uint16_t error = anlz_parse_preview_rgb(buffer, file_size, &temp_data);
+    free(buffer);
+
+    if (error == ANLZ_OK)
+        memcpy(preview_waveform, temp_data.preview_waveform, sizeof(temp_data.preview_waveform));
+
+    anlz_free(&temp_data);
+    return error;
+}
+
+uint16_t extractDynamicWaveformRGB(const char* filepath, uint8_t** dynamic_waveform, uint32_t* num_entries) {
+    ANLZ_CHECK_FS(ANLZ_ERR_CANNOT_OPEN_EXT);
+    File file = ANLZ_FILE_OPEN(filepath);
+    if (!ANLZ_FILE_VALID(file)) return ANLZ_ERR_CANNOT_OPEN_EXT;
+
+    uint32_t file_size = ANLZ_FILE_SIZE(file);
+    uint8_t* buffer = (uint8_t*)malloc(file_size);
+    if (!buffer) { ANLZ_FILE_CLOSE(file); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    uint32_t bytes_read = ANLZ_FILE_READ_DATA(file, buffer, file_size);
+    ANLZ_FILE_CLOSE(file);
+    if (bytes_read != file_size) { free(buffer); return ANLZ_ERR_CANNOT_READ_EXT; }
+
+    if (*dynamic_waveform) { free(*dynamic_waveform); *dynamic_waveform = nullptr; }
+
+    // Heap allocate — AnlzData is too large for the stack
+    AnlzData* temp_data = (AnlzData*)malloc(sizeof(AnlzData));
+    if (!temp_data) { free(buffer); return ANLZ_ERR_CANNOT_READ_EXT; }
+    anlz_init(temp_data);
+
+    uint16_t error = anlz_parse_dynamic_rgb(buffer, file_size, temp_data);
+    free(buffer);
+
+    if (error == ANLZ_OK) {
+        *dynamic_waveform = temp_data->dynamic_waveform;
+        *num_entries      = temp_data->dynamic_waveform_entries;
+    }
+
+    free(temp_data);  // safe — dynamic_waveform pointer already handed off above
+    return error;
+}
+
+
 
 uint16_t extractBeatGrid(const char* filepath, BeatGridEntry** beat_grid, uint32_t* num_entries,
                          uint16_t* original_bpm, uint8_t* grid_offset) {

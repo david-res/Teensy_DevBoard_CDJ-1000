@@ -106,6 +106,9 @@ extern uint8_t Tbuffer[32];
 #define TRACK_LIST 0
 #define WAVEFORM 1
 extern uint8_t dSHOW;
+#define WAVEFORM_3BAND 0
+#define WAVEFORM_RGB 1
+extern uint8_t waveformType;
 
 extern uint8_t CUE_OPERATION;
 #define CUE_NEED_SET 1
