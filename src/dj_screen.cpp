@@ -378,34 +378,48 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
     return false;
 }
 
-FLASHMEM void drawOverviewCanvas()
+void drawOverviewCanvas()
 {
   //Clear overview canvas
   memset(overviewCanvasBuffer, 0, PREVIEW_WAVEFORM_WIDTH * overviewChartHeight * 2);
 
-  for (uint16_t x = 0; x < PREVIEW_WAVEFORM_WIDTH; x++) {
-    // Stack from bottom to top: MID (white) → HIGH (orange) → LOW (blue)
-    // overViewWaveSampleData[0] = MID
-    // overViewWaveSampleData[1] = HIGH  
-    // overViewWaveSampleData[2] = LOW
-    
-    uint8_t mid_height = overViewWaveSampleData[0][x];
-    uint8_t high_height = overViewWaveSampleData[1][x];
-    uint8_t low_height = overViewWaveSampleData[2][x];
-    
-    // Calculate cumulative heights for stacking
-    uint8_t base = 0;  // Start from bottom
-    
-    // Draw MID (white) at bottom
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_height), mid_height, waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
-    base += mid_height;
-    
-    // Draw HIGH (orange) on top of MID
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_height), high_height, waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
-    base += high_height;
-    
-    // Draw LOW (blue) on top of HIGH
-    drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_height), low_height, waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+  if(waveformType == WAVEFORM_RGB){
+
+    for (uint16_t x = 0; x < PREVIEW_WAVEFORM_WIDTH; x++) {
+
+        uint16_t color  = ((uint16_t)overViewWaveSampleData[0][x] << 8) | overViewWaveSampleData[1][x];
+        uint8_t height = (overViewWaveSampleData[2][x] * 64) / 255;
+
+        drawFastVLine16BitOverview(x, overviewChartHeight - height, height, color, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+    }
+  }
+
+
+  if(waveformType == WAVEFORM_3BAND){
+    for (uint16_t x = 0; x < PREVIEW_WAVEFORM_WIDTH; x++) {
+        // Stack from bottom to top: MID (white) → HIGH (orange) → LOW (blue)
+        // overViewWaveSampleData[0] = MID
+        // overViewWaveSampleData[1] = HIGH  
+        // overViewWaveSampleData[2] = LOW
+        
+        uint8_t mid_height = overViewWaveSampleData[0][x];
+        uint8_t high_height = overViewWaveSampleData[1][x];
+        uint8_t low_height = overViewWaveSampleData[2][x];
+        
+        // Calculate cumulative heights for stacking
+        uint8_t base = 0;  // Start from bottom
+        
+        // Draw MID (white) at bottom
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_height), mid_height, waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+        base += mid_height;
+        
+        // Draw HIGH (orange) on top of MID
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_height), high_height, waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+        base += high_height;
+        
+        // Draw LOW (blue) on top of HIGH
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_height), low_height, waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+    }
   }
   
   //Invalidate canvas, as this is updated done rarely
@@ -842,14 +856,31 @@ void create_bottom_container(Track * track) {
     //lv_obj_clear_flag(static_waveform_canvas, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_IGNORE_LAYOUT);
 
     Serial.printf("path to anlz: %s\n", track->anlz_ex2_path);
-    String correctedPath = String(track->anlz_ex2_path);
+    String correctedPath;
+    uint16_t err;
+    if (waveformType == WAVEFORM_RGB) {
+        correctedPath = String(track->anlz_ext_path);
+        if (correctedPath.startsWith("Y/")) {
+            correctedPath = correctedPath.substring(2);  // Remove "Y/"
+            }
+        err = extractPreviewWaveformRGB(correctedPath.c_str(), overViewWaveSampleData);
+    }
+    if (waveformType == WAVEFORM_3BAND) {
+         correctedPath = String(track->anlz_ex2_path);
+         if (correctedPath.startsWith("Y/")) {
+            correctedPath = correctedPath.substring(2);  // Remove "Y/"
+            }
+        err = extractPreviewWaveform3Band(correctedPath.c_str(), overViewWaveSampleData);
+    }
     if (correctedPath.startsWith("Y/")) {
         correctedPath = correctedPath.substring(2);  // Remove "Y/"
     }
     
     
-    uint16_t err = extractPreviewWaveform3Band(correctedPath.c_str(), overViewWaveSampleData);
-    //uint16_t err = extractPreviewWaveform(track->anlz_ex2_path, overViewWaveSampleData);
+    
+    
+    
+    //uint16_t err = extractPreviewWaveformRGB(track->anlz_ex2_path, overViewWaveSampleData);
     if (err == ANLZ_OK) {
         Serial.println("Preview loaded!");
     }
@@ -1362,10 +1393,9 @@ void ShowPhaseMeter(uint16_t phase)
 // The cursor is 2px wide, so valid range is 0 to chartWidth-2
 FASTRUN void updateOverviewWaveform(uint16_t Tpos)
 {
-  static uint16_t previousPos = 0xFFFF;  // Invalid initial value to force first draw
+  static uint16_t previousPos = 0xFFFF;
 
   if (Tpos > chartWidth - 2) return;
-
   if (previousPos == Tpos) return;
 
   // --- Restore waveform columns under old cursor ---
@@ -1373,39 +1403,41 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
     for (uint8_t col = 0; col < 2; col++) {
       uint16_t x = previousPos + col;
 
-      // Clear the full column to black
-      drawFastVLine16BitOverview(x, 0, overviewChartHeight, 0x0000,overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+      drawFastVLine16BitOverview(x, 0, overviewChartHeight, 0x0000, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
 
-      // Redraw stacked waveform: MID (bottom), HIGH (middle), LOW (top)
-      uint8_t mid_h  = overViewWaveSampleData[0][x];
-      uint8_t high_h = overViewWaveSampleData[1][x];
-      uint8_t low_h  = overViewWaveSampleData[2][x];
+      if (waveformType == WAVEFORM_RGB) {
+        uint16_t color  = ((uint16_t)overViewWaveSampleData[0][x] << 8) | overViewWaveSampleData[1][x];
+        uint8_t height = (overViewWaveSampleData[2][x] * 64) / 255;
+        drawFastVLine16BitOverview(x, overviewChartHeight - height, height, color, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+      }
 
-      uint8_t base = 0;
+      if (waveformType == WAVEFORM_3BAND) {
+        uint8_t mid_h  = overViewWaveSampleData[0][x];
+        uint8_t high_h = overViewWaveSampleData[1][x];
+        uint8_t low_h  = overViewWaveSampleData[2][x];
+        uint8_t base   = 0;
 
-      drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_h), mid_h,
-                                 waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
-      base += mid_h;
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + mid_h), mid_h,
+                                   waveformColors[0], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+        base += mid_h;
 
-      drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_h), high_h,
-                                 waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
-      base += high_h;
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + high_h), high_h,
+                                   waveformColors[1], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+        base += high_h;
 
-      drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_h), low_h,
-                                 waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+        drawFastVLine16BitOverview(x, overviewChartHeight - (base + low_h), low_h,
+                                   waveformColors[2], overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+      }
     }
   }
 
   // --- Draw new cursor (2px wide, white) ---
-  drawFastVLine16BitOverview(Tpos,     0, overviewChartHeight, 0xFFFF,
-                             overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
-  drawFastVLine16BitOverview(Tpos + 1, 0, overviewChartHeight, 0xFFFF,
-                             overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+  drawFastVLine16BitOverview(Tpos,     0, overviewChartHeight, 0xFFFF, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
+  drawFastVLine16BitOverview(Tpos + 1, 0, overviewChartHeight, 0xFFFF, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
 
-    lv_obj_set_size(progress_line, Tpos, 3);
-    previousPos = Tpos;
+  lv_obj_set_size(progress_line, Tpos, 3);
+  previousPos = Tpos;
 
-  // Invalidate so LVGL redraws
   lv_obj_invalidate(static_waveform_canvas);
 }
 

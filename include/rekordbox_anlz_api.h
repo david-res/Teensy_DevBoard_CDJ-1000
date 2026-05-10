@@ -15,7 +15,7 @@ void anlz_setFS(FS& fs);
 
 uint16_t extractPreviewWaveform3Band(const char* filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]);
 uint16_t extractDynamicWaveform3Band(const char* filepath, uint8_t** dynamic_waveform, uint32_t* num_entries);
-uint16_t extractPreviewWaveformRGB(const char* ext_filepath, uint8_t** color_preview, uint32_t* num_entries);
+uint16_t extractPreviewWaveformRGB(const char* ext_filepath, uint8_t preview_waveform[3][PREVIEW_WAVEFORM_WIDTH]);
 uint16_t extractDynamicWaveformRGB(const char* ext_filepath, uint8_t** color_detail, uint32_t* num_entries);
 uint16_t extractBeatGrid(const char* filepath, BeatGridEntry** beat_grid, uint32_t* num_entries,
                          uint16_t* original_bpm, uint8_t* grid_offset);

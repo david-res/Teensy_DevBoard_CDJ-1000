@@ -332,33 +332,44 @@ static void process_preview_waveform_3band(const uint8_t* raw_data, uint8_t outp
 }
 
 static void process_preview_waveform_rgb(const uint8_t* raw_data, uint8_t output[3][PREVIEW_WAVEFORM_WIDTH]) {
-    // Downsample from 1200 to 800 samples
-    // Each output sample covers a 1.5-sample window — average the colors within it
-
     for (uint16_t i = 0; i < PREVIEW_WAVEFORM_WIDTH; i++) {
-        // Fractional source window: [src_start, src_end)
         uint32_t src_start = ((uint32_t)i       * REKORDBOX_PREVIEW_SAMPLES) / PREVIEW_WAVEFORM_WIDTH;
         uint32_t src_end   = ((uint32_t)(i + 1) * REKORDBOX_PREVIEW_SAMPLES) / PREVIEW_WAVEFORM_WIDTH;
 
         if (src_end > REKORDBOX_PREVIEW_SAMPLES) src_end = REKORDBOX_PREVIEW_SAMPLES;
-        if (src_end <= src_start) src_end = src_start + 1;  // always at least one sample
+        if (src_end <= src_start) src_end = src_start + 1;
 
-        // Accumulate R, G, B across the window
-        uint32_t r_sum = 0, g_sum = 0, b_sum = 0;
+        uint32_t r_sum = 0, g_sum = 0, b_sum = 0, h_sum = 0;
         uint32_t count = src_end - src_start;
 
         for (uint32_t s = src_start; s < src_end; s++) {
-            // PWV4 entry: 6 bytes [r_lo, b_lo, g_lo, r_hi, b_hi, g_hi]
-            uint32_t offset = s * 6;
-            // Combine lo (0-7) and hi (0-31) into a 0-255 value
-            r_sum += (raw_data[offset + 3] << 3) | (raw_data[offset + 0] & 0x07);
-            g_sum += (raw_data[offset + 5] << 3) | (raw_data[offset + 2] & 0x07);
-            b_sum += (raw_data[offset + 4] << 3) | (raw_data[offset + 1] & 0x07);
+            uint32_t base = s * 6;
+            uint8_t height = raw_data[base + 2];
+            uint8_t r      = raw_data[base + 3];
+            uint8_t g      = raw_data[base + 4];
+            uint8_t b      = raw_data[base + 5];
+
+            h_sum += height;
+
+            if (height > 0) {
+                r_sum += (uint32_t)r * 255 / height;
+                g_sum += (uint32_t)g * 255 / height;
+                b_sum += (uint32_t)b * 255 / height;
+            }
         }
 
-        output[0][i] = (uint8_t)(r_sum / count);
-        output[1][i] = (uint8_t)(g_sum / count);
-        output[2][i] = (uint8_t)(b_sum / count);
+        uint8_t r8 = r_sum / count;
+        uint8_t g8 = g_sum / count;
+        uint8_t b8 = b_sum / count;
+        uint8_t h8 = h_sum / count;
+
+        uint16_t rgb565 = ((uint16_t)(r8 >> 3) << 11)
+                        | ((uint16_t)(g8 >> 2) <<  5)
+                        |  (uint16_t)(b8 >> 3);
+
+        output[0][i] = (uint8_t)(rgb565 >> 8);
+        output[1][i] = (uint8_t)(rgb565 & 0xFF);
+        output[2][i] = h8;  // 0-255 → 0-31
     }
 }
 
