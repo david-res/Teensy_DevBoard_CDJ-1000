@@ -477,7 +477,7 @@ lv_indev_t * ts_indev;
 
 #if defined(USE_LCD_DISP)   || defined(TEENSY41) 
 // Touch controller instance
-Adafruit_FT6206 ctp = Adafruit_FT6206();
+Adafruit_FT6206 cpt = Adafruit_FT6206();
 #endif
 
 #if (LVGL_VERSION_MAJOR == 8)
@@ -489,8 +489,8 @@ void touch_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 {
 #if defined(USE_LCD_DISP) || defined(TEENSY41)   
     // Check if there's a new touch event from interrupt
-    TS_Point p = ctp.getPoint();
-    if (ctp.touched()) {
+    TS_Point p = cpt.getPoint();
+    if (cpt.touched()) {
         // Touch detected - map coordinates to 800x480 screen
         data->state = LV_INDEV_STATE_PRESSED;
         data->point.x = p.x;
@@ -572,7 +572,7 @@ void setup()
 
 #if defined(TEENSY41)
   // Init touch screen
-  if (ctp.begin(10)) {
+  if (cpt.begin(10)) {
     Serial.println("FT5316 touch controller initialized");
   }
 	#ifdef MK1
