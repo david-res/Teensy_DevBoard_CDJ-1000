@@ -572,7 +572,7 @@ void setup()
 
 #if defined(TEENSY41)
   // Init touch screen
-  if (ctp.begin(20)) {
+  if (ctp.begin(10)) {
     Serial.println("FT5316 touch controller initialized");
   }
 	#ifdef MK1

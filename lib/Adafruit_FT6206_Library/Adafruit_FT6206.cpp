@@ -55,6 +55,7 @@ Adafruit_FT6206::Adafruit_FT6206() { touches = 0; }
 /**************************************************************************/
 boolean Adafruit_FT6206::begin(uint8_t thresh) {
   Wire.begin();
+  Wire.setClock(400000); // 400 KHz I2C speed 
 
 #ifdef FT6206_DEBUG
   Serial.print("Vend ID: 0x");
