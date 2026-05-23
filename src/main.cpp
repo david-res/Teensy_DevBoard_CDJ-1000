@@ -125,7 +125,7 @@ static float COEF[8] = {			//////optimal 2x
 
 // Used in I2S ISR and loop 
 volatile uint32_t play_adr = 0;                           //Playing adress in samples (44100 per second)
-volatile uint32_t baseSampPerWavePoint = 294;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
+volatile uint32_t baseSampPerWavePoint = samplesPerLine;             //Number of samples per wavepoint in dynamic waveform. Updated from the database later
 volatile uint32_t all_long = 0;                           //all long of Track in 0.5*frames   150 on 1 sec
 uint16_t track_play_now = 0;                     //Track ID of the track currently playing
 uint8_t	ftp = 0;										/////temp!
@@ -147,6 +147,7 @@ uint32_t CUE_ADR = 0;					//REAL CUE adr in frames 150
 uint16_t PreviousPhase = 0xFFFF;
 uint16_t bars = 0;
 uint16_t originalBPM = 0xFFFF;						//this original BPM*100 of track (pitch = 0.00%) 	
+uint16_t samplesPerLine = 0;
 
 void CALL_CUE(void);
 
@@ -886,7 +887,7 @@ FASTRUN void loop()
   if (is_playing == true) {
 	
     if(end_of_track == 0) {
-	  RedrawWaveforms(play_adr/294);
+	  RedrawWaveforms(play_adr/samplesPerLine);
       
       	if (end_adr_valid_data < 128)
 		{
@@ -981,7 +982,7 @@ FASTRUN void loop()
   }
 
 	/*  
-  if(loop_active && CUE_ADR<LOOP_OUT && (play_adr/294)>=LOOP_OUT)					//return to cue for loop mode
+  if(loop_active && CUE_ADR<LOOP_OUT && (play_adr/samplesPerLine)>=LOOP_OUT)					//return to cue for loop mode
 		{	
 		CALL_CUE();
 		//offset_adress = 128-mem_offset_adress;	
@@ -998,14 +999,14 @@ FASTRUN void loop()
 		}
 		*/
 	
-	if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/294) >= LOOP_OUT && (reverse==0))  // forward loop
+	if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/samplesPerLine) >= LOOP_OUT && (reverse==0))  // forward loop
 	{	
 		CALL_CUE();
 		ftp = 1;	
 	}
-	else if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/294) <= CUE_ADR && (reverse==1))  // reverse loop
+	else if(loop_active && CUE_ADR < LOOP_OUT && (play_adr/samplesPerLine) <= CUE_ADR && (reverse==1))  // reverse loop
 	{	
-		SEEK_AUDIOFRAME(LOOP_OUT*294);
+		SEEK_AUDIOFRAME(LOOP_OUT*samplesPerLine);
 		ftp = 1;	
 	}
 	else if(ftp != 0 && ftp < 15)
@@ -1022,7 +1023,7 @@ FASTRUN void loop()
 		{
 		if(QUANTIZE && dSHOW==WAVEFORM)				//add calculate bars in background process
 			{
-			if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+			if(((play_adr/samplesPerLine)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
 				{
 				SET_CUE(BEATGRID[bars]);
 				}
@@ -1033,7 +1034,7 @@ FASTRUN void loop()
 			}
 		else
 			{
-			SET_CUE(play_adr/294);	
+			SET_CUE(play_adr/samplesPerLine);	
 			}
 		CUE_OPERATION = 0;	
 		}
@@ -1049,11 +1050,11 @@ FASTRUN void loop()
 			{
 				
 			JJ=0;
-			while(MEMORY_adr[0][JJ]<=(play_adr/294) && (JJ<numCuePoints-1))
+			while(MEMORY_adr[0][JJ]<=(play_adr/samplesPerLine) && (JJ<numCuePoints-1))
 				{
 				JJ++;	
 				}
-			if((play_adr/294)<MEMORY_adr[0][JJ])
+			if((play_adr/samplesPerLine)<MEMORY_adr[0][JJ])
 				{
 				if(loop_active)				//deactivate loop
 					{
@@ -1081,11 +1082,11 @@ FASTRUN void loop()
 		if(numCuePoints>0)
 			{
 			JJ = numCuePoints-1;
-			while(MEMORY_adr[0][JJ]>=(play_adr/294) && (JJ>0))
+			while(MEMORY_adr[0][JJ]>=(play_adr/samplesPerLine) && (JJ>0))
 				{
 				JJ--;	
 				}
-			if((play_adr/294)>MEMORY_adr[0][JJ])
+			if((play_adr/samplesPerLine)>MEMORY_adr[0][JJ])
 				{
 				if(loop_active)				//deactivate loop
 					{
@@ -1150,7 +1151,7 @@ FASTRUN void SAI_IRQHandler(void)
 
 
 FASTRUN void advancePosition_rezo() {
-  if(((play_adr+step_position+3)<=(294*all_long)))						//change all_long extract!
+  if(((play_adr+step_position+3)<=(samplesPerLine*all_long)))						//change all_long extract!
 			{
 			end_of_track = 0;	
 			}
@@ -1160,7 +1161,7 @@ FASTRUN void advancePosition_rezo() {
 			}			
 		
 		
-	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+	if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_position+pitch_for_slip)/10000))<(samplesPerLine*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 		{
 		slip_position+= pitch_for_slip;
 		slip_play_adr+=slip_position/10000;	
@@ -1322,7 +1323,7 @@ FASTRUN void advancePosition_claude_optimized()
 	}
 
 #if defined (TEENSY41)
-if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_play_adr+pitch_for_slip)/10000))<(294*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
+if(Tbuffer[19]&0x8 && ((slip_play_adr+((slip_play_adr+pitch_for_slip)/10000))<(samplesPerLine*all_long)) && slip_play_enable)					//SLIP MODE ENABLE
 		{
 		slip_play_adr+= pitch_for_slip;
 		slip_play_adr+=slip_play_adr/10000;	
@@ -1504,7 +1505,7 @@ void DMA2_Stream5_IRQHandler(void){
 							change_speed = NO_CHANGE;
 							slip_play_enable = 1;	
 							}
-						else if(CUE_ADR!=(play_adr/294) && (Rbuffer[12]&0x20)==0)			//when playback starts from any adress and touch disable
+						else if(CUE_ADR!=(play_adr/samplesPerLine) && (Rbuffer[12]&0x20)==0)			//when playback starts from any adress and touch disable
 							{
 							change_speed = NEED_UP;
 							}
@@ -1537,19 +1538,19 @@ void DMA2_Stream5_IRQHandler(void){
 					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
 						{	
 						slip_play_enable = 0;		
-						slip_play_adr = 294*CUE_ADR;	
+						slip_play_adr = samplesPerLine*CUE_ADR;	
 						}	
 					CUE_OPERATION = CUE_NEED_CALL;			
 					}	
-				else if((play_enable==0) && (CUE_ADR!=(play_adr/294)))			//Set new CUE, when track stopped		
+				else if((play_enable==0) && (CUE_ADR!=(play_adr/samplesPerLine)))			//Set new CUE, when track stopped		
 					{
 					LOOP_OUT = 0;	
 					CUE_OPERATION = CUE_NEED_SET;		
 					}
-				else if((play_enable==0) && (CUE_ADR==(play_adr/294)))				//return to CUE adress, when track stopped
+				else if((play_enable==0) && (CUE_ADR==(play_adr/samplesPerLine)))				//return to CUE adress, when track stopped
 					{
 					change_speed = NO_CHANGE;	
-					play_adr = 294*CUE_ADR;		
+					play_adr = samplesPerLine*CUE_ADR;		
 					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
 						{			
 						slip_play_adr = play_adr;
@@ -1575,7 +1576,7 @@ void DMA2_Stream5_IRQHandler(void){
 					play_enable = 0;
 					pitch = 0;		
 					slip_play_enable = 0;	
-					play_adr = 294*CUE_ADR;	
+					play_adr = samplesPerLine*CUE_ADR;	
 					if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
 						{	
 						slip_play_adr = play_adr;	
@@ -1598,7 +1599,7 @@ void DMA2_Stream5_IRQHandler(void){
 			{
 			if(lock_control==0)	
 				{	
-				if((play_enable==1) && (CUE_ADR!=(play_adr/294)) && loop_active==0)			//Set new CUE, when track play		
+				if((play_enable==1) && (CUE_ADR!=(play_adr/samplesPerLine)) && loop_active==0)			//Set new CUE, when track play		
 					{
 					LOOP_OUT = 0;	
 					CUE_OPERATION = CUE_NEED_SET;	
@@ -1617,11 +1618,11 @@ void DMA2_Stream5_IRQHandler(void){
 		else if((Rbuffer[14]&0x08) && LOOP_OUT_BUTTON_pressed==0)										///////////LOOP OUT button
 			{
 			if(lock_control==0)	
-				if(loop_active==0 && CUE_ADR<play_adr/294)
+				if(loop_active==0 && CUE_ADR<play_adr/samplesPerLine)
 					{
 					if(QUANTIZE && dSHOW==WAVEFORM)
 						{
-						if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+						if(((play_adr/samplesPerLine)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
 							{
 							LOOP_OUT = BEATGRID[bars];								//next bar >> |
 							}
@@ -1640,7 +1641,7 @@ void DMA2_Stream5_IRQHandler(void){
 						}
 					else
 						{
-						LOOP_OUT = play_adr/294;
+						LOOP_OUT = play_adr/samplesPerLine;
 						CUE_OPERATION = CUE_NEED_CALL;	
 						}	
 					loop_active = 1;	
@@ -1686,7 +1687,7 @@ void DMA2_Stream5_IRQHandler(void){
 						}
 					else
 						{
-						if((play_enable==1) && (CUE_ADR!=(play_adr/294)))
+						if((play_enable==1) && (CUE_ADR!=(play_adr/samplesPerLine)))
 							{
 							LOOP_OUT = 0;	
 							CUE_OPERATION = CUE_NEED_SET;
@@ -1709,11 +1710,11 @@ void DMA2_Stream5_IRQHandler(void){
 						{
 						loop_out_active_pressed = !loop_out_active_pressed;
 						}
-					else if(CUE_ADR<play_adr/294)
+					else if(CUE_ADR<play_adr/samplesPerLine)
 						{
 						if(QUANTIZE && dSHOW==WAVEFORM)
 							{
-							if(((play_adr/294)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
+							if(((play_adr/samplesPerLine)>(BEATGRID[bars-1]+((BEATGRID[bars] - BEATGRID[bars-1])/2))) || bars==0)	
 								{
 								LOOP_OUT = BEATGRID[bars];
 								}
@@ -1732,7 +1733,7 @@ void DMA2_Stream5_IRQHandler(void){
 							}
 						else
 							{
-							LOOP_OUT = play_adr/294;
+							LOOP_OUT = play_adr/samplesPerLine;
 							CUE_OPERATION = CUE_NEED_CALL;	
 							}
 						loop_pending = 0;
@@ -1832,12 +1833,12 @@ void DMA2_Stream5_IRQHandler(void){
 		else if((Rbuffer[12]&0x20)==0 && need_call_to_cue==2)
 			{
 			pitch = 0;	
-			play_adr = 294*CUE_ADR;	
+			play_adr = samplesPerLine*CUE_ADR;	
 			need_call_to_cue = 3;	
 			}
 		
 		
-		if(((Rbuffer[12]&0x20)!=0 || (play_enable==0 && (CUE_ADR!=(play_adr/294))) || inertial_rotation) && (Tbuffer[19]&0x20 && !loop_out_active_pressed && !loop_in_active_pressed))				/////////////(touch enable	|| play_enable==0) && Vinyl mode enable
+		if(((Rbuffer[12]&0x20)!=0 || (play_enable==0 && (CUE_ADR!=(play_adr/samplesPerLine))) || inertial_rotation) && (Tbuffer[19]&0x20 && !loop_out_active_pressed && !loop_in_active_pressed))				/////////////(touch enable	|| play_enable==0) && Vinyl mode enable
 			{
 			pitch_for_slip = potenciometer_tempo;	
 			
@@ -1857,7 +1858,7 @@ void DMA2_Stream5_IRQHandler(void){
 				
 			if(play_enable==0)	
 				{
-				if((Rbuffer[12]&0x20)!=0 && (CUE_ADR==(play_adr/294)) && need_call_to_cue==0)				//touch enable + play_enable==0 + CUE_ADR==(play_adr/294)
+				if((Rbuffer[12]&0x20)!=0 && (CUE_ADR==(play_adr/samplesPerLine)) && need_call_to_cue==0)				//touch enable + play_enable==0 + CUE_ADR==(play_adr/samplesPerLine)
 					{
 					need_call_to_cue = 1;	
 					}		
@@ -2230,9 +2231,9 @@ void DMA2_Stream5_IRQHandler(void){
 							{
 							SEEK_AUDIOFRAME(play_adr+100000);	
 							}
-						else if(play_enable==0 & play_adr/294<(all_long+1))
+						else if(play_enable==0 & play_adr/samplesPerLine<(all_long+1))
 							{	
-							play_adr+=294;
+							play_adr+=samplesPerLine;
 							}
 						}
 					SEARCH_FF_BUTTON_pressed = 1;	
@@ -2249,9 +2250,9 @@ void DMA2_Stream5_IRQHandler(void){
 							{
 							SEEK_AUDIOFRAME(play_adr-100000);
 							}
-						else if(play_enable==0 & play_adr>294)
+						else if(play_enable==0 & play_adr>samplesPerLine)
 							{	
-							play_adr-=294;
+							play_adr-=samplesPerLine;
 							}
 						}	
 					SEARCH_REW_BUTTON_pressed = 1;	
@@ -2283,7 +2284,7 @@ void DMA2_Stream5_IRQHandler(void){
 							{
 							Tbuffer[17] |= 0x2;	
 							}
-						else if(CUE_ADR!=play_adr/294)  
+						else if(CUE_ADR!=play_adr/samplesPerLine)  
 							{
 							Tbuffer[17] &= 0xFD;	
 							}	
@@ -2827,7 +2828,7 @@ void ledTIMER()
 
 void SEEK_AUDIOFRAME(uint32_t seek_adr)
 	{
-	if(seek_adr>(294*all_long))
+	if(seek_adr>(samplesPerLine*all_long))
 		{
 		return;	
 		}
@@ -2849,13 +2850,13 @@ void SEEK_AUDIOFRAME(uint32_t seek_adr)
 
 void CALL_CUE(void)
 	{
-	uint32_t seek_adr = 294*CUE_ADR;
+	uint32_t seek_adr = samplesPerLine*CUE_ADR;
 	seek_adr &= 0xFFFFE000;	
 	if(playFile.seek(((seek_adr<<2)+44)))
 		{
 		end_adr_valid_data = (seek_adr>>13);
 		start_adr_valid_data = end_adr_valid_data; 	
-		play_adr = 294*CUE_ADR;		
+		play_adr = samplesPerLine*CUE_ADR;		
 		if(Tbuffer[19]&0x8)					//SLIP MODE ENABLE
 			{	
 			slip_play_adr = play_adr;	
@@ -2871,7 +2872,7 @@ void SET_CUE(uint32_t nf_adr)
 	uint32_t AIS = 0;							//adress in samples 44k for CUE	
 		
 	CUE_ADR = nf_adr;	
-	AIS = (294*CUE_ADR)&0xFFFFE000;							//rounding up to 8192
+	AIS = (samplesPerLine*CUE_ADR)&0xFFFFE000;							//rounding up to 8192
 	AIS-=81920;
 	mem_offset_adress = (AIS&0xFFFFF)>>13;
 		

@@ -124,6 +124,7 @@ extern uint32_t hotCues[8];
 extern uint8_t GRID_OFFSET; // Default to 0 if not provided by parser
 extern uint16_t beatGridLenth0;
 extern uint8_t numCuePoints;
+extern uint16_t samplesPerLine; // Samples per line == Sample Rate/ 150
 
 
 extern void SEEK_AUDIOFRAME(uint32_t seek_adr);
