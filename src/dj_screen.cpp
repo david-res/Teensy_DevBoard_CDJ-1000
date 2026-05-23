@@ -10,6 +10,7 @@
 #if defined(USE_BEAT_NUMBERS)
 #include "utils/digit_renderer.h"
 #include "lv_utils.h"
+#include "utils/letter_renderer.h"
 #endif
 
 
@@ -1220,30 +1221,30 @@ void  RedrawWaveforms(uint32_t position){
 
     static uint32_t prev_clock_pos = UINT32_MAX;
     if (clock_pos != prev_clock_pos) {
-    prev_clock_pos = clock_pos;
+        prev_clock_pos = clock_pos;
 
-    uint32_t min10 = (clock_pos / 90000) % 10;
-    uint32_t min1  = (clock_pos / 9000)  % 10;
-    uint32_t sec10 = (clock_pos / 1500)  % 6;
-    uint32_t sec1  = (clock_pos / 150)   % 10;
-    uint32_t frm10 = ((clock_pos / 2) % 75) / 10;
-    uint32_t frm1  = ((clock_pos / 2) % 75) % 10;
-    uint32_t hf    = (clock_pos % 2) * 5;
+        uint32_t min10 = (clock_pos / 90000) % 10;
+        uint32_t min1  = (clock_pos / 9000)  % 10;
+        uint32_t sec10 = (clock_pos / 1500)  % 6;
+        uint32_t sec1  = (clock_pos / 150)   % 10;
+        uint32_t frm10 = ((clock_pos / 2) % 75) / 10;
+        uint32_t frm1  = ((clock_pos / 2) % 75) % 10;
+        uint32_t hf    = (clock_pos % 2) * 5;
 
-    char buf[3];
+        char buf[3];
 
-    set_digit(time_container, 0, REMAIN_ENABLE ? "-" : " ");
+        set_digit(time_container, 0, REMAIN_ENABLE ? "-" : " ");
 
-    snprintf(buf, sizeof(buf), "%lu", min10);  set_digit(time_container, 1, buf);
-    snprintf(buf, sizeof(buf), "%lu", min1);   set_digit(time_container, 2, buf);
-    // index 3 is ':' — never changes
-    snprintf(buf, sizeof(buf), "%lu", sec10);  set_digit(time_container, 4, buf);
-    snprintf(buf, sizeof(buf), "%lu", sec1);   set_digit(time_container, 5, buf);
-    // index 6 is ':' — never changes
-    snprintf(buf, sizeof(buf), "%lu", frm10);  set_digit(time_container, 7, buf);
-    snprintf(buf, sizeof(buf), "%lu", frm1);   set_digit(time_container, 8, buf);
-    // index 9 is '.' — never changes
-    snprintf(buf, sizeof(buf), "%lu", hf);     set_digit(time_container, 10, buf);
+        snprintf(buf, sizeof(buf), "%lu", min10);  set_digit(time_container, 1, buf);
+        snprintf(buf, sizeof(buf), "%lu", min1);   set_digit(time_container, 2, buf);
+        // index 3 is ':' — never changes
+        snprintf(buf, sizeof(buf), "%lu", sec10);  set_digit(time_container, 4, buf);
+        snprintf(buf, sizeof(buf), "%lu", sec1);   set_digit(time_container, 5, buf);
+        // index 6 is ':' — never changes
+        snprintf(buf, sizeof(buf), "%lu", frm10);  set_digit(time_container, 7, buf);
+        snprintf(buf, sizeof(buf), "%lu", frm1);   set_digit(time_container, 8, buf);
+        // index 9 is '.' — never changes
+        snprintf(buf, sizeof(buf), "%lu", hf);     set_digit(time_container, 10, buf);
     }
     /*
     if(needle_enable || (Tbuffer[23]&0x20))						//detecting touch on sensor or touch on jog 
@@ -1464,123 +1465,102 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
       beatIdx++;
     }
   }
-  uint16_t beatX = 0; // local beat counter within visible range
+  uint16_t beatX = 0;
+  #define MS_TO_SAMPLES(ms) ((uint32_t)(ms) * 441u / 10u)
 
+  // -------------------------------------------------------------------------
+  // Column loop
+  // -------------------------------------------------------------------------
   for (uint16_t x = 0; x < chartWidth; x++) {
     int64_t index = dynamicWaveformZOOM * (x + pos - playHeadX);
 
-    // --- Determine background color (loop region, default black) ---
-    uint16_t bgColor = 0x0000; // black
+    // --- Background color (loop region) ---
+    uint16_t bgColor = 0x0000;
     if (CUE_ADR < LOOP_OUT || loop_pending) {
-      if (index >= 0 && (uint32_t)index >= CUE_ADR && (uint32_t)index < LOOP_OUT) {	
+      if (index >= 0 && (uint32_t)index >= CUE_ADR && (uint32_t)index < LOOP_OUT) {
         bgColor = (loop_active || CUE_OPERATION == CUE_NEED_SET) ? LOOP_ACTIVE_COLOR : LOOP_INACTIVE_COLOR;
       }
-      if(loop_pending && (index >= 0 && index < all_long) && (uint32_t)index >= CUE_ADR && x < playHeadX ){
-          bgColor = LOOP_ACTIVE_COLOR;
-    }
+      if (loop_pending && (index >= 0 && index < all_long) && (uint32_t)index >= CUE_ADR && x < playHeadX) {
+        bgColor = LOOP_ACTIVE_COLOR;
+      }
       drawFastVLine16Bit(x, 0, chartHeight, bgColor, dynamicCanvasBuffer, chartWidth);
     }
 
-    // Clear column with background color
-    //drawFastVLine16Bit(x, 0, chartHeight, bgColor, dynamicCanvasBuffer, chartWidth);
-
     if (index < 0 || (uint32_t)index > all_long) continue;
-    //if (index < 0 ) continue;
 
     uint32_t adr = (uint32_t)index;
-    /*
-    // --- Draw memory cue markers (top, small triangles) ---
-    if (number_of_memory_cue_points > 0) {
-      for (uint8_t j = 0; j < number_of_memory_cue_points; j++) {
-        if ((MEMORY_adr[0][j] - (MEMORY_adr[0][j] % dynamicWaveformZOOM)) == adr) {
-          // Draw red marker: small vertical line at top
-          drawFastVLine16Bit(x, 0, 6, col_red, dynamicCanvasBuffer, chartWidth);
+
+    // --- Beat grid ticks ---
+    if ((beatIdx + beatX) < beatGridLenth &&
+        (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % dynamicWaveformZOOM)) == adr) {
+      uint16_t beatColor;
+      if (((beatIdx + beatX) % 4) == ((GRID_OFFSET) & 0x03)) {
+        beatColor = 0xF800;
+      } else if (dynamicWaveformZOOM < 8) {
+        beatColor = col_white;
+      } else {
+        beatX++;
+        continue;
+      }
+      #define TICK_HEIGHT 10
+      drawFastVLine16Bit(x, 0,                    TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
+      drawFastVLine16Bit(x, chartHeight - TICK_HEIGHT, TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
+      beatX++;
+    }
+
+    // --- Cue markers ---
+    if (g_track) {
+      for (uint8_t i = 0; i < 8; i++) {
+        const CuePoint &cp = g_track->hot_cues[i];
+        if (!cp.active) continue;
+        
+        uint32_t cue_adr = (cp.time_ms * 44100) / 1000 / 294;         
+        cue_adr -= cue_adr % dynamicWaveformZOOM;
+        if (cue_adr != adr) continue;
+        uint16_t color565 = ((uint16_t)(cp.color_r >> 3) << 11)
+                          | ((uint16_t)(cp.color_g >> 2) <<  5)
+                          |  (uint16_t)(cp.color_b >> 3);
+        int16_t marker_x = (int16_t)x - (LR_BOX_WIDTH + 1) / 2;
+        if (cp.type == 2) {
+          lr_blit_triangle(dynamicCanvasBuffer, chartWidth, chartHeight,
+                           marker_x, 0, &s_cue_loop_triangle, color565);
+        } else {
+          lr_blit_letter_box(dynamicCanvasBuffer, chartWidth,
+                             marker_x, 0, i, color565);
         }
+        drawFastVLine16Bit(x, LR_BOX_HEIGHT, chartHeight - LR_BOX_HEIGHT,
+                           color565, dynamicCanvasBuffer, chartWidth);
       }
     }
-  
-    // --- Draw hot cue markers (top + bottom) ---
-    if (number_of_hot_cue_points > 0) {
-      for (uint8_t j = 0; j < 3; j++) {
-        if (HCUE_adr[0][j] != 0xFFFF) {
-          if ((HCUE_adr[0][j] - (HCUE_adr[0][j] % dynamicWaveformZOOM)) == adr) {
-            uint16_t hcColor = (HCUE_type[j] & 0x1) ? CUE_COLOR : col_green;
-            drawFastVLine16Bit(x, 0, 6, hcColor, dynamicCanvasBuffer, chartWidth);
-            drawFastVLine16Bit(x, chartHeight - 6, 6, hcColor, dynamicCanvasBuffer, chartWidth);
-          }
-        }
+
+
+    // --- Waveform bands ---
+    if (adr <= all_long) {
+      if (waveformType == WAVEFORM_3BAND) {
+        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
+        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
+      }
+      if (waveformType == WAVEFORM_RGB) {
+        uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
+        uint8_t  height = dynamicWaveSampleData[2][index];
+        drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
       }
     }
 
-    // --- Draw cue marker (bottom) ---
-    if ((CUE_ADR - (CUE_ADR % dynamicWaveformZOOM)) == adr) {
-      drawFastVLine16Bit(x, chartHeight - 6, 6, CUE_COLOR, dynamicCanvasBuffer, chartWidth);
+    // --- Track bar position at play head ---
+    if (x == playHeadX) {
+      bars = beatIdx + beatX;
     }
-    */
-    // --- Draw beat grid lines (top + bottom gutters) ---
-    
-        if ((beatIdx + beatX) < beatGridLenth &&
-                (BEATGRID[beatIdx + beatX] - (BEATGRID[beatIdx + beatX] % dynamicWaveformZOOM)) == adr) {
-            uint16_t beatColor;
-            if (((beatIdx + beatX) % 4) == ((GRID_OFFSET) & 0x03)) {
-                beatColor = 0xF800; // red downbeat
-            } else if (dynamicWaveformZOOM < 8) {
-                beatColor = col_white;
-            } else {
-                beatX++;
-                continue;
-            } 
-
-            // Full height line
-            //drawFastVLine16Bit(x, 0, chartHeight, 0x8410 , dynamicCanvasBuffer, chartWidth);
-            #define TICK_HEIGHT 10
-            // Top tick: 6px tall, 2px wide to the right
-            if ((x) < chartWidth) {
-                drawFastVLine16Bit(x, 0, TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
-            }
-
-            // Bottom tick: 6px tall, 2px wide to the right
-            if ((x) < chartWidth) {
-                drawFastVLine16Bit(x , chartHeight - TICK_HEIGHT, TICK_HEIGHT, beatColor, dynamicCanvasBuffer, chartWidth);
-            }
-
-            beatX++;
-            }
-            if(adr<=all_long){
-                if (waveformType == WAVEFORM_3BAND){
-            // --- Draw 3 waveform bands (back to front so band 0 is on top) --
-                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
-                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
-                    drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
-                }
-
-                if (waveformType == WAVEFORM_RGB) {
-                    uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
-                    uint8_t  height = dynamicWaveSampleData[2][index] ;  // scale 0-31 → 0-chartHeightHalf
-                    drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
-                }
-                            }
-
-            // --- Track bar position at play head ---
-            if (x == playHeadX) {
-            bars = beatIdx + beatX;
-            }
-    
   }
 
-  // --- Draw horizontal center line ---
-  //int midOffset = chartWidth * chartHeightHalf;
-  //memset((dynamicCanvasBuffer + midOffset), 0xFF, chartWidth * 2); // white line
-
-  // --- Draw vertical play head ---
-  //uint16_t playHeadColor = RED_VERTICAL_LINE ? col_red : col_white;
-  drawFastVLine16Bit(playHeadX, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
+  // --- Vertical play head ---
+  drawFastVLine16Bit(playHeadX,     0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
   drawFastVLine16Bit(playHeadX + 1, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
 
-    dynamicBufferReady = true;
-  //lv_obj_invalidate(daynamic_waveform_canvas);
-
+  dynamicBufferReady = true;
 }
+
 
 // Add these as global/static variables
 static uint16_t oldX = 0; // Initialize to invalid position

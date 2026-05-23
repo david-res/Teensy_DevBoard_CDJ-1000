@@ -6,6 +6,7 @@
 #include "i2s_sync.h"
 #include "RekordboxParser.h"
 #include "USBHost_t36.h"
+#include "utils/letter_renderer.h"
 
 extern USBHost myusb;
 extern USBDrive myDrive;
@@ -191,6 +192,9 @@ extern uint16_t overviewCanvasBuffer[PREVIEW_WAVEFORM_WIDTH * overviewChartHeigh
 extern RekordboxParser * rbParser;
 extern Track** all_tracks;
 extern int16_t track_count;
+
+
+extern triangle_shape_t s_cue_loop_triangle;
 
 
 		

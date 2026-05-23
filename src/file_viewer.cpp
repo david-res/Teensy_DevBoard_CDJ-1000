@@ -341,6 +341,7 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
        
         return NULL;
     }
+    Serial.printf("File size: %u bytes, Sample rate: %u Hz, Bitrate: %u kbps, File Type: 0x%x\n", track->file_size, track->sample_rate, track->bitrate, track->file_type);
     
     
     lv_obj_set_width(track_cont, LV_PCT(95));  // Use percentage to fit parent

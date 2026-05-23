@@ -68,6 +68,10 @@ struct Track {
     char     audio_path[RB_MAX_PATH_LEN];
     char     thumbnail_path[RB_MAX_PATH_LEN];
     uint32_t artwork_id;
+    uint32_t file_size;     // audio file size in bytes
+    uint32_t sample_rate;   // playback sample rate in samples/sec
+    uint32_t bitrate;       // playback bit rate in bits/sec
+    uint8_t  file_type;     // 0x01=MP3, 0x04=M4A, 0x05=FLAC, 0x0B=WAV, 0x0C=AIFF
     float    bpm;
     uint16_t duration;
     uint8_t  key_id;
@@ -464,12 +468,16 @@ inline bool RekordboxParser::lookupString(uint8_t table_type, uint32_t row_id,
 inline bool RekordboxParser::parseTrackRow(uint16_t rs, Track* out) {
     if ((u16(rs)!=0x0024) || (rs+0x88>RB_PAGE_SIZE)) return false;
     memset(out, 0, sizeof(Track));
-    out->id       = u16(rs+0x48);
-    out->key_id   = _buf[rs+0x20];
-    out->rating   = _buf[rs+0x59];
-    out->artwork_id= u32(rs+0x1c);
-    out->bpm      = u32(rs+0x38) / 100.0f;
-    out->duration  = u16(rs+0x54);
+    out->id          = u16(rs+0x48);
+    out->key_id      = _buf[rs+0x20];
+    out->rating      = _buf[rs+0x59];
+    out->artwork_id  = u32(rs+0x1c);
+    out->sample_rate = u32(rs+0x08);   // bytes 0x08–0x0b: samples per second
+    out->file_size   = u32(rs+0x10);   // bytes 0x10–0x13: audio file size in bytes
+    out->bitrate     = u32(rs+0x30);   // bytes 0x30–0x33: bits per second
+    out->file_type   = _buf[rs+0x5a];  // confirmed byte offset; 0x01=MP3,0x04=M4A,0x05=FLAC,0x0B=WAV,0x0C=AIFF
+    out->bpm         = u32(rs+0x38) / 100.0f;
+    out->duration    = u16(rs+0x54);
     out->valid     = true;
     uint16_t title_off=u16(rs+0x80); if(title_off) readDeviceSQL(rs+title_off,out->title,RB_MAX_TITLE_LEN);
     uint16_t anlz_off =u16(rs+0x7a);

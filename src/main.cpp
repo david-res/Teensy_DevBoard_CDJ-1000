@@ -12,6 +12,7 @@
 #include "PacketsSerial.h"
 #include "T4_DMA_SPI_SLAVE.h"
 #include "rekordbox_anlz_api.h"
+#include "utils/letter_renderer.h"
 
 
 #if defined(USE_LCD_DISP)
@@ -87,6 +88,8 @@ uint32_t targetFrequency = CPU_SPEED_MHZ;
 
 int16_t track_count = 0;
 Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initialized to nullptr	
+
+triangle_shape_t s_cue_loop_triangle;
 
 
 
@@ -640,6 +643,13 @@ void setup()
   lv_log_register_print_cb(my_print);
 #endif
 
+lr_prerender_glyphs(&lv_font_montserrat_10);
+
+lr_build_triangle_shape(&s_cue_loop_triangle,
+    0,              0,
+    LR_BOX_WIDTH-1, 0,
+    LR_BOX_WIDTH/2, LR_BOX_HEIGHT-1,
+    LR_BOX_WIDTH,   LR_BOX_HEIGHT);
 
 
   Serial.println("Initializing Audio");      // <-- add before startI2SInterrupt
