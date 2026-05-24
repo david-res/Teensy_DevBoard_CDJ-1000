@@ -436,6 +436,8 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_style_text_color(lbl_duration, COLOR_GRAY, 0);
     lv_obj_remove_flag(lbl_duration, LV_OBJ_FLAG_CLICKABLE);
 
+
+
     //Serial.println("  >> Creating bottom row...");
     // Bottom row: Artist
     lv_obj_t *bottom_row = lv_obj_create(track_cont);
@@ -466,6 +468,17 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_style_text_font(lbl_artist, &exo2_16, 0);
     lv_obj_set_style_text_color(lbl_artist, COLOR_GRAY, 0);
     lv_obj_remove_flag(lbl_artist, LV_OBJ_FLAG_CLICKABLE);
+     
+    // File format
+    lv_obj_t *lbl_format = lv_label_create(bottom_row);
+    lv_label_set_text(lbl_format, fileTypeString(track->file_type));
+    lv_obj_set_width(lbl_format, 50);  // Title + Artist width (190 + 130)
+    lv_obj_set_flex_grow(lbl_format, 1);
+    lv_obj_align(lbl_format, LV_ALIGN_RIGHT_MID, 100, 0);
+    //lv_obj_set_style_text_align(lbl_format, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(lbl_format, &exo2_16, 0);
+    lv_obj_set_style_text_color(lbl_format, COLOR_GRAY, 0);
+    lv_obj_remove_flag(lbl_format, LV_OBJ_FLAG_CLICKABLE);
 
     //Serial.println("  >> add_track_item: SUCCESS");
     lv_obj_set_user_data(track_cont, track);

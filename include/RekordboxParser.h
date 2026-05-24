@@ -84,6 +84,17 @@ struct PlaylistInfo {
     char     name[RB_MAX_PLAYLIST_NAME];
 };
 
+inline const char* fileTypeString(uint8_t ft) {
+    switch (ft) {
+        case 0x01: return "MP3";
+        case 0x04: return "M4A";
+        case 0x05: return "FLAC";
+        case 0x0B: return "WAV";
+        case 0x0C: return "AIFF";
+        default:   return "Unknown";
+    }
+}
+
 // ============================================================================
 // RekordboxParser
 // ============================================================================
