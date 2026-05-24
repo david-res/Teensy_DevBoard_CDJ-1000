@@ -371,7 +371,6 @@ bool loadDynamicWaveformForTrack(const char* filepath) {
             dynamicWaveSampleData[0][i] = (uint8_t)(rgb565 >> 8);   // high byte
             dynamicWaveSampleData[1][i] = (uint8_t)(rgb565 & 0xFF); // low byte
             dynamicWaveSampleData[2][i] = map(height, 0,31,1, 127);
-            Serial.printf("Entry %u: RGB333=(%u,%u,%u) Height=%u → RGB565=0x%04X\n", i, r3, g3, b3, height, rgb565);
         }
     Serial.println("Waveform de-interleaved successfully");
     free(waveform);
@@ -1439,14 +1438,13 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
 
   // --- Redraw all cue boxes ---
   if (g_track) {
-    Serial.printf("all_long: %u\n", all_long);    
     for (uint8_t i = 0; i < 8; i++) {
       const CuePoint &cp = g_track->hot_cues[i];
       if (!cp.active) continue;
 
       // time_ms -> all_long units: ms * 300 / 1000 = ms * 3 / 10
       uint32_t cue_pos = (uint32_t)cp.time_ms * 150UL / 1000UL;  // ms -> all_long units
-       uint16_t cue_x   = (uint16_t)((uint64_t)cue_pos * (PREVIEW_WAVEFORM_WIDTH - 1) / all_long);
+        uint16_t cue_x   = (uint16_t)((uint64_t)cue_pos * (PREVIEW_WAVEFORM_WIDTH - 1) / all_long);
 
       uint16_t color565 = ((uint16_t)(cp.color_r >> 3) << 11)
                         | ((uint16_t)(cp.color_g >> 2) <<  5)
@@ -1455,9 +1453,7 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
       int16_t marker_x = (int16_t)cue_x - (LR_BOX_WIDTH + 1) / 2;
 
       lr_blit_letter_box(overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH,
-                         marker_x, 0, i, color565);
-                         Serial.printf("Cue %d: time_ms=%u, x=%d, color=#%02x%02x%02x\n", i, cp.time_ms, cue_x, cp.color_r, cp.color_g, cp.color_b);
-    }
+                         marker_x, 0, i, color565);    }
   }
 
   // --- Draw new cursor (2px wide, white) ---
@@ -1540,8 +1536,8 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
       for (uint8_t i = 0; i < 8; i++) {
         const CuePoint &cp = g_track->hot_cues[i];
         if (!cp.active) continue;
-        
-        uint32_t cue_adr = (cp.time_ms * sampleRate) / 1000 / samplesPerLine;         
+    
+        uint32_t cue_adr = (uint32_t)cp.time_ms * 150UL / 1000UL;  // ms -> all_long units  
         cue_adr -= cue_adr % dynamicWaveformZOOM;
         if (cue_adr != adr) continue;
         uint16_t color565 = ((uint16_t)(cp.color_r >> 3) << 11)
@@ -1610,8 +1606,8 @@ FASTRUN void updatePlaybackPosition_new(uint16_t newX)
 void onCueButtonPressed(lv_event_t* e) {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (!g_track || !g_track->hot_cues[i].active) return;
-    Serial.printf("Cue button %d pressed, jumping to %u ms\n", i, (g_track->hot_cues[i].time_ms * sampleRate) / 1000);
-    SEEK_AUDIOFRAME((g_track->hot_cues[i].time_ms * sampleRate) / 1000);
+    Serial.printf("Cue button %d pressed, jumping to %u ms\n", i, g_track->hot_cues[i].time_ms );
+    SEEK_AUDIOFRAME(g_track->hot_cues[i].time_ms * (sampleRate / 1000UL));
     //position = (g_track->hot_cues[i].time_ms * 44100) / 1000;
 }
 
