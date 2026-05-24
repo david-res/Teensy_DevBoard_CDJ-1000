@@ -132,7 +132,7 @@ uint8_t	ftp = 0;										/////temp!
 
 // I dont think we mark big ass arrays as volatile?
 // TODO why is this 205 and not 128?
-EXTMEM_NOCACHE_PCM uint16_t PCM[206][8192][2] __attribute__((aligned(32)));
+EXTMEM_NOCACHE_PCM uint16_t PCM[218][8192][2] __attribute__((aligned(32)));
 
 // Make volatile as critical to buffer management
 volatile uint32_t start_adr_valid_data = 0;               //filling adress in memory

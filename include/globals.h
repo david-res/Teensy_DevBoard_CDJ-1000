@@ -89,7 +89,7 @@ extern volatile uint32_t play_adr;
 extern volatile uint32_t baseSampPerWavePoint;
 extern volatile uint32_t all_long;
 
-extern uint16_t PCM[206][8192][2];
+extern uint16_t PCM[218][8192][2];
 
 //extern volatile uint16_t start_adr_valid_data;
 //extern volatile uint16_t end_adr_valid_data;
