@@ -680,7 +680,7 @@ lr_build_triangle_shape(&s_cue_loop_triangle,
 	lv_obj_set_align(logo, LV_ALIGN_CENTER);
 	lv_scr_load_anim(bootScreen, LV_SCR_LOAD_ANIM_FADE_IN, 3000, 500, true);
 	
-	create_dj_browser_ui();
+	create_dj_browser_ui(-1, -1);
 	//populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_FADE_IN, 500, 3500, true); 
 	disp_setBrightness(255);

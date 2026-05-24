@@ -125,6 +125,8 @@ extern uint8_t GRID_OFFSET; // Default to 0 if not provided by parser
 extern uint16_t beatGridLenth0;
 extern uint8_t numCuePoints;
 extern uint16_t samplesPerLine; // Samples per line == Sample Rate/ 150
+extern int16_t g_active_playlist_id;
+extern int16_t g_active_track_id;
 
 
 extern void SEEK_AUDIOFRAME(uint32_t seek_adr);

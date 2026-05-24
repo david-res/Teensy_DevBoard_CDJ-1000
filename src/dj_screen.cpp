@@ -1630,7 +1630,7 @@ void backButton(lv_event_t *e){
     memset((uint16_t*)PCM, 0, sizeof(PCM)); // Clear audio buffer
     rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
     audio.stopI2SInterrupt();
-    create_dj_browser_ui();
+    create_dj_browser_ui(g_active_playlist_id,g_active_track_id);
     //populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 }

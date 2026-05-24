@@ -59,6 +59,9 @@ EXTMEM static Track       g_loaded_tracks[20];
 EXTMEM static Track*      g_track_ptrs[20];   // pointer array for populate_track_list
 EXTMEM static PlaylistInfo g_playlist_info[10];
 static uint16_t           g_playlist_count = 0;
+static int16_t g_active_playlist_id = -1;
+static int16_t g_active_track_id    = -1;
+static void restore_selection(int16_t playlist_id, int16_t track_id);
 
 USBFilesystem rekordboxDrive(myusb);  // drive with the PDB file
 RekordboxParser* rbParser = nullptr;       // Create it here
@@ -97,21 +100,17 @@ void init_playlists() {
 // ---- Playlist click callback ----
 static void playlist_item_cb(lv_event_t* e) {
     uint32_t pl_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    g_active_playlist_id = (int16_t)pl_id;  // <-- save it
+    g_active_track_id    = -1;              // reset track on playlist change
 
-    // Load tracks into arena — replaces previous playlist's tracks
     uint16_t count = rbParser->getTracksForPlaylist(pl_id);
-
-    // Build Track** pointer array pointing into arena tracks
-    for (uint16_t i = 0; i < count; i++) {
-        g_track_ptrs[i] = (Track*)rbParser->getTrack(i);  // const_cast safe — we own the arena
-    }
-
-    // Same call as before — unchanged
+    for (uint16_t i = 0; i < count; i++)
+        g_track_ptrs[i] = (Track*)rbParser->getTrack(i);
     populate_track_list(g_track_ptrs, count);
 }
 
 // ========== Main UI Creation ==========
-void create_dj_browser_ui()
+void create_dj_browser_ui(int16_t playlist_id = -1, int16_t track_id = -1)
 {
     // Create main container with flex row layout
 
@@ -146,6 +145,9 @@ void create_dj_browser_ui()
         rbParser->begin("/PIONEER/rekordbox/export.pdb", (uint8_t*)PCM, sizeof(PCM));
         create_playlist_panel(filesScreen);
         create_track_list_panel(filesScreen);
+        if (g_active_playlist_id != -1 && g_active_track_id != -1){
+        restore_selection(g_active_playlist_id, g_active_track_id);  // <-- add this
+        }
     }
     else{
         usb_status_label = lv_label_create(filesScreen); // Placeholder label while waiting for USB connection   
@@ -322,6 +324,7 @@ static void create_track_list_panel(lv_obj_t *parent)
 static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
 {
     
+
     
     if (!parent || !track) {
         
@@ -341,7 +344,7 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
        
         return NULL;
     }
-    Serial.printf("File size: %u bytes, Sample rate: %u Hz, Bitrate: %u kbps, File Type: 0x%x\n", track->file_size, track->sample_rate, track->bitrate, track->file_type);
+    //Serial.printf("File size: %u bytes, Sample rate: %u Hz, Bitrate: %u kbps, File Type: 0x%x\n", track->file_size, track->sample_rate, track->bitrate, track->file_type);
     
     
     lv_obj_set_width(track_cont, LV_PCT(95));  // Use percentage to fit parent
@@ -465,6 +468,7 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_remove_flag(lbl_artist, LV_OBJ_FLAG_CLICKABLE);
 
     //Serial.println("  >> add_track_item: SUCCESS");
+    lv_obj_set_user_data(track_cont, track);
     return track_cont;
 }
 
@@ -521,14 +525,10 @@ static void sidebar_btn_cb(lv_event_t *e)
 
 
 
-static void track_item_cb(lv_event_t *e)
-{
+static void track_item_cb(lv_event_t *e) {
     Track *track = (Track*)lv_event_get_user_data(e);
-    // Handle track selection
-    // Example: Load track into deck, preview, etc.
-    Serial.printf("Track selected: %s\n", track->title);
+    g_active_track_id = (int16_t)track->id;  // <-- save it (assuming Track has an id field)
     dj_ui_init(track);
-    //clear_track_list();
     lv_scr_load_anim(main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
 }
 
@@ -597,6 +597,46 @@ void clear_track_list(void)
 {
     if (g_track_list) {
         lv_obj_clean(g_track_list);
+    }
+}
+
+
+static void restore_selection(int16_t playlist_id, int16_t track_id) {
+    if (playlist_id < 0) return;
+
+    // Re-load the playlist's tracks
+    uint16_t count = rbParser->getTracksForPlaylist((uint32_t)playlist_id);
+    for (uint16_t i = 0; i < count; i++)
+        g_track_ptrs[i] = (Track*)rbParser->getTrack(i);
+    populate_track_list(g_track_ptrs, count);
+
+    g_active_playlist_id = playlist_id;
+
+    // Highlight the matching playlist button in the sidebar
+    uint32_t child_count = lv_obj_get_child_count(g_playlist_list);
+    for (uint32_t i = 0; i < child_count; i++) {
+        lv_obj_t *btn = lv_obj_get_child(g_playlist_list, i);
+        uint32_t btn_pl_id = (uint32_t)(uintptr_t)lv_obj_get_user_data(btn);
+        if ((int16_t)btn_pl_id == playlist_id) {
+            lv_obj_set_style_bg_color(btn, COLOR_TRACK_SEL, LV_STATE_DEFAULT);
+            // Scroll the playlist panel to show it
+            lv_obj_scroll_to_view(btn, LV_ANIM_OFF);
+            break;
+        }
+    }
+
+    // Scroll track list to the previously selected track
+    if (track_id >= 0) {
+        uint32_t track_count = lv_obj_get_child_count(g_track_list);
+        for (uint32_t i = 0; i < track_count; i++) {
+            lv_obj_t *item = lv_obj_get_child(g_track_list, i);
+            Track *t = (Track*)lv_obj_get_user_data(item);  // needs user_data set (see note)
+            if (t && (int16_t)t->id == track_id) {
+                lv_obj_set_style_bg_color(item, COLOR_TRACK_SEL, LV_STATE_DEFAULT);
+                lv_obj_scroll_to_view(item, LV_ANIM_OFF);
+                break;
+            }
+        }
     }
 }
 
