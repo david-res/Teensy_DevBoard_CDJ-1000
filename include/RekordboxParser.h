@@ -31,6 +31,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include "lvgl.h"
 
 // ============================================================================
 // Tunables — adjust to your library size
@@ -67,6 +68,8 @@ struct Track {
     char     anlz_ex2_path[RB_MAX_PATH_LEN];
     char     audio_path[RB_MAX_PATH_LEN];
     char     thumbnail_path[RB_MAX_PATH_LEN];
+    uint16_t *art_buf;
+    lv_img_dsc_t *art_dsc;  // malloc'd lv_img_dsc_t, points into art_buf
     uint32_t artwork_id;
     uint32_t file_size;     // audio file size in bytes
     uint32_t sample_rate;   // playback sample rate in samples/sec
@@ -574,6 +577,7 @@ inline bool RekordboxParser::lookupArtworkPath(uint32_t artwork_id,
 
 inline bool RekordboxParser::findTrackRow(uint16_t track_id, Track* out) {
     uint32_t pg=_tbl_first[0], last=_tbl_last[0];
+    uint32_t match_pg=0; uint16_t match_rs=0;
     while (pg && pg<=last) {
         if (!readPage(pg)) break;
         uint32_t next=u32(12);
@@ -593,12 +597,15 @@ inline bool RekordboxParser::findTrackRow(uint16_t track_id, Track* out) {
                     uint16_t rs=0x28+row_off;
                     if(rs+0x88>=RB_PAGE_SIZE) continue;
                     if(u16(rs)!=0x0024) continue;
-                    if(u16(rs+0x48)==track_id) return parseTrackRow(rs,out);
+                    // Record latest match — later pages are more recent after edits
+                    if(u16(rs+0x48)==track_id) { match_pg=pg; match_rs=rs; }
                 }
             }
         }
         pg=next;
     }
+    // Parse after loop so lookupArtworkPath doesn't corrupt _buf mid-scan
+    if (match_pg && readPage(match_pg)) return parseTrackRow(match_rs, out);
     return false;
 }
 

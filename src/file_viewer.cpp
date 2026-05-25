@@ -4,6 +4,7 @@
 #include "dj_screen.h"
 #include "globals.h"
 #include "lv_utils.h"
+#include "utils/jpeg_to_lvgl.h"
 //#include "RekordboxParser.h"
 
 LV_FONT_DECLARE(exo2_16)
@@ -195,6 +196,8 @@ static void create_sidebar(lv_obj_t *parent)
     }
 }
 
+
+static JpegImageHandle g_album_art = {0};
 // ========== Playlist Panel ==========
 static void create_playlist_panel(lv_obj_t *parent)
 {
@@ -350,17 +353,28 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_set_size(album_art, 80, 80);
     lv_obj_set_style_border_width(album_art, 0, 0);
 
-    
-    Serial.printf(" artwork path from: %s\n", track->thumbnail_path);
    
+    if (track->thumbnail_path[0] == '/' && !track->art_buf) {
+        JpegImageHandle tmp;
+        if (jpeg_load(rekordboxDrive, track->thumbnail_path, tmp)) {
+            track->art_buf = (uint16_t *)malloc(80 * 80 * 2);
+            track->art_dsc = (lv_img_dsc_t *)malloc(sizeof(lv_img_dsc_t));
+            if (track->art_buf && track->art_dsc) {
+                memcpy(track->art_buf, tmp.buf, 80 * 80 * 2);
+                track->art_dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
+                track->art_dsc->header.cf     = LV_COLOR_FORMAT_RGB565;
+                track->art_dsc->header.w      = 80;
+                track->art_dsc->header.h      = 80;
+                track->art_dsc->header.stride = 80 * 2;
+                track->art_dsc->data_size     = 80 * 80 * 2;
+                track->art_dsc->data          = (uint8_t *)track->art_buf;
+            }
+            jpeg_image_free(tmp);
+        }
+    }
+
+    lv_img_set_src(album_art, track->art_dsc ? track->art_dsc : &no_artwork_80px);
     
-    //Serial.printf("artwork id: %d\n", track->artwork_id);
-    //if (track->artwork_id[0] != '\0') {
-        //Decode JPEG here
-        //lv_img_set_src(album_art, track->thumbnail_path);
-   // } else {
-        lv_img_set_src(album_art, &no_artwork_80px);  // default placeholder
-   // }
 
     // ── Text column (right of image) ─────────────────────────────────────────
     lv_obj_t *text_col = lv_obj_create(track_cont);
