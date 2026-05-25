@@ -89,7 +89,8 @@ uint32_t targetFrequency = CPU_SPEED_MHZ;
 int16_t track_count = 0;
 Track** all_tracks = nullptr;      // Pointer to array of Track pointers, initialized to nullptr	
 
-triangle_shape_t s_cue_loop_triangle;
+triangle_shape_t s_loop_triangle;
+triangle_shape_t s_cue_triangle;
 
 
 
@@ -242,7 +243,7 @@ uint8_t CUE_OPERATION = 0;
 
 uint8_t dSHOW = TRACK_LIST;
 uint8_t REMAIN_ENABLE = 1;
-uint8_t waveformType = WAVEFORM_RGB;
+uint8_t waveformType = WAVEFORM_3BAND;
 
 
 void ledTIMER();
@@ -646,11 +647,18 @@ void setup()
 
 lr_prerender_glyphs(&lv_font_montserrat_10);
 
-lr_build_triangle_shape(&s_cue_loop_triangle,
+lr_build_triangle_shape(&s_loop_triangle,
     0,              0,
     LR_BOX_WIDTH-1, 0,
     LR_BOX_WIDTH/2, LR_BOX_HEIGHT-1,
     LR_BOX_WIDTH,   LR_BOX_HEIGHT);
+
+lr_build_triangle_shape(&s_cue_triangle,
+    0,  13,   // bottom-left
+    12, 13,   // bottom-right
+    6,  0,    // top-centre tip
+    12, 14);
+
 
 
   Serial.println("Initializing Audio");      // <-- add before startI2SInterrupt

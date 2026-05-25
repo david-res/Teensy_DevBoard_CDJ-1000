@@ -197,7 +197,8 @@ extern Track** all_tracks;
 extern int16_t track_count;
 
 
-extern triangle_shape_t s_cue_loop_triangle;
+extern triangle_shape_t s_loop_triangle;
+extern triangle_shape_t s_cue_triangle;
 
 
 		

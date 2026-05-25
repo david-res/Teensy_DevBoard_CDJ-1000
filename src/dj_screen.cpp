@@ -1523,28 +1523,33 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
       beatX++;
     }
 
-    // --- Cue markers ---
+    // --- Cue marker ---
+    if (CUE_ADR-(CUE_ADR%dynamicWaveformZOOM) == adr) {
+        int16_t marker_x = (int16_t)x - (LR_BOX_WIDTH + 1) / 2;
+        lr_blit_triangle(dynamicCanvasBuffer, chartWidth, chartHeight, marker_x, 150, &s_cue_triangle, 0xFD20);
+    }
+
+    // --- Hot Cue markers ---
     if (g_track) {
       for (uint8_t i = 0; i < 8; i++) {
         const CuePoint &cp = g_track->hot_cues[i];
         if (!cp.active) continue;
     
         uint32_t cue_adr = (uint32_t)cp.time_ms * 150UL / 1000UL;  // ms -> all_long units  
-        cue_adr -= cue_adr % dynamicWaveformZOOM;
-        if (cue_adr != adr) continue;
+        //cue_adr -= cue_adr % dynamicWaveformZOOM;
+        if (cue_adr-(cue_adr%dynamicWaveformZOOM) != adr) continue;
         uint16_t color565 = ((uint16_t)(cp.color_r >> 3) << 11)
                           | ((uint16_t)(cp.color_g >> 2) <<  5)
                           |  (uint16_t)(cp.color_b >> 3);
         int16_t marker_x = (int16_t)x - (LR_BOX_WIDTH + 1) / 2;
         if (cp.type == 2) {
           lr_blit_triangle(dynamicCanvasBuffer, chartWidth, chartHeight,
-                           marker_x, 0, &s_cue_loop_triangle, color565);
+                           marker_x, 0, &s_cue_triangle, color565);
         } else {
           lr_blit_letter_box(dynamicCanvasBuffer, chartWidth,
                              marker_x, 0, i, color565);
         }
-        drawFastVLine16Bit(x, LR_BOX_HEIGHT, chartHeight - LR_BOX_HEIGHT,
-                           color565, dynamicCanvasBuffer, chartWidth);
+        //drawFastVLine16Bit(x, LR_BOX_HEIGHT, chartHeight - LR_BOX_HEIGHT, color565, dynamicCanvasBuffer, chartWidth);
       }
     }
 
@@ -1552,15 +1557,43 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     // --- Waveform bands ---
     if (adr <= all_long) {
       if (waveformType == WAVEFORM_3BAND) {
-        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[0][index] >> 1)), dynamicWaveSampleData[0][index], waveformColors[0], dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[1][index] >> 1)), dynamicWaveSampleData[1][index], waveformColors[1], dynamicCanvasBuffer, chartWidth);
-        drawFastVLine16Bit(x, (chartHeightHalf - (dynamicWaveSampleData[2][index] >> 1)), dynamicWaveSampleData[2][index], waveformColors[2], dynamicCanvasBuffer, chartWidth);
-      }
+            if(dynamicWaveformZOOM == 1){
+                drawSlope16Bit(dynamicCanvasBuffer, dynamicWaveSampleData[0][index], dynamicWaveSampleData[0][index+dynamicWaveformZOOM], x, waveformColors[0], 255);
+                drawSlope16Bit(dynamicCanvasBuffer, dynamicWaveSampleData[1][index], dynamicWaveSampleData[1][index+dynamicWaveformZOOM], x, waveformColors[1], 255);
+                drawSlope16Bit(dynamicCanvasBuffer, dynamicWaveSampleData[2][index], dynamicWaveSampleData[2][index+dynamicWaveformZOOM], x, waveformColors[2], 255);
+            }
+            else{
+                uint8_t  height[3] = {dynamicWaveSampleData[0][index], dynamicWaveSampleData[1][index], dynamicWaveSampleData[2][index]};
+                for(int j=0;j<(dynamicWaveformZOOM-1);j++){
+                    for(int band=0;band<3;band++){
+                        if (dynamicWaveSampleData[band][index+j+1] > height[band]){
+                            height[band] = dynamicWaveSampleData[band][index+j+1];
+                        }
+                    }
+                }
+                drawFastVLine16Bit(x, (chartHeightHalf - (height[0] >> 1)), height[0], waveformColors[0], dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x, (chartHeightHalf - (height[1] >> 1)), height[1], waveformColors[1], dynamicCanvasBuffer, chartWidth);
+                drawFastVLine16Bit(x, (chartHeightHalf - (height[2] >> 1)), height[2], waveformColors[2], dynamicCanvasBuffer, chartWidth);
+            }
+        }
       if (waveformType == WAVEFORM_RGB) {
-        uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
-        uint8_t  height = dynamicWaveSampleData[2][index];
-        drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
-      }
+            if(dynamicWaveformZOOM == 1){
+                uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
+                uint8_t  height = dynamicWaveSampleData[2][index];
+                drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
+            }
+            else{
+                uint16_t color  = ((uint16_t)dynamicWaveSampleData[0][index] << 8) | dynamicWaveSampleData[1][index];
+                uint8_t  height = dynamicWaveSampleData[2][index];
+                for(int j=0;j<(dynamicWaveformZOOM-1);j++){
+                    if (dynamicWaveSampleData[2][index+j+1] > height){
+                        height = dynamicWaveSampleData[2][index+j+1];
+                        color  = ((uint16_t)dynamicWaveSampleData[0][index+j+1] << 8) | dynamicWaveSampleData[1][index+j+1];
+                    }
+                }
+                drawFastVLine16Bit(x, (chartHeightHalf - (height >> 1)), height, color, dynamicCanvasBuffer, chartWidth);
+            }
+        }
     }
 
     // --- Track bar position at play head ---
@@ -1569,9 +1602,17 @@ FASTRUN void updateDynamicWaveform(uint32_t waveformOffset)
     }
   }
 
+  uint16_t playheadColor = 0xFFFF;
+  if (play_enable){
+        playheadColor = 0xFFFF;
+  }
+  else{
+        playheadColor = 0xF800; // Red when paused
+  }
   // --- Vertical play head ---
-  drawFastVLine16Bit(playHeadX,     0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
-  drawFastVLine16Bit(playHeadX + 1, 0, chartHeight, col_white, dynamicCanvasBuffer, chartWidth);
+  drawFastVLine16Bit(playHeadX-1, 0, chartHeight, playheadColor, dynamicCanvasBuffer, chartWidth);
+  drawFastVLine16Bit(playHeadX, 0, chartHeight, playheadColor, dynamicCanvasBuffer, chartWidth);
+  drawFastVLine16Bit(playHeadX + 1, 0, chartHeight, playheadColor, dynamicCanvasBuffer, chartWidth);
 
   dynamicBufferReady = true;
 }
