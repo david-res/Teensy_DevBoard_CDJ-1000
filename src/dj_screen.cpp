@@ -491,6 +491,7 @@ static void overviewWaveformClick(lv_event_t *e) {
     }
 }
 
+LV_IMG_DECLARE(no_artwork_80px);
 void create_top_container(Track * track) {
     // Main top container
     top_container = lv_obj_create(main_screen);
@@ -503,10 +504,12 @@ void create_top_container(Track * track) {
     lv_obj_clear_flag(top_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(top_container, LV_OBJ_FLAG_CLICKABLE);
 
-    // === BACK BUTTON (left, square, same height as title_bpm_container = 70px) ===
-    int btn_h = 70;
-    int back_btn_w = btn_h; // square
-    int gap = 4;
+    // === BACK BUTTON (left, square, 80px to match artwork) ===
+    int btn_h       = 80;
+    int back_btn_w  = btn_h;  // square
+    int art_w       = 80;
+    int gap         = 4;
+    int side_btn_w  = 80;
 
     lv_obj_t *back_btn = lv_obj_create(top_container);
     lv_obj_set_size(back_btn, back_btn_w, btn_h);
@@ -523,16 +526,34 @@ void create_top_container(Track * track) {
     lv_obj_t *back_label = lv_label_create(back_btn);
     lv_label_set_text(back_label, LV_SYMBOL_LIST);
     lv_obj_set_style_text_color(back_label, lv_color_hex(0xcccccc), 0);
-    //lv_obj_set_style_text_font(back_label, &exo2_20, 0);
     lv_obj_center(back_label);
 
-    // === QUANTIZE + SLIP BUTTONS (right of title_bpm_container) ===
-    int side_btn_w = 80;
-    int title_bpm_w = SCREEN_WIDTH - back_btn_w - gap - (side_btn_w * 3 + gap * 3);
+    // === ALBUM ART (right of back button) ===
+    lv_obj_t *top_art = lv_img_create(top_container);
+    lv_obj_set_size(top_art, 80, 80);
+    lv_obj_set_pos(top_art, back_btn_w + gap, 0);
+    lv_obj_set_style_border_width(top_art, 0, 0);
+
+    if (track->art_buf) {
+        static lv_img_dsc_t top_art_dsc;
+        top_art_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
+        top_art_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
+        top_art_dsc.header.w      = 80;
+        top_art_dsc.header.h      = 80;
+        top_art_dsc.header.stride = 80 * 2;
+        top_art_dsc.data_size     = 80 * 80 * 2;
+        top_art_dsc.data          = (uint8_t *)track->art_buf;
+        lv_img_set_src(top_art, &top_art_dsc);
+    } else {
+        lv_img_set_src(top_art, &no_artwork_80px);
+    }
+
+    // === QUANTIZE + SLIP + GATE BUTTONS (right side) ===
+    int title_bpm_w = SCREEN_WIDTH - back_btn_w - gap - art_w - gap - (side_btn_w * 3 + gap * 3);
 
     quantize_btn = lv_obj_create(top_container);
     lv_obj_set_size(quantize_btn, side_btn_w, btn_h);
-    lv_obj_set_pos(quantize_btn, back_btn_w + gap + title_bpm_w + gap, 0);
+    lv_obj_set_pos(quantize_btn, back_btn_w + gap + art_w + gap + title_bpm_w + gap, 0);
     lv_obj_set_style_bg_color(quantize_btn, lv_color_hex(0x2a2a2a), 0);
     lv_obj_set_style_border_color(quantize_btn, lv_color_hex(0x555555), 0);
     lv_obj_set_style_border_width(quantize_btn, 1, 0);
@@ -550,7 +571,7 @@ void create_top_container(Track * track) {
 
     slip_btn = lv_obj_create(top_container);
     lv_obj_set_size(slip_btn, side_btn_w, btn_h);
-    lv_obj_set_pos(slip_btn, back_btn_w + gap + title_bpm_w + gap + side_btn_w + gap, 0);
+    lv_obj_set_pos(slip_btn, back_btn_w + gap + art_w + gap + title_bpm_w + gap + side_btn_w + gap, 0);
     lv_obj_set_style_bg_color(slip_btn, lv_color_hex(0x2a2a2a), 0);
     lv_obj_set_style_border_color(slip_btn, lv_color_hex(0x555555), 0);
     lv_obj_set_style_border_width(slip_btn, 1, 0);
@@ -568,7 +589,7 @@ void create_top_container(Track * track) {
 
     gate_btn = lv_obj_create(top_container);
     lv_obj_set_size(gate_btn, side_btn_w, btn_h);
-    lv_obj_set_pos(gate_btn, back_btn_w + gap + title_bpm_w + gap + (side_btn_w + gap) * 2, 0);
+    lv_obj_set_pos(gate_btn, back_btn_w + gap + art_w + gap + title_bpm_w + gap + (side_btn_w + gap) * 2, 0);
     lv_obj_set_style_bg_color(gate_btn, lv_color_hex(0x2a2a2a), 0);
     lv_obj_set_style_border_color(gate_btn, lv_color_hex(0x555555), 0);
     lv_obj_set_style_border_width(gate_btn, 1, 0);
@@ -584,10 +605,10 @@ void create_top_container(Track * track) {
     lv_obj_set_style_text_font(gate_label, &exo2_20, 0);
     lv_obj_center(gate_label);
 
-    // === TITLE + BPM CONTAINER (between back button and side buttons) ===
+    // === TITLE + BPM CONTAINER (between art and side buttons) ===
     lv_obj_t *title_bpm_container = lv_obj_create(top_container);
     lv_obj_set_size(title_bpm_container, title_bpm_w, btn_h);
-    lv_obj_set_pos(title_bpm_container, back_btn_w + gap, 0);
+    lv_obj_set_pos(title_bpm_container, back_btn_w + gap + art_w + gap, 0);
     lv_obj_set_style_bg_color(title_bpm_container, LV_COLOR_MAKE(0x53, 0x53, 0x53), 0);
     lv_obj_set_style_border_width(title_bpm_container, 0, 0);
     lv_obj_set_style_pad_all(title_bpm_container, 0, 0);
@@ -618,7 +639,7 @@ void create_top_container(Track * track) {
     lv_label_set_text(key_label, rbParser->getKeyName(track->key_id));
     lv_obj_set_style_text_font(key_label, &exo2_20, 0);
     lv_obj_align_to(key_label, bpm_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
-    const char* keyName = rbParser->getKeyName(track->key_id);
+    const char* keyName  = rbParser->getKeyName(track->key_id);
     const char* keyColor = getKeyColor(keyName);
     lv_obj_set_style_text_color(key_label, lv_color_hex(strtol(keyColor + 1, nullptr, 16)), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
@@ -631,12 +652,12 @@ void create_top_container(Track * track) {
     lv_obj_set_style_border_width(progress_line, 0, 0);
     lv_obj_clear_flag(progress_line, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Artist label (below title_bpm_container row)
+    // Artist label (below title_bpm_container row, aligned with title)
     artist_label = lv_label_create(top_container);
     lv_label_set_text(artist_label, track->artist);
     lv_obj_set_style_text_color(artist_label, COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(artist_label, &exo2_20, 0);
-    lv_obj_set_pos(artist_label, back_btn_w + gap+6, 40);
+    lv_obj_set_pos(artist_label, back_btn_w + gap + art_w + gap + 6, 40);
     lv_obj_clear_flag(artist_label, LV_OBJ_FLAG_SCROLLABLE);
 
     // Bottom info container (bars, time, BPM info)
@@ -666,15 +687,6 @@ void create_top_container(Track * track) {
     lv_obj_set_pos(bar_count_label, 0, 35);
     lv_obj_clear_flag(bar_count_label, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Time label (center)
-    /*
-    time_label = lv_label_create(info_container);
-    lv_obj_set_style_text_color(time_label, COLOR_TEXT_PRIMARY, 0);
-    lv_obj_set_style_text_font(time_label, &exo2_28, 0);
-    lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_clear_flag(time_label, LV_OBJ_FLAG_SCROLLABLE);
-    */
-
     // Time container (center)
     time_container = lv_obj_create(info_container);
     lv_obj_set_size(time_container, 300, 40);
@@ -684,33 +696,29 @@ void create_top_container(Track * track) {
     lv_obj_set_style_pad_all(time_container, 0, 0);
     lv_obj_clear_flag(time_container, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Digit indices:  0=sign  1=min10  2=min1  3=':'  4=sec10  5=sec1  6=':'  7=frm10  8=frm1  9='.'  10=hf
+    // Digit indices: 0=sign 1=min10 2=min1 3=':' 4=sec10 5=sec1 6=':' 7=frm10 8=frm1 9='.' 10=hf
     const char *init[] = { " ", "0", "0", ":", "0", "0", ":", "0", "0", ".", "0" };
     int x = 0;
     for (int i = 0; i < 11; i++) {
         lv_obj_t *d = lv_label_create(time_container);
         lv_label_set_text(d, init[i]);
         lv_obj_set_style_text_font(d, &exo2_28, 0);
-        // separators slightly dimmer
         bool is_sep = (i == 0 || i == 3 || i == 6 || i == 9);
         lv_obj_set_style_text_color(d, is_sep ? lv_color_make(0x88, 0x88, 0x88) : lv_color_make(0xFF, 0xFF, 0xFF), 0);
         lv_obj_set_pos(d, x, 0);
-        // advance x by character width (tune these to your font)
         x += (is_sep ? 10 : 18);
     }
 
-
-    // ── Tempo section (left) ──────────────────────────────────────────
-    // ── Main tempo container (max 200px, replacing original BPM position) ──
+    // ── Tempo container (right) ───────────────────────────────────────────────
     lv_obj_t *tempo_container = lv_obj_create(info_container);
     lv_obj_set_size(tempo_container, 240, 60);
     lv_obj_set_style_bg_opa(tempo_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tempo_container, 0, 0);
     lv_obj_set_style_pad_all(tempo_container, 0, 0);
     lv_obj_clear_flag(tempo_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(tempo_container, LV_ALIGN_TOP_RIGHT, -10, 0); // same position as old current_bpm_label
+    lv_obj_align(tempo_container, LV_ALIGN_TOP_RIGHT, -10, 0);
 
-    // ── BPM box (right side) ──────────────────────────────────────────
+    // BPM box (right side)
     lv_obj_t *bpm_box = lv_obj_create(tempo_container);
     lv_obj_set_size(bpm_box, 100, 55);
     lv_obj_set_style_bg_color(bpm_box, lv_color_black(), 0);
@@ -722,14 +730,12 @@ void create_top_container(Track * track) {
     lv_obj_clear_flag(bpm_box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(bpm_box, LV_ALIGN_TOP_RIGHT, 0, 0);
 
-    // "BPM" small label inside the box (top-left)
     lv_obj_t *bpm_title = lv_label_create(bpm_box);
     lv_label_set_text(bpm_title, "BPM");
     lv_obj_set_style_text_color(bpm_title, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(bpm_title, &exo2_16, 0);
     lv_obj_align(bpm_title, LV_ALIGN_TOP_LEFT, 5, 0);
 
-    // Current BPM large value
     current_bpm_label = lv_label_create(bpm_box);
     lv_label_set_text(current_bpm_label, "124.3");
     lv_obj_set_style_text_color(current_bpm_label, COLOR_TEXT_PRIMARY, 0);
@@ -737,15 +743,13 @@ void create_top_container(Track * track) {
     lv_obj_align(current_bpm_label, LV_ALIGN_BOTTOM_MID, 0, -3);
     lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ── Tempo section (left side) ─────────────────────────────────────
-    // "TEMPO" small label
+    // Tempo section (left side)
     lv_obj_t *tempo_title = lv_label_create(tempo_container);
     lv_label_set_text(tempo_title, "TEMPO");
     lv_obj_set_style_text_color(tempo_title, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(tempo_title, &exo2_16, 0);
     lv_obj_align(tempo_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    // Range label (boxed, sits right of "TEMPO")
     tempo_range_label = lv_label_create(tempo_container);
     lv_label_set_text(tempo_range_label, "+/-16");
     lv_obj_set_style_text_color(tempo_range_label, COLOR_TEXT_PRIMARY, 0);
@@ -757,25 +761,13 @@ void create_top_container(Track * track) {
     lv_obj_set_style_radius(tempo_range_label, 2, 0);
     lv_obj_align_to(tempo_range_label, tempo_title, LV_ALIGN_OUT_RIGHT_MID, 4, 4);
 
-    // Adjusted tempo value (e.g. "+ 0.25%")
     adjusted_tempo_label = lv_label_create(tempo_container);
     lv_label_set_text(adjusted_tempo_label, "+ 0.25%");
     lv_obj_set_style_text_color(adjusted_tempo_label, COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(adjusted_tempo_label, &exo2_32, 0);
     lv_obj_align(adjusted_tempo_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_clear_flag(adjusted_tempo_label, LV_OBJ_FLAG_SCROLLABLE);
-
-    // BPM info (right section)
-    /*
-    current_bpm_label = lv_label_create(info_container);
-    lv_label_set_text(current_bpm_label, "125");
-    lv_obj_set_style_text_color(current_bpm_label, COLOR_TEXT_PRIMARY, 0);
-    lv_obj_set_style_text_font(current_bpm_label, &exo2_32, 0);
-    lv_obj_align(current_bpm_label, LV_ALIGN_TOP_RIGHT, -10, 0);
-    lv_obj_clear_flag(current_bpm_label, LV_OBJ_FLAG_SCROLLABLE);
-    */
 }
-
 
 
 void create_middle_container(Track * track) {

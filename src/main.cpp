@@ -683,7 +683,7 @@ lr_build_triangle_shape(&s_cue_loop_triangle,
 	create_dj_browser_ui(-1, -1);
 	//populate_track_list(all_tracks, track_count);
 	lv_scr_load_anim(filesScreen, LV_SCR_LOAD_ANIM_FADE_IN, 500, 3500, true); 
-	disp_setBrightness(255);
+	disp_setBrightness(100);
 
 
 #ifdef MK1
