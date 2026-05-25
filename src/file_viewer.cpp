@@ -30,7 +30,7 @@ LV_FONT_DECLARE(exo2_32)
 #define PLAYLIST_WIDTH      150
 #define TRACK_LIST_WIDTH    800-(SIDEBAR_WIDTH + PLAYLIST_WIDTH)   // 800 - 80 - 200 = 520px available
 #define HEADER_HEIGHT       50
-#define TRACK_ITEM_HEIGHT   64
+#define TRACK_ITEM_HEIGHT   82
 
 
 // ========== Forward Declarations ==========
@@ -319,57 +319,66 @@ static void create_track_list_panel(lv_obj_t *parent)
     // Add sample tracks (call this with your actual track data)
     // populate_track_list(g_track_list);
 }
-
+LV_IMG_DECLARE(no_artwork_80px)
 // ========== Add Track Item ==========
 static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
 {
-    
+    if (!parent || !track || !track->title || !track->artist) return NULL;
 
-    
-    if (!parent || !track) {
-        
-        return NULL;
-    }
-    
-    // Validate track fields to prevent null pointer crashes
-    if (!track->title || !track->artist) {
-        
-        return NULL;
-    }
-
-    Serial.println("  >> Creating track container...");
-    // Main container
+    // ── Outer container ──────────────────────────────────────────────────────
     lv_obj_t *track_cont = lv_obj_create(parent);
-    if (!track_cont) {
-       
-        return NULL;
-    }
-    //Serial.printf("File size: %u bytes, Sample rate: %u Hz, Bitrate: %u kbps, File Type: 0x%x\n", track->file_size, track->sample_rate, track->bitrate, track->file_type);
-    
-    
-    lv_obj_set_width(track_cont, LV_PCT(95));  // Use percentage to fit parent
+    if (!track_cont) return NULL;
+
+    lv_obj_set_width(track_cont, LV_PCT(95));
     lv_obj_set_height(track_cont, TRACK_ITEM_HEIGHT);
-    lv_obj_set_flex_flow(track_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_flow(track_cont, LV_FLEX_FLOW_ROW);          // ← ROW now
+    lv_obj_set_flex_align(track_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_color(track_cont, COLOR_BG_TRACK, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(track_cont, COLOR_TRACK_HOVER, LV_STATE_PRESSED);
     lv_obj_set_style_border_width(track_cont, 0, 0);
     lv_obj_set_style_radius(track_cont, 0, 0);
     lv_obj_set_style_pad_hor(track_cont, 16, 0);
     lv_obj_set_style_pad_ver(track_cont, 8, 0);
-    lv_obj_set_style_pad_gap(track_cont, 4, 0);
+    lv_obj_set_style_pad_gap(track_cont, 12, 0);                 // gap between art & text
     lv_obj_add_flag(track_cont, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(track_cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(track_cont, track_item_cb, LV_EVENT_CLICKED, track);
+    lv_obj_set_user_data(track_cont, track);
+
+    // ── Album art (left) ─────────────────────────────────────────────────────
+    lv_obj_t *album_art = lv_img_create(track_cont);
+    lv_obj_set_size(album_art, 80, 80);
+    lv_obj_set_style_border_width(album_art, 0, 0);
 
     
-    // Top row: Title, Key, BPM
-    lv_obj_t *top_row = lv_obj_create(track_cont);
-    if (!top_row) {
-        Serial.println("  >> ERROR: Failed to create top_row!");
-        lv_obj_delete(track_cont);
-        return NULL;
-    }
+    Serial.printf(" artwork path from: %s\n", track->thumbnail_path);
+   
     
+    //Serial.printf("artwork id: %d\n", track->artwork_id);
+    //if (track->artwork_id[0] != '\0') {
+        //Decode JPEG here
+        //lv_img_set_src(album_art, track->thumbnail_path);
+   // } else {
+        lv_img_set_src(album_art, &no_artwork_80px);  // default placeholder
+   // }
+
+    // ── Text column (right of image) ─────────────────────────────────────────
+    lv_obj_t *text_col = lv_obj_create(track_cont);
+    lv_obj_set_flex_grow(text_col, 1);                           // fills remaining width
+    lv_obj_set_height(text_col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(text_col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_bg_opa(text_col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(text_col, 0, 0);
+    lv_obj_set_style_pad_all(text_col, 0, 0);
+    lv_obj_set_style_pad_gap(text_col, 4, 0);
+    lv_obj_remove_flag(text_col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(text_col, LV_OBJ_FLAG_CLICKABLE);
+
+    // ── Top row: Title | BPM | Key | Duration ────────────────────────────────
+    lv_obj_t *top_row = lv_obj_create(text_col);
+    if (!top_row) { lv_obj_delete(track_cont); return NULL; }
+
     lv_obj_set_size(top_row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(top_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(top_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -380,115 +389,83 @@ static lv_obj_t* add_track_item(lv_obj_t *parent, Track *track)
     lv_obj_remove_flag(top_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(top_row, LV_OBJ_FLAG_CLICKABLE);
 
-    
-    // Title
+    // Title (grows to fill space)
     lv_obj_t *lbl_title = lv_label_create(top_row);
-    if (!lbl_title) {
-        lv_obj_delete(track_cont);
-        return NULL;
-    }
-    lv_label_set_text(lbl_title, track->title ? track->title : "Unknown");
-    lv_obj_set_width(lbl_title, 280);  // Match header
+    if (!lbl_title) { lv_obj_delete(track_cont); return NULL; }
+    lv_label_set_text(lbl_title, track->title);
+    lv_obj_set_flex_grow(lbl_title, 1);                          // pushes BPM/Key/Dur to the right
     lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_font(lbl_title, &exo2_18, 0);
     lv_obj_set_style_text_color(lbl_title, COLOR_WHITE, 0);
     lv_obj_remove_flag(lbl_title, LV_OBJ_FLAG_CLICKABLE);
 
-    //Serial.println("  >> Creating spacer...");
-    // Spacer for artist column (align with header)
-    lv_obj_t *spacer = lv_obj_create(top_row);
-    lv_obj_set_size(spacer, 10, 1);  // Match artist column width
-    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(spacer, 0, 0);
-    lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
-
-    //Serial.println("  >> Creating key label...");
     // Key
     lv_obj_t *lbl_key = lv_label_create(top_row);
-    lv_label_set_text(lbl_key, rbParser->getKeyName(track->key_id));
-    lv_obj_set_width(lbl_key, 40);  // Match header
+    const char *keyName  = rbParser->getKeyName(track->key_id);
+    const char *keyColor = getKeyColor(keyName);
+    lv_label_set_text(lbl_key, keyName);
+    lv_obj_set_width(lbl_key, 40);
     lv_obj_set_style_text_align(lbl_key, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(lbl_key, &exo2_16, 0);
-    const char* keyName = rbParser->getKeyName(track->key_id);
-    const char* keyColor = getKeyColor(keyName);
     lv_obj_set_style_text_color(lbl_key, lv_color_hex(strtol(keyColor + 1, nullptr, 16)), 0);
-    lv_label_set_text(lbl_key, keyName);
     lv_obj_remove_flag(lbl_key, LV_OBJ_FLAG_CLICKABLE);
 
-
-    //Serial.println("  >> Creating BPM label...");
     // BPM
     lv_obj_t *lbl_bpm = lv_label_create(top_row);
     lv_label_set_text_fmt(lbl_bpm, "%.1f", track->bpm);
-    lv_obj_set_width(lbl_bpm, 50);  // Match header
+    lv_obj_set_width(lbl_bpm, 50);
     lv_obj_set_style_text_align(lbl_bpm, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(lbl_bpm, &exo2_16, 0);
     lv_obj_set_style_text_color(lbl_bpm, COLOR_WHITE, 0);
     lv_obj_remove_flag(lbl_bpm, LV_OBJ_FLAG_CLICKABLE);
 
-    //Serial.println("  >> Creating duration label...");
     // Duration
     lv_obj_t *lbl_duration = lv_label_create(top_row);
     lv_label_set_text(lbl_duration, format_duration(track->duration));
-    lv_obj_set_width(lbl_duration, 55);  // Match header
+    lv_obj_set_width(lbl_duration, 55);
     lv_obj_set_style_text_align(lbl_duration, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_font(lbl_duration, &exo2_16, 0);
     lv_obj_set_style_text_color(lbl_duration, COLOR_GRAY, 0);
     lv_obj_remove_flag(lbl_duration, LV_OBJ_FLAG_CLICKABLE);
 
+    // ── Bottom row: Artist | Format ───────────────────────────────────────────
+    lv_obj_t *bottom_row = lv_obj_create(text_col);
+    if (!bottom_row) { lv_obj_delete(track_cont); return NULL; }
 
-
-    //Serial.println("  >> Creating bottom row...");
-    // Bottom row: Artist
-    lv_obj_t *bottom_row = lv_obj_create(track_cont);
-    if (!bottom_row) {
-        //Serial.println("  >> ERROR: Failed to create bottom_row!");
-        lv_obj_delete(track_cont);
-        return NULL;
-    }
-    
     lv_obj_set_size(bottom_row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(bottom_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bottom_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_opa(bottom_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(bottom_row, 0, 0);
     lv_obj_set_style_pad_all(bottom_row, 0, 0);
+    lv_obj_set_style_pad_gap(bottom_row, 8, 0);
     lv_obj_remove_flag(bottom_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(bottom_row, LV_OBJ_FLAG_CLICKABLE);
 
-   //Serial.printf("  >> Creating artist label with text: '%s'\n", track->artist);
+    // Artist (grows to fill space)
     lv_obj_t *lbl_artist = lv_label_create(bottom_row);
-    if (!lbl_artist) {
-        Serial.println("  >> ERROR: Failed to create lbl_artist!");
-        lv_obj_delete(track_cont);
-        return NULL;
-    }
-    lv_label_set_text(lbl_artist, track->artist ? track->artist : "Unknown Artist");
-    lv_obj_set_width(lbl_artist, 320);  // Title + Artist width (190 + 130)
+    if (!lbl_artist) { lv_obj_delete(track_cont); return NULL; }
+    lv_label_set_text(lbl_artist, track->artist);
+    lv_obj_set_flex_grow(lbl_artist, 1);                         // pushes format to the right
     lv_label_set_long_mode(lbl_artist, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(lbl_artist, &exo2_16, 0);
     lv_obj_set_style_text_color(lbl_artist, COLOR_GRAY, 0);
     lv_obj_remove_flag(lbl_artist, LV_OBJ_FLAG_CLICKABLE);
-     
-    // File format
+
+    // Format
     lv_obj_t *lbl_format = lv_label_create(bottom_row);
     lv_label_set_text(lbl_format, fileTypeString(track->file_type));
-    lv_obj_set_width(lbl_format, 50);  // Title + Artist width (190 + 130)
-    lv_obj_set_flex_grow(lbl_format, 1);
-    lv_obj_align(lbl_format, LV_ALIGN_RIGHT_MID, 100, 0);
-    //lv_obj_set_style_text_align(lbl_format, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(lbl_format, 50);
+    lv_obj_set_style_text_align(lbl_format, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_font(lbl_format, &exo2_16, 0);
     lv_obj_set_style_text_color(lbl_format, COLOR_GRAY, 0);
     lv_obj_remove_flag(lbl_format, LV_OBJ_FLAG_CLICKABLE);
 
-    //Serial.println("  >> add_track_item: SUCCESS");
-    lv_obj_set_user_data(track_cont, track);
     return track_cont;
 }
-
 // ========== Helper Functions ==========
 static const char* format_duration(uint32_t seconds)
-{
-    static char buf[16];
+{    static char buf[16];
     uint32_t mins = seconds / 60;
     uint32_t secs = seconds % 60;
     snprintf(buf, sizeof(buf), "%02u:%02u", mins, secs);

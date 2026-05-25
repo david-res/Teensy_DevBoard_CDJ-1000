@@ -179,6 +179,8 @@ private:
     bool     parseTrackRow(uint16_t row_start, Track* out);
     bool     lookupString(uint8_t table_type, uint32_t row_id,
                           char* out, uint16_t max_len);
+    bool     lookupArtworkPath(uint32_t artwork_id,
+                               char* out, uint16_t max_len);
 };
 
 // ============================================================================
@@ -514,7 +516,60 @@ inline bool RekordboxParser::parseTrackRow(uint16_t rs, Track* out) {
     uint32_t album_id =u32(rs+0x40); if(album_id)  lookupString(3,album_id, out->album, RB_MAX_TITLE_LEN);
     uint32_t genre_id =u32(rs+0x3c); if(genre_id)  lookupString(1,genre_id, out->genre, RB_MAX_TITLE_LEN);
     uint32_t label_id =u32(rs+0x28); if(label_id)  lookupString(4,label_id, out->label, RB_MAX_TITLE_LEN);
+    if (out->artwork_id) lookupArtworkPath(out->artwork_id, out->thumbnail_path, RB_MAX_PATH_LEN);
     return true;
+}
+
+// Artwork rows (table type 0x0d) hold the artwork id at bytes 0x00–0x03 and the
+// file path as a DeviceSQL string embedded directly at byte 0x04 within the row.
+// Row layout:
+//   [rs+0x00] u32  id
+//   [rs+0x04] …   DeviceSQL string  (path)
+//
+// The row offset index in artwork pages can be zeroed/corrupt (all offsets point
+// to rs=0x0028), so we scan the heap linearly instead of trusting the index.
+// Each artwork row is: 4 bytes id + DeviceSQL string. We advance by the actual
+// string field length to find the next row.
+inline bool RekordboxParser::lookupArtworkPath(uint32_t artwork_id,
+                                                char* out, uint16_t max_len) {
+    out[0] = '\0';
+    uint32_t pg = _tbl_first[13], last = _tbl_last[13];  // table type 0x0d = artwork
+    while (pg && pg <= last) {
+        if (!readPage(pg)) break;
+        uint32_t next = u32(12);
+        if (!(_buf[0x1b] & 0x40)) {  // skip index pages
+            // Linear heap scan — start right after the 0x28-byte page header.
+            // Artwork rows are 4-byte aligned: u32 id + inline DeviceSQL string.
+            uint16_t pos = 0x28;
+            while (pos + 8 < RB_PAGE_SIZE) {
+                uint32_t found_id = u32(pos);
+                uint16_t str_pos  = pos + 4;
+                // Determine string field length to advance to next row
+                uint16_t str_field_len = 0;
+                uint8_t lk = _buf[str_pos];
+                if (lk & 0x01) {
+                    str_field_len = (lk >> 1);
+                } else if (str_pos + 2 < RB_PAGE_SIZE) {
+                    str_field_len = _buf[str_pos+1] | ((uint16_t)_buf[str_pos+2] << 8);
+                }
+                if (str_field_len == 0) break;
+                if (found_id == artwork_id) {
+                    uint16_t n = readDeviceSQL(str_pos, out, max_len);
+                    if (n > 0) {
+                        if (out[0]=='Y' && out[1]=='/') {
+                            memmove(out, out+2, n-1);
+                            out[n-2] = '\0';
+                        }
+                        return true;
+                    }
+                }
+                pos += 4 + str_field_len;
+                pos = (pos + 3) & ~3u;  // 4-byte align to next row
+            }
+        }
+        pg = next;
+    }
+    return false;
 }
 
 inline bool RekordboxParser::findTrackRow(uint16_t track_id, Track* out) {
