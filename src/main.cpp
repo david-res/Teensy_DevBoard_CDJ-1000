@@ -849,7 +849,7 @@ FASTRUN void copyWaveformsToLCD()
 
 FASTRUN void loop()
 {
-
+  appStats.start(MAIN_LOOP);
 	myusb.Task();
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
   uint32_t snapshot_play_adr = play_adr;
@@ -872,7 +872,7 @@ FASTRUN void loop()
     appStats.report();
 }
 
-  appStats.start(MAIN_LOOP);
+
 
   if (lvgl_framePending == true) {
 
@@ -908,8 +908,11 @@ FASTRUN void loop()
 		{
 			if (filling_step == 6)
 			{
+				appStats.start(PLAYFILE_SEEK);
 				playFile.seek((32768UL * end_adr_valid_data) + 44);
+				appStats.end(PLAYFILE_SEEK);
 				filling_step = 0;
+
 			}
 			appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data & 0x7F][0], 32768);
@@ -1128,7 +1131,7 @@ FASTRUN void loop()
 
 FASTRUN void SAI_IRQHandler(void)
 {
-
+	appStats.start(ISR_I2S);
   I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
@@ -1148,6 +1151,7 @@ FASTRUN void SAI_IRQHandler(void)
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
+  appStats.end(ISR_I2S);
 
 }
 

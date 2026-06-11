@@ -8,11 +8,11 @@
 #define TFT_BL            0     // 0 - Backlight pin for TFT
 #endif
 
-#define TFT_BL            0     // 0 - Backlight pin for TFT
-#define TSR_CS           1     // 1 - XPT2046 SPI touchscreen chip select
+#define TFT_BL            1    // 0 - Backlight pin for TFT
+#define TSR_CS           -1    // 1 - XPT2046 SPI touchscreen chip select
 #define TFT_WR            36     // 8 - Write-strobe pin
 #define TFT_RD           37     //37 - Read-strobe pin  (-1 to disable, tie to 3.3v)
-#define TFT_CS           -1     //-1 - Chip select pin for TFT display. -1 to disable, tie to ground
+#define TFT_CS           0    //-1 - Chip select pin for TFT display. -1 to disable, tie to ground
 #define TFT_RST           34     // 9 - Hardware reset pin for TFT. Set to -1 for software reset only
 #define TFT_DC           35     //10 - Data/command pin for TFT
 #define SPI_MOSI         11     //11 - Documentation purposes, hardwired SPI MOSI

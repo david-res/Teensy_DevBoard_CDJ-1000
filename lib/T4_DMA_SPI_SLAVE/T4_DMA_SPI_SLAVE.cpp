@@ -54,7 +54,7 @@ void T4_DMA_SPI_SLAVE::begin(uint8_t spi_mode, uint8_t bit_order, uint8_t pincfg
 	  port().CCR = 0;
 
     attachInterruptVector(hardware().irq, hardware().spi_isr);
-    NVIC_SET_PRIORITY(hardware().irq, 126);
+    NVIC_SET_PRIORITY(hardware().irq, 64);
     NVIC_ENABLE_IRQ(hardware().irq);
 
 		port().IER = LPSPI_IER_FCIE ;
