@@ -68,7 +68,7 @@ extern USBFilesystem rekordboxDrive;  // drive with the PDB file
 #define LV_IMG_CF_TRUE_COLOR LV_COLOR_FORMAT_NATIVE
 #endif
 
-extern AppStats appStats;
+//extern AppStats appStats;
 extern i2s_sync audio;
 
 // Used in the I2S ISR
@@ -101,8 +101,8 @@ extern uint16_t PCM[218][8192][2];
 #define MK3
 
 
-extern uint8_t Rbuffer[32];
-extern uint8_t Tbuffer[32];
+extern volatile uint8_t Rbuffer[32];
+extern volatile uint8_t Tbuffer[32];
 
 #define TRACK_LIST 0
 #define WAVEFORM 1
@@ -180,7 +180,7 @@ const uint16_t phaseMeterWidth = 75;
 const uint16_t phaseMeterHeight = 22;
 const uint8_t slopePoints = 1;
 const uint8_t waveformScrollInc = 1;
-const uint16_t middleContainerPos = 158;
+const uint16_t middleContainerPos = 164;
 const uint16_t bottomContainerPos = 322;
 #define PREVIEW_WAVEFORM_WIDTH 720       // Output width for preview waveform
 

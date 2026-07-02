@@ -3,7 +3,7 @@
 #include <SD.h>
 #include "USBHost_t36.h"
 #include "globals.h"
-#include "stats/app_stats.h"
+//#include "stats/app_stats.h"
 #include "file_viewer.h"
 #include "dj_screen.h"
 #include "utils/changeSDSpeed.h"
@@ -67,7 +67,7 @@ void g_process_serial_rx (uint16_t x);
 //#define USE_PXP
 
 //For stats
-AppStats appStats = AppStats();
+//AppStats appStats = AppStats();
 
 USBHost myusb;
 USBDrive myDrive(myusb);
@@ -182,9 +182,9 @@ uint16_t newStaticBufferX = 0;
 uint16_t staticIndicatorBuffer[2 * overviewChartHeight];
 
 
-uint8_t Tbuffer[32] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
+volatile uint8_t Tbuffer[32] = {168,  119,  119,  0,  119,  119,  0,  0,  0,  1,  176,  0,  0,  0,  0,  0,  0,  0xC,  0,  0x20,  0,  0,  0,  88,  0,  0,  0};
 uint8_t load_animation_enable = 0;
-uint8_t Rbuffer[32]={0};
+volatile uint8_t Rbuffer[32]={0};
 uint16_t zi = 0;
 uint8_t a = 0;
 uint8_t dma_cnt = 0;
@@ -293,6 +293,47 @@ EXTMEM_NOCACHE uint16_t lvglBuffer2[SCREEN_WIDTH * (SCREEN_HEIGHT)] __attribute_
 
 #endif
 
+#define DMA_AUDIO 1
+
+#if defined(DMA_AUDIO)
+#include "Audio.h"
+
+class MyPCMSource : public AudioStream {
+public:
+  MyPCMSource() : AudioStream(0, nullptr) {}
+
+  void update() override {
+    audio_block_t *blockL = allocate();
+    audio_block_t *blockR = allocate();
+
+    if (!blockL || !blockR) {
+      if (blockL) release(blockL);
+      if (blockR) release(blockR);
+      return;
+    }
+
+    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+      advancePosition_rezo();           // your existing function, untouched
+      blockL->data[i] = PCM_2[0];      // left  — already interpolated + scaled
+      blockR->data[i] = PCM_2[1];      // right
+    }
+
+    transmit(blockL, 0);
+    transmit(blockR, 1);
+    release(blockL);
+    release(blockR);
+  }
+};
+
+// Audio graph
+MyPCMSource  src;
+AudioOutputI2S2 out;
+AudioConnection patchL(src, 0, out, 0);
+AudioConnection patchR(src, 1, out, 1);
+
+#endif
+
+
 void startup_middle_hook(void)
 {
   //Check reasonable range for safety
@@ -346,7 +387,7 @@ lv_color_t * next_px_map;
 #endif
 #if (LVGL_VERSION_MAJOR == 9)
 lv_display_t * disp_drv;
-uint8_t * next_px_map;
+volatile uint8_t * next_px_map;
 #endif
 volatile bool ps_framePending = false;
 volatile bool lvgl_framePending = false;
@@ -420,7 +461,7 @@ FASTRUN void my_disp_flush(lv_display_t *display, const lv_area_t *area, uint8_t
   flushtoScreen(NULL, (uint16_t *)px_map, area->x1, area->y1, area->x2, area->y2);
   lv_disp_flush_ready(disp_drv);
   if (lv_disp_flush_is_last(disp_drv)) {
-    ps_framePending = true;
+   ps_framePending = true;
   }
 #endif   
 }
@@ -440,7 +481,6 @@ FASTRUN void lcdCallback() {
 
   CrashReport.breadcrumb(3, 1);
 
-  appStats.start(ISR_LCD);
   
   lvgl_framePending = true;
   if(ps_framePending == true) {
@@ -455,8 +495,6 @@ FASTRUN void lcdCallback() {
 #endif    
     ps_framePending = false;
   }
-  appStats.end(ISR_LCD);
-  CrashReport.breadcrumb(3, 0);
 }
 #endif
 
@@ -662,7 +700,9 @@ lr_build_triangle_shape(&s_cue_triangle,
 
 
   Serial.println("Initializing Audio");      // <-- add before startI2SInterrupt
-  audio.begin(&SAI_IRQHandler);
+  //audio.begin(&SAI_IRQHandler);
+  //audio.startI2SInterrupt();
+  AudioMemory(8);
   
 
 
@@ -674,6 +714,7 @@ lr_build_triangle_shape(&s_cue_triangle,
 
 
   attachInterrupt(digitalPinToInterrupt(TFT_TEAR), lcdCallback, CHANGE);
+  NVIC_SET_PRIORITY(IRQ_GPIO6789, 64); //TE pin interrupt priority
  
   //lcdTimer.priority(128);
   //lcdTimer.begin(lcdCallback, 17 * 1000); 
@@ -705,18 +746,18 @@ uint32_t bytes_read = 0;
 
 FASTRUN void playFileSeek(uint64_t pos) 
 {
-  appStats.start(PLAYFILE_SEEK);
+  //appStats.start(PLAYFILE_SEEK);
 
   CrashReport.breadcrumb(1, 1);
   playFile.seek(pos);
   CrashReport.breadcrumb(1, 0);
 
-  appStats.end(PLAYFILE_SEEK);
+  //appStats.end(PLAYFILE_SEEK);
 }
 
 FASTRUN int playFileRead(void *buf, size_t count)
 {
-  appStats.start(PLAYFILE_READ);
+  //appStats.start(PLAYFILE_READ);
 
     uint32_t bufAddr = (uint32_t)buf;
 #if defined(TEENSY41)    
@@ -738,8 +779,8 @@ FASTRUN int playFileRead(void *buf, size_t count)
   //interrupts();
   CrashReport.breadcrumb(1, 0);  
 
-  appStats.end(PLAYFILE_READ);
-  appStats.addByteCount(PLAYFILE_READ, bytes_read);
+  //appStats.end(PLAYFILE_READ);
+  //appStats.addByteCount(PLAYFILE_READ, bytes_read);
   return bytes_read;
 }
 
@@ -804,7 +845,7 @@ FASTRUN void copyWaveformsToLCD()
   if (dynamicBufferReady == true) {
 
     // Start time for stats
-    appStats.start(DYNAMIC_MEMCPY);
+    //appStats.start(DYNAMIC_MEMCPY);
 
     uint8_t * destPtr = MACRO_EXISTS(TEENSY41) ? NULL : (uint8_t *)LCDIF_NEXT_BUF;
     flushtoScreen(destPtr, dynamicCanvasBuffer, 0, middleContainerPos, chartWidth - 1, middleContainerPos + chartHeight - 1);
@@ -818,14 +859,14 @@ FASTRUN void copyWaveformsToLCD()
     dynamicBufferReady = false;
 
     // Finish stats
-    appStats.end(DYNAMIC_MEMCPY);
-    appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
+    //appStats.end(DYNAMIC_MEMCPY);
+    //appStats.addByteCount(DYNAMIC_MEMCPY, (chartWidth * chartHeight * 2)); 
   }
 
   if (staticBufferReady == true) {
 
     // Start time for stats
-    appStats.start(OVERVIEW_COPY);
+    //appStats.start(OVERVIEW_COPY);
 
     // Erase old marker by copying from pristine canvas buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
     // Draw marker by copying pre-made color-filled marker buffer into eLCDIF buffer (preserve bottomContainer border with 1 pixel offsets)
@@ -843,16 +884,19 @@ FASTRUN void copyWaveformsToLCD()
     staticBufferReady = false;
   
     // Finish stats
-    appStats.end(OVERVIEW_COPY);
+    //appStats.end(OVERVIEW_COPY);
   }
 }
 
+unsigned long nextTimerHandlerCallMillis = 0;
+unsigned long lastFrameMillis = 0;
+
+
 FASTRUN void loop()
 {
-  appStats.start(MAIN_LOOP);
+  //appStats.start(MAIN_LOOP);
 	myusb.Task();
   // Take snapshot of play_adr, so we dont have issues as the ISR updates it. Intent is to use it atomicly anyway
-  uint32_t snapshot_play_adr = play_adr;
 
   #ifdef MK1
 
@@ -866,24 +910,26 @@ FASTRUN void loop()
  }
  #endif
 
+ 
+
   
   // Stats
-  if (appStats.readyToReport() == true) {
-    appStats.report();
-}
+  //if (//appStats.readyToReport() == true) {
+    //appStats.report();
+//}
 
 
 
-  if (lvgl_framePending == true) {
+if (lvgl_framePending == true) {
 
       //if (is_playing == true) {
         copyWaveformsToLCD();
       //}
       
 
-      appStats.start(LV_TIMER_HANDLER);
+      //Serial.printf("Calling lv_timer_handler() at %ldms\n", millis());
       lv_timer_handler(); 
-      appStats.end(LV_TIMER_HANDLER);
+     // Serial.printf("Finished lv_timer_handler() at %ldms\n", millis());
 
 #ifdef USE_REM_DISP
       remoteDisplay.pollRemoteCommand();
@@ -892,6 +938,9 @@ FASTRUN void loop()
       lvgl_framePending = false;
   }
 
+if (Tbuffer[17] & 0x20) {
+    printf("Bit 5 is set\n");   // or std::cout << "Bit 5 is set\n";
+}
   if (is_playing == true) {
 	
     if(end_of_track == 0) {
@@ -899,25 +948,25 @@ FASTRUN void loop()
       
       	if (end_adr_valid_data < 128)
 		{
-			appStats.start(PLAYFILE_READ);
+			//appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data][0], 32768);
 			end_adr_valid_data++;
-			appStats.end(PLAYFILE_READ);
+			//appStats.end(PLAYFILE_READ);
 		}
 		else if ((end_adr_valid_data < ((play_adr >> 13) + 42)) && (filling_step == 0 || filling_step == 6))  // filling the buffer forward
 		{
 			if (filling_step == 6)
 			{
-				appStats.start(PLAYFILE_SEEK);
+				//appStats.start(PLAYFILE_SEEK);
 				playFile.seek((32768UL * end_adr_valid_data) + 44);
-				appStats.end(PLAYFILE_SEEK);
+				//appStats.end(PLAYFILE_SEEK);
 				filling_step = 0;
 
 			}
-			appStats.start(PLAYFILE_READ);
+			//appStats.start(PLAYFILE_READ);
 			playFile.read(PCM[end_adr_valid_data & 0x7F][0], 32768);
 			end_adr_valid_data++;
-			appStats.end(PLAYFILE_READ);
+			//appStats.end(PLAYFILE_READ);
 			if ((end_adr_valid_data - start_adr_valid_data) > 128)
 			{
 				start_adr_valid_data = end_adr_valid_data - 128;
@@ -932,38 +981,38 @@ FASTRUN void loop()
 					end_adr_valid_data = start_adr_valid_data + 124;
 				}
 				start_adr_valid_data -= 4;
-				appStats.start(PLAYFILE_SEEK);
+				//appStats.start(PLAYFILE_SEEK);
 				playFile.seek((32768UL * start_adr_valid_data) + 44);
-				appStats.end(PLAYFILE_SEEK);
+				//appStats.end(PLAYFILE_SEEK);
 				filling_step = 1;
 			}
 			else if (filling_step == 1)
 			{
-				appStats.start(PLAYFILE_READ);
+				//appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[start_adr_valid_data & 0x7F][0], 32768);
 				filling_step = 2;
-				appStats.end(PLAYFILE_READ);
+				//appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 2)
 			{
-				appStats.start(PLAYFILE_READ);
+				//appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 1) & 0x7F][0], 32768);
 				filling_step = 3;
-				appStats.end(PLAYFILE_READ);
+				//appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 3)
 			{
-				appStats.start(PLAYFILE_READ);
+				//appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 2) & 0x7F][0], 32768);
 				filling_step = 4;
-				appStats.end(PLAYFILE_READ);
+				//appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 4)
 			{
-				appStats.start(PLAYFILE_READ);
+				//appStats.start(PLAYFILE_READ);
 				playFile.read(PCM[(start_adr_valid_data + 3) & 0x7F][0], 32768);
 				filling_step = 5;
-				appStats.end(PLAYFILE_READ);
+				//appStats.end(PLAYFILE_READ);
 			}
 			else if (filling_step == 5)
 			{
@@ -972,7 +1021,7 @@ FASTRUN void loop()
 			 
 		}
     } else {
-      audio.stopI2SInterrupt();
+      //audio.stopI2SInterrupt();
       play_count += 1;
       Serial.printf("END OF TRACK, plays: %ld\n", play_count);
       // Restart
@@ -987,7 +1036,7 @@ FASTRUN void loop()
       filling_step = 0;
       playFile.seek(44);
 	        // flush PV state
-      audio.startI2SInterrupt();
+      //audio.startI2SInterrupt();
     } 
 
   }
@@ -1124,14 +1173,14 @@ FASTRUN void loop()
 		offset_adress = 0;		
 		CUE_OPERATION = 0;
 		}
-  appStats.end(MAIN_LOOP);
+  //appStats.end(MAIN_LOOP);
 }
 
 	
 
 FASTRUN void SAI_IRQHandler(void)
 {
-	appStats.start(ISR_I2S);
+	//appStats.start(ISR_I2S);
   I2S_TCSR_REG &= ~I2S_TCSR_FRIE;  // Disable interrupt temporarily
 
   uint16_t left = (SAMPLE[1] << 8) | SAMPLE[0];
@@ -1151,7 +1200,7 @@ FASTRUN void SAI_IRQHandler(void)
   
   I2S_TCSR_REG |= 0x00040000;     // Clear error flag
   I2S_TCSR_REG |= I2S_TCSR_FRIE;  // Re-enable interrupt
-  appStats.end(ISR_I2S);
+  //appStats.end(ISR_I2S);
 
 }
 
@@ -1492,11 +1541,11 @@ uint8_t calculateCRC(uint8_t* data, size_t length) {
 }
 
 
-void DMA2_Stream5_IRQHandler(void){	
+FASTRUN void DMA2_Stream5_IRQHandler(void){	
 
 		uint32_t ptch;
 		uint8_t acc_t;
-		if(CheckRXCRC() == 1) {
+		if(CheckRXCRC() == 1 && SPI_SLAVE.flag_transaction_completed==1) {
 		
 		if((Rbuffer[14]&0x1) && PLAY_BUTTON_pressed==0)										///////////PLAY button
 			{
@@ -2239,11 +2288,11 @@ void DMA2_Stream5_IRQHandler(void){
 					{
 					if(lock_control==0)	
 						{	
-						if(play_enable & play_adr<(all_long+100000))	
+						if(play_enable && play_adr<(all_long+100000))	
 							{
 							SEEK_AUDIOFRAME(play_adr+100000);	
 							}
-						else if(play_enable==0 & play_adr/samplesPerLine<(all_long+1))
+						else if(play_enable==0 && play_adr/samplesPerLine<(all_long+1))
 							{	
 							play_adr+=samplesPerLine;
 							}
@@ -2258,11 +2307,11 @@ void DMA2_Stream5_IRQHandler(void){
 					{
 					if(lock_control==0)	
 						{		
-						if(play_enable & play_adr>100000)	
+						if(play_enable && play_adr>100000)	
 							{
 							SEEK_AUDIOFRAME(play_adr-100000);
 							}
-						else if(play_enable==0 & play_adr>samplesPerLine)
+						else if(play_enable==0 && play_adr>samplesPerLine)
 							{	
 							play_adr-=samplesPerLine;
 							}
@@ -2711,24 +2760,24 @@ void DMA2_Stream5_IRQHandler(void){
 			}
 
 		}
-			CheckTXCRC();
-			/*
-			Serial.printf ("\nRECEIVED ");
-			
-			for (int i=0; i<27; i++)
-			{
-				Serial.printf ("%02x ", Rbuffer[i]);
-			}
-			Serial.printf ("\nSENT     ");
-			for (int i=0; i<27; i++)
-			{
-				Serial.printf ("%d ", Tbuffer[i]);
-			}
-			Serial.printf ("\n");
-			*/
-	
-			SPI_SLAVE.prepare_for_slave_transfer(Tbuffer, Rbuffer, 27);
-			SPI_SLAVE.flag_transaction_completed = 0;
+		CheckTXCRC();
+		/*
+		Serial.printf ("\nRECEIVED ");
+		
+		for (int i=0; i<27; i++)
+		{
+			Serial.printf ("%02x ", Rbuffer[i]);
+		}
+		Serial.printf ("\nSENT     ");
+		for (int i=0; i<27; i++)
+		{
+			Serial.printf ("%d ", Tbuffer[i]);
+		}
+		Serial.printf ("\n");
+		*/
+
+		SPI_SLAVE.prepare_for_slave_transfer(Tbuffer, Rbuffer, 27);
+		SPI_SLAVE.flag_transaction_completed = 0;
 }	
 
 	
@@ -2860,7 +2909,7 @@ void SEEK_AUDIOFRAME(uint32_t seek_adr)
 	}
 
 
-void CALL_CUE(void)
+FASTRUN void CALL_CUE(void)
 	{
 	uint32_t seek_adr = samplesPerLine*CUE_ADR;
 	seek_adr &= 0xFFFFE000;	
@@ -2917,7 +2966,8 @@ void serialTimerISR()
 //////////////////////////////////////
 //Function Checksum for TX package	
 //
-void CheckTXCRC()
+
+FASTRUN void CheckTXCRC()
 	{
 	uint8_t sdata = 141;
 	uint8_t bt = 17;
@@ -2934,7 +2984,7 @@ void CheckTXCRC()
 //////////////////////////////////////
 //Function Checksum for RX package	
 //
-uint8_t CheckRXCRC(void)
+FASTRUN uint8_t CheckRXCRC(void)
 	{
 	if(Rbuffer[0]==1 &&	Rbuffer[1]==16 && Rbuffer[25]==0 && Rbuffer[26]==0)
 		{

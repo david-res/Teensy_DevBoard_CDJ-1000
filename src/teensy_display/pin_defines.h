@@ -4,9 +4,6 @@
 /////////////////
 //Pin definitions
 /////////////////
-#if defined(NT35510)
-#define TFT_BL            0     // 0 - Backlight pin for TFT
-#endif
 
 #define TFT_BL            1    // 0 - Backlight pin for TFT
 #define TSR_CS           -1    // 1 - XPT2046 SPI touchscreen chip select
@@ -15,9 +12,7 @@
 #define TFT_CS           0    //-1 - Chip select pin for TFT display. -1 to disable, tie to ground
 #define TFT_RST           34     // 9 - Hardware reset pin for TFT. Set to -1 for software reset only
 #define TFT_DC           35     //10 - Data/command pin for TFT
-#define SPI_MOSI         11     //11 - Documentation purposes, hardwired SPI MOSI
-#define SPI_MISO         12     //12 - Documentation purposes, hardwired SPI MISO
-#define SPI_SCLK         13     //13 - Documentation purposes, hardwired SPI CLK
+
 
 #if defined(SSD1963) 
 #define TFT_TEAR         33     //30 - Tearing pin for SSD1963 (BuyDisplay)

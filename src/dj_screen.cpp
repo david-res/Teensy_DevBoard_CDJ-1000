@@ -231,6 +231,7 @@ void loadTrackData(Track* track) {
         Serial.printf("Error loading beat grid: %u\n", err);
     }
 
+    Serial.println("extractExtCues");
     // ── Hot cues from .EXT ────────────────────────────────────────────────────
     err = extractExtCues(track->anlz_ext_path, g_track);
 
@@ -645,12 +646,14 @@ void create_top_container(Track * track) {
     lv_obj_clear_flag(key_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(key_label, LV_OBJ_FLAG_CLICKABLE);
 
+    /*
     progress_line = lv_obj_create(title_bpm_container);
     lv_obj_set_size(progress_line, title_bpm_w, 3);
     lv_obj_set_pos(progress_line, 0, btn_h - 3);
     lv_obj_set_style_bg_color(progress_line, lv_color_hex(0x158EE2), 0);
     lv_obj_set_style_border_width(progress_line, 0, 0);
     lv_obj_clear_flag(progress_line, LV_OBJ_FLAG_SCROLLABLE);
+    */
 
     // Artist label (below title_bpm_container row, aligned with title)
     artist_label = lv_label_create(top_container);
@@ -814,7 +817,7 @@ void create_middle_container(Track * track) {
 
 void create_bottom_container(Track * track) {
     bottom_container = lv_obj_create(main_screen);
-    lv_obj_set_size(bottom_container, chartWidth, 158);
+    lv_obj_set_size(bottom_container, chartWidth, middleContainerPos);
     lv_obj_set_pos(bottom_container, 0, bottomContainerPos);
     lv_obj_set_style_bg_color(bottom_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(bottom_container, 0, 0);
@@ -830,7 +833,7 @@ void create_bottom_container(Track * track) {
     // Static waveform container
     lv_obj_t *static_wave_container = lv_obj_create(bottom_container);
     lv_obj_set_size(static_wave_container, PREVIEW_WAVEFORM_WIDTH, overviewChartHeight);
-    lv_obj_set_pos(static_wave_container, 40, 0);
+    lv_obj_set_pos(static_wave_container, 40, 80);
     lv_obj_set_style_bg_color(static_wave_container, COLOR_BG, 0);
     lv_obj_set_style_border_width(static_wave_container, 0, 0);
     lv_obj_set_style_border_color(static_wave_container, lv_color_white(), 0);
@@ -885,131 +888,7 @@ void create_bottom_container(Track * track) {
   
     drawOverviewCanvas();
    
-    
-    // Cue buttons container
-    lv_obj_t *cue_container = lv_obj_create(bottom_container);
-    lv_obj_set_size(cue_container, SCREEN_WIDTH, 90);
-    lv_obj_set_pos(cue_container, 0, 65);
-    lv_obj_set_style_bg_color(cue_container, lv_color_hex(0x1c1c1c), 0);
-    lv_obj_set_style_bg_opa(cue_container, LV_OPA_COVER, 0);
-    //lv_obj_set_style_border_width(cue_container, 1, 0);
-    //lv_obj_set_style_border_color(cue_container, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_pad_all(cue_container, 0, 0);
-    lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(cue_container, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    // "HOT CUE" label + flanking rules
-    lv_obj_t *rule_left = lv_obj_create(cue_container);
-    lv_obj_set_size(rule_left, 310, 1);
-    lv_obj_set_pos(rule_left, 8, 8);
-    lv_obj_set_style_bg_color(rule_left, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_border_width(rule_left, 0, 0);
-    lv_obj_set_style_radius(rule_left, 0, 0);
-
-    lv_obj_t *hclbl = lv_label_create(cue_container);
-    lv_label_set_text(hclbl, "HOT CUE");
-    lv_obj_set_style_text_color(hclbl, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(hclbl, &exo2_18, 0); // swap for your font
-    lv_obj_set_pos(hclbl, 370, 0);
-
-    lv_obj_t *rule_right = lv_obj_create(cue_container);
-    lv_obj_set_size(rule_right, 310, 1);
-    lv_obj_set_pos(rule_right, 480, 8);
-    lv_obj_set_style_bg_color(rule_right, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_border_width(rule_right, 0, 0);
-    lv_obj_set_style_radius(rule_right, 0, 0);
-
-    // Cue colors A-H
-    static const uint32_t cue_hex_colors[] = {
-        0xe83030,  // A - red
-        0x00bfff,  // B - cyan
-        0x40dd40,  // C - green
-        0xff69b4,  // D - pink
-        0x40dd40,  // E - green
-        0xe09020,  // F - orange
-        0x4488ff,  // G - blue
-        0xdddd00,  // H - yellow
-    };
-
-    int btn_w   = (SCREEN_WIDTH - 16) / 8-6; // 8 buttons with 8px padding on sides and 6px gap
-    int btn_h   = 60;
-    int gap     = 6;
-    int start_x = 8;
-    int start_y = 22;
-
-    // Create 8 cue buttons (A-H)
-    for (int i = 0; i < 8; i++) {
-        bool has_cue = g_track && g_track->hot_cues[i].active;
-
-        // ── Color ─────────────────────────────────────────────────────────────
-        uint32_t hex_color;
-        if (has_cue) {
-            CuePoint& c = g_track->hot_cues[i];
-            if (c.color_r || c.color_g || c.color_b) {
-                hex_color = ((uint32_t)c.color_r << 16)
-                        | ((uint32_t)c.color_g << 8)
-                        | c.color_b;
-            } else {
-                hex_color = 0x00E800;  // default rekordbox green
-            }
-        } else {
-            hex_color = 0x444444;  // inactive grey
-        }
-
-        // ── Button base ───────────────────────────────────────────────────────
-        cue_buttons[i] = lv_obj_create(cue_container);
-        lv_obj_set_size(cue_buttons[i], btn_w, btn_h);
-        lv_obj_set_pos(cue_buttons[i], start_x + i * (btn_w + gap), start_y);
-        lv_obj_set_style_bg_color(cue_buttons[i], lv_color_hex(has_cue ? 0x1a1a1a : 0x111111), 0);
-        lv_obj_set_style_bg_opa(cue_buttons[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(cue_buttons[i], lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_width(cue_buttons[i], 1, 0);
-        lv_obj_set_style_border_opa(cue_buttons[i], has_cue ? LV_OPA_COVER : LV_OPA_30, 0);
-        lv_obj_set_style_radius(cue_buttons[i], 5, 0);
-        lv_obj_set_style_pad_all(cue_buttons[i], 0, 0);
-        lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_SCROLLABLE);
-
-        // ── Clickability ──────────────────────────────────────────────────────
-        if (has_cue) {
-            lv_obj_add_flag(cue_buttons[i], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(cue_buttons[i], onCueButtonPressed, LV_EVENT_PRESSED, (void*)(intptr_t)i);
-        } else {
-            lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_CLICKABLE);
-        }
-
-        // ── Letter label ──────────────────────────────────────────────────────
-        lv_obj_t* btn_label = lv_label_create(cue_buttons[i]);
-        char btn_text[2] = {'A' + i, '\0'};
-        lv_label_set_text(btn_label, btn_text);
-        lv_obj_set_style_text_color(btn_label, lv_color_hex(hex_color), 0);
-        lv_obj_set_style_text_opa(btn_label, has_cue ? LV_OPA_COVER : LV_OPA_30, 0);
-        lv_obj_set_style_text_font(btn_label, &exo2_20, 0);
-        lv_obj_set_pos(btn_label, 6, 5);
-
-        // ── Glow ──────────────────────────────────────────────────────────────
-        lv_obj_t* glow = lv_obj_create(cue_buttons[i]);
-        lv_obj_set_size(glow, btn_w - 10, 8);
-        lv_obj_set_pos(glow, 5, btn_h - 14);
-        lv_obj_set_style_bg_color(glow, lv_color_hex(hex_color), 0);
-        lv_obj_set_style_bg_opa(glow, has_cue ? LV_OPA_20 : LV_OPA_0, 0);
-        lv_obj_set_style_border_width(glow, 0, 0);
-        lv_obj_set_style_radius(glow, 3, 0);
-
-        // ── Underline bar ─────────────────────────────────────────────────────
-        lv_obj_t* bar = lv_obj_create(cue_buttons[i]);
-        lv_obj_set_size(bar, btn_w - 14, 4);
-        lv_obj_set_pos(bar, 7, btn_h - 12);
-        lv_obj_set_style_bg_color(bar, lv_color_hex(hex_color), 0);
-        lv_obj_set_style_bg_opa(bar, has_cue ? LV_OPA_COVER : LV_OPA_20, 0);
-        lv_obj_set_style_border_width(bar, 0, 0);
-        lv_obj_set_style_radius(bar, 2, 0);
-
-        lv_obj_clear_flag(cue_buttons[i], LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_clear_flag(btn_label, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_clear_flag(glow, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_clear_flag(bar, LV_OBJ_FLAG_EVENT_BUBBLE);
-    }
 }
 
 uint8_t findBestRefreshRate(uint16_t samplesPerWavepoint, uint8_t minHz = 30, uint8_t maxHz = 68) {
@@ -1060,18 +939,18 @@ void dj_ui_init(Track * track) {
     sampleRate = track->sample_rate; 
     samplesPerLine = track->sample_rate/150;
     // Add this temporarily after loadTrackData() to debug:
-Serial.printf("g_track is %s\n", g_track ? "valid" : "NULL");
-if (g_track) {
-    for (int i = 0; i < 8; i++) {
-        Serial.printf("  hot_cues[%d]: active=%u, time_ms=%u, rgb=#%02x%02x%02x\n",
-            i,
-            g_track->hot_cues[i].active,
-            g_track->hot_cues[i].time_ms,
-            g_track->hot_cues[i].color_r,
-            g_track->hot_cues[i].color_g,
-            g_track->hot_cues[i].color_b);
+    Serial.printf("g_track is %s\n", g_track ? "valid" : "NULL");
+    if (g_track) {
+        for (int i = 0; i < 8; i++) {
+            Serial.printf("  hot_cues[%d]: active=%u, time_ms=%u, rgb=#%02x%02x%02x\n",
+                i,
+                g_track->hot_cues[i].active,
+                g_track->hot_cues[i].time_ms,
+                g_track->hot_cues[i].color_r,
+                g_track->hot_cues[i].color_g,
+                g_track->hot_cues[i].color_b);
+        }
     }
-}
     create_top_container(track);
     create_middle_container(track);
     Serial.println("Creating bottom container...");
@@ -1106,11 +985,11 @@ if (g_track) {
         Serial.printf("Opened audio file: %s\n", full_path);
         is_playing = true;
         playFile.seek(44);
-        audio.startI2SInterrupt();
+        //audio.startI2SInterrupt();
         
         track_play_now = track->id;
         pitch = 0;	
-            play_enable = 0;
+        play_enable = 0;
         play_adr = 0;	
         slip_play_adr = 0;
         loop_active = 0;
@@ -1452,7 +1331,7 @@ FASTRUN void updateOverviewWaveform(uint16_t Tpos)
   drawFastVLine16BitOverview(Tpos,     0, overviewChartHeight, 0xFFFF, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
   drawFastVLine16BitOverview(Tpos + 1, 0, overviewChartHeight, 0xFFFF, overviewCanvasBuffer, PREVIEW_WAVEFORM_WIDTH);
 
-  lv_obj_set_size(progress_line, Tpos, 3);
+  //lv_obj_set_size(progress_line, Tpos, 3);
   previousPos = Tpos;
 
   lv_obj_invalidate(static_waveform_canvas);
